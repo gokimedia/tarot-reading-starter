@@ -18,8 +18,7 @@
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^5.7.2",
-    "@vercel/config": "^1.0.0"
+    "typescript": "^5.7.2"
   },
   "engines": {
     "node": ">=20"
@@ -30,5 +29,9 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/gokimedia/tarot-reading-starter.git"
+  },
+  "overrides": {
+    "postcss": "8.5.25",
+    "sharp": "0.35.3"
   }
 }

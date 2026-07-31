@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { drawRandom } from '@/lib/cards';
 
+export const dynamic = 'force-dynamic';
+
 export default function HomePage() {
   const card = drawRandom();
   return (
@@ -38,7 +40,7 @@ export default function HomePage() {
       <p>
         A minimal Next.js 16 App Router template for building tarot reading
         applications. Uses{' '}
-        <a href="https://huggingface.co/datasets/deckaura/tarot-card-meanings">
+        <a href="https://huggingface.co/datasets/Blacik/deckaura-tarot-card-meanings">
           the Deckaura tarot dataset
         </a>{' '}
         (MIT licensed) and ships as a deployable Vercel template.
