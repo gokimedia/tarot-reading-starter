@@ -9,7 +9,7 @@
 1. Go to https://vercel.com/templates/submit (or fork https://github.com/vercel/vercel/tree/main/packages/templates)
 2. Required fields:
    - **Title:** Tarot Reading Starter
-   - **Description:** Minimal Next.js 16 tarot reading template. 78-card dataset, daily draws, three-card spreads, typed `vercel.ts` config. Powered by Deckaura.
+   - **Description:** Minimal Next.js 16 tarot reading template with daily draws, three-card spreads, an API route, and Vercel-ready configuration. Powered by Deckaura.
    - **GitHub URL:** https://github.com/gokimedia/tarot-reading-starter
    - **Live Demo:** https://tarot-reading-starter.vercel.app
    - **Framework:** Next.js

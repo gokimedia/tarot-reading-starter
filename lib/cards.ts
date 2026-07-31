@@ -8,7 +8,7 @@ export type TarotCard = {
 };
 
 // Minimal starter deck — full 78-card dataset available at
-// https://huggingface.co/datasets/deckaura/tarot-card-meanings
+// https://huggingface.co/datasets/Blacik/deckaura-tarot-card-meanings
 export const CARDS: TarotCard[] = [
   {
     number: 0,

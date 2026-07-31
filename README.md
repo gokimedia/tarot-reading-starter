@@ -10,8 +10,7 @@ A minimal **Next.js 16** App Router starter template for building tarot reading 
 
 - Next.js 16 App Router with React 19
 - TypeScript throughout
-- `vercel.ts` configuration (typed project config)
-- Cache Components enabled (experimental)
+- `vercel.json` deployment and API caching configuration
 - Example pages: daily card, three-card spread
 - API route for programmatic card lookup
 - Ready for Fluid Compute / Vercel Functions
@@ -39,7 +38,7 @@ app/
   globals.css
 lib/
   cards.ts             # Starter 5-card deck (extend to full 78)
-vercel.ts              # Typed Vercel project config
+vercel.json            # Vercel deployment config
 next.config.ts         # Next.js configuration
 ```
 
@@ -47,7 +46,7 @@ next.config.ts         # Next.js configuration
 
 This starter ships with 5 sample cards. For the complete 78-card dataset:
 
-- **Hugging Face:** https://huggingface.co/datasets/deckaura/tarot-card-meanings
+- **Hugging Face:** https://huggingface.co/datasets/Blacik/deckaura-tarot-card-meanings
 - **npm:** `npm install tarot-card-meanings`
 - **MCP server:** `npm install @deckaura/tarot-mcp-server`
 - **Full guides:** https://deckaura.com/blogs/guide/tarot-card-meanings
