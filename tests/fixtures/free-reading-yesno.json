@@ -1,0 +1,18 @@
+{
+  "name": "Mia",
+  "question": "Should I accept this new job offer?",
+  "type": "One-Card Yes or No Tarot",
+  "cards": "The Sun · Upright",
+  "spread": "One Card",
+  "context": "One-card Yes or No reading based on the visitor's exact question and chosen card.",
+  "lang": "en",
+  "signals": "Result signals: Overall lean: YES; Chosen card: The Sun · Upright · YES.",
+  "scope": "A reflective one-card directional answer; it is not a guaranteed outcome.",
+  "confidence": "Question-based one-card symbolic draw.",
+  "tool": "/pages/yes-or-no-tarot · Guided one-card conversation",
+  "focus": "The new job offer and whether it fits Mia's next step",
+  "readingId": "migration-preview-yesno-20260802-v3",
+  "snapshotVersion": "reading-snapshot-v2",
+  "funnelVersion": "enterprise-evidence-offer-2026-08-v31",
+  "visitorId": "migration_free_reading_20260802_theme"
+}

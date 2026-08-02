@@ -4,6 +4,10 @@
 
 A minimal **Next.js 16** App Router starter template for building tarot reading applications. Deploy to Vercel in one click, customize, and ship.
 
+This branch also contains Deckaura's production-compatible reading backend for
+Vercel Functions. Supabase Postgres replaces Cloudflare KV and Durable Object
+state while preserving the existing storefront API contract.
+
 **Powered by [Deckaura](https://deckaura.com)** — full 78-card dataset, free tools, and interpretive guides.
 
 ## Features
@@ -14,6 +18,10 @@ A minimal **Next.js 16** App Router starter template for building tarot reading 
 - Example pages: daily card, three-card spread
 - API route for programmatic card lookup
 - Ready for Fluid Compute / Vercel Functions
+- Supabase-backed 24-hour preview/session persistence and atomic rate limits
+- Shopify paid-order webhook ingestion and scheduled 70–85 minute delivery
+- Multilingual question detection, same-language previews and follow-up copy
+- Idempotent preview replay, paid generation and email delivery
 - MIT licensed
 
 ## Quick Start
@@ -63,6 +71,21 @@ Or deploy from CLI:
 npm i -g vercel
 vercel deploy
 ```
+
+### Deckaura backend setup
+
+Apply the SQL files in `supabase/migrations/` in filename order, then configure
+the following Vercel environment variables without committing their values:
+
+`POSTGRES_URL`, `DEEPSEEK_API_KEY`, `DEEPSEEK_API_BASE`, `ENTITLEMENT_PEPPER`,
+`CRON_SECRET`, `SHOPIFY_STORE`, `SHOPIFY_ADMIN_TOKEN`,
+`SHOPIFY_WEBHOOK_SECRET`, `NL_SECRET`, `NL_SENDONE_URL`,
+`MEMBER_SIGNING_SECRET`, `READING_DELAY_MIN`, and `READING_DELAY_MAX`.
+
+The storefront-compatible routes remain at `/free-reading`,
+`/detect-language`, `/free-entitlement`, `/free-session`, `/generate`,
+`/webhook/orders-paid`, and `/r/*`. Vercel Cron invokes
+`/api/cron/readings` every minute in production.
 
 ## About Deckaura
 
