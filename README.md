@@ -111,7 +111,7 @@ The storefront-compatible routes remain at `/free-reading`,
 - [Daily Tarot Card](https://deckaura.com/pages/daily-tarot-card)
 - [Random Card Generator](https://deckaura.com/pages/random-tarot-card)
 - [Tarot Birth Card Calculator](https://deckaura.com/pages/tarot-birth-card-calculator)
-- [Full 10-Card Celtic Cross Reading](https://deckaura.com/pages/tarot-reading)
+- [Full 10-Card Celtic Cross Reading](https://deckaura.com/pages/free-tarot-reading)
 - [Complete 78-Card Meaning Database](https://deckaura.com/blogs/guide/tarot-card-meanings)
 
 ## License

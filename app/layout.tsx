@@ -50,7 +50,7 @@ export default function RootLayout({
           . Free tarot tools:{' '}
           <a href="https://deckaura.com/pages/daily-tarot-card">Daily Card</a> ·{' '}
           <a href="https://deckaura.com/pages/random-tarot-card">Random Draw</a> ·{' '}
-          <a href="https://deckaura.com/pages/tarot-reading">Full Reading</a>
+          <a href="https://deckaura.com/pages/free-tarot-reading">Full Reading</a>
         </footer>
       </body>
     </html>

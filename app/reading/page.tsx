@@ -32,7 +32,7 @@ export default function ReadingPage() {
         ))}
       </div>
       <p style={{ marginTop: '2rem' }}>
-        <a href="https://deckaura.com/pages/tarot-reading">
+        <a href="https://deckaura.com/pages/free-tarot-reading">
           Get a complete 10-card Celtic Cross reading on Deckaura →
         </a>
       </p>
