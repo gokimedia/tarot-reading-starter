@@ -31,6 +31,23 @@ export type MoonPhaseName =
   | 'Last Quarter'
   | 'Waning Crescent';
 
+const MOON_PHASE_SEQUENCE = Object.freeze<MoonPhaseName[]>([
+  'New Moon',
+  'Waxing Crescent',
+  'First Quarter',
+  'Waxing Gibbous',
+  'Full Moon',
+  'Waning Gibbous',
+  'Last Quarter',
+  'Waning Crescent',
+]);
+
+// The browser and server use independent astronomical implementations. Allow
+// only a small, adjacent-label disagreement when their verified angles fall on
+// opposite sides of the same phase boundary (1.5 degrees is about three hours
+// of a synodic month). All other lunar fields remain server-recalculated.
+export const MOON_PHASE_LABEL_BOUNDARY_DRIFT_DEGREES = 1.5;
+
 export const MOON_LUNAR_PACKAGE_SCOPE = Object.freeze({
   standard: Object.freeze({
     title: "Tonight's Moon & You",
@@ -163,6 +180,31 @@ function phaseForAngle(angle: number): MoonPhaseName {
   if (value < 180) return 'Waxing Gibbous';
   if (value < 270) return 'Waning Gibbous';
   return 'Waning Crescent';
+}
+
+function adjacentPhaseLabels(left: MoonPhaseName, right: MoonPhaseName) {
+  const leftIndex = MOON_PHASE_SEQUENCE.indexOf(left);
+  const rightIndex = MOON_PHASE_SEQUENCE.indexOf(right);
+  if (leftIndex < 0 || rightIndex < 0) return false;
+  const distance = Math.abs(leftIndex - rightIndex);
+  return distance === 1 || distance === MOON_PHASE_SEQUENCE.length - 1;
+}
+
+export function moonPhaseLabelMatches(input: {
+  submittedPhase: unknown;
+  submittedPhaseAngle: unknown;
+  calculatedPhase: MoonPhaseName;
+  calculatedPhaseAngle: number;
+}) {
+  const submittedPhase = clean(input.submittedPhase, 40) as MoonPhaseName;
+  if (submittedPhase === input.calculatedPhase) return true;
+  const submittedAngle = finite(input.submittedPhaseAngle);
+  if (submittedAngle == null
+    || !MOON_PHASE_SEQUENCE.includes(submittedPhase)
+    || angularDistance(submittedAngle, input.calculatedPhaseAngle) > MOON_PHASE_LABEL_BOUNDARY_DRIFT_DEGREES
+    || phaseForAngle(submittedAngle) !== submittedPhase
+    || phaseForAngle(input.calculatedPhaseAngle) !== input.calculatedPhase) return false;
+  return adjacentPhaseLabels(submittedPhase, input.calculatedPhase);
 }
 
 function validDate(value: string) {
@@ -309,11 +351,17 @@ function canonicalSnapshot(value: unknown, options: { now?: Date; requireFresh: 
   const submittedIllumination = finite(submittedCurrent.illumination);
   const submittedAge = finite(submittedCurrent.age);
   const submittedLongitude = finite(submittedCurrent.moonLongitude);
+  const submittedPhase = clean(submittedCurrent.phase, 40);
   const submittedNextAt = Date.parse(clean(submittedNext.at, 40));
   if (!calculatedCurrent
     || clean(submittedCurrent.dateKey, 16) !== calculatedCurrent.dateKey
-    || clean(submittedCurrent.phase, 40) !== calculatedCurrent.phase
     || submittedPhaseAngle == null || angularDistance(submittedPhaseAngle, calculatedCurrent.phaseAngle) > 15
+    || !moonPhaseLabelMatches({
+      submittedPhase,
+      submittedPhaseAngle,
+      calculatedPhase: calculatedCurrent.phase,
+      calculatedPhaseAngle: calculatedCurrent.phaseAngle,
+    })
     || submittedIllumination == null || Math.abs(submittedIllumination - calculatedCurrent.illumination) > 12
     || submittedAge == null || Math.abs(submittedAge - calculatedCurrent.age) > 1.5
     || clean(submittedCurrent.moonSign, 24) !== calculatedCurrent.moonSign
@@ -333,6 +381,7 @@ function canonicalSnapshot(value: unknown, options: { now?: Date; requireFresh: 
   const natal = natalMoon(source.birth);
   if (!natal) return null;
   const scope = MOON_LUNAR_PACKAGE_SCOPE[packageTier];
+  const canonicalPhase = submittedPhase as MoonPhaseName;
   return {
     version: MOON_LUNAR_SNAPSHOT_VERSION,
     capturedAt: capturedAt.toISOString(),
@@ -343,12 +392,21 @@ function canonicalSnapshot(value: unknown, options: { now?: Date; requireFresh: 
     packageTier,
     packageTitle: scope.title,
     coverageDays: scope.days,
-    current: calculatedCurrent,
+    current: submittedPhase === calculatedCurrent.phase
+      ? calculatedCurrent
+      : {
+        ...calculatedCurrent,
+        // Preserve the cross-validated browser label/angle pair at the narrow
+        // boundary so the signed snapshot remains self-verifying downstream.
+        // Every other lunar field remains server authoritative.
+        phase: canonicalPhase,
+        phaseAngle: rounded(submittedPhaseAngle),
+      },
     card: {
       id: cardId,
       name: cardName,
       orientation: 'Upright' as const,
-      position: MOON_PHASE_CARD_POSITIONS[calculatedCurrent.phase],
+      position: MOON_PHASE_CARD_POSITIONS[canonicalPhase],
     },
     ...natal,
   } satisfies SafeMoonLunarSnapshot;
