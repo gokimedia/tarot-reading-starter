@@ -37,6 +37,20 @@ function modelEnvironment() {
   };
 }
 
+const LONG_HINDI_THREE_CARD_READING = 'इस समय भरोसा बढ़ाने की स्वस्थ दिशा जल्दबाजी में निष्कर्ष चुनना नहीं, बल्कि अपनी शांति बचाते हुए शब्दों और लगातार दिखने वाले व्यवहार का तालमेल देखना है। The Star upright बताता है कि आशा जीवित है और उपचार संभव है, फिर भी यह आशा तभी सहारा बनेगी जब छोटी कोशिशें समय के साथ स्थिर और ईमानदार रहें। Queen of Swords upright इस नरमी के भीतर साफ सीमा रखने को कहती है, इसलिए अपनी जरूरत शांत स्वर में बताएं और वादे के बजाय सम्मान तथा जिम्मेदारी दिखाने वाली प्रतिक्रिया को महत्व दें। Temperance upright इन दोनों कार्डों के बीच संतुलन बनाता है, जिससे धैर्य का अर्थ चुपचाप इंतजार करना नहीं बल्कि बातचीत और दूरी की ऐसी गति चुनना है जिसमें दोनों पक्ष सच बोल सकें। अगले कुछ दिनों में एक सरल सीमा तय करके उसे स्थिर रखें, फिर देखें कि संवाद अधिक खुला, सुरक्षित और पारस्परिक बनता है या वही पुराना असमंजस लौटता है, क्योंकि भरोसे का खुला गहरा सूत्र भावना से आगे लगातार दिखाई देने वाली संगति और आत्मसम्मान में बसता है।';
+
+const HINDI_THREE_CARD_FIELDS = {
+  lang: 'hi',
+  locale: 'hi-IN',
+  question: 'विश्वास और अपनी सीमाओं के बीच स्वस्थ संतुलन कैसे रखूं?',
+  type: 'Three Card Tarot',
+  tool: '/pages/free-tarot-reading',
+  spread: 'Three Card',
+  context: 'Reflective guidance about trust and personal boundaries.',
+  signals: 'Situation: The Star upright; Challenge: Queen of Swords upright; Advice: Temperance upright',
+  cards: 'Situation: The Star upright; Challenge: Queen of Swords upright; Advice: Temperance upright',
+};
+
 test('script-heavy free previews receive a larger bounded output budget', () => {
   assert.equal(freePreviewOutputTokenBudget({
     isFiveRune: false,
@@ -105,6 +119,73 @@ test('Hindi free preview rewrites once after finish_reason length and keeps the 
   assert.match(html, /\p{Script=Devanagari}/u);
   assert.match(html, /The Star upright/);
   assert.doesNotMatch(html, /अधूरा/);
+});
+
+test('three-card Hindi length retry accepts danda endings and clamps only at a complete sentence', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const environment = modelEnvironment();
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  // This deliberately exceeds the 145-word display ceiling. The first four
+  // sentences contain every required card in 124 words; the fifth forces the
+  // clamp to recognize the native Devanagari danda rather than append an
+  // ellipsis or discard an otherwise complete Hindi reading.
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(String(options.body));
+    requests.push(body);
+    return requests.length === 1
+      ? modelResponse('यह उत्तर सीमा तक पहुंचा लेकिन पूरा अंतिम वाक्य नहीं लिख सका', 'length', body.max_tokens)
+      : modelResponse(LONG_HINDI_THREE_CARD_READING, 'stop', 452);
+  };
+
+  const html = await generateFreeTeaserHtml(HINDI_THREE_CARD_FIELDS, environment);
+
+  const visible = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  assert.equal(requests.length, 2);
+  assert.equal(environment.claims.length, 2);
+  assert.equal(requests[0].max_tokens, 420);
+  assert.equal(requests[1].max_tokens, 630);
+  assert.match(visible, /The Star upright/);
+  assert.match(visible, /Queen of Swords upright/);
+  assert.match(visible, /Temperance upright/);
+  assert.match(visible, /।$/u);
+  assert.doesNotMatch(visible, /…/u);
+  assert.doesNotMatch(visible, /अगले कुछ दिनों/u);
+  assert.ok(visible.split(/\s+/).length <= 145);
+});
+
+test('Hindi quality rewrite uses one larger bounded call instead of truncating again', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const environment = modelEnvironment();
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(String(options.body));
+    requests.push(body);
+    if (requests.length === 1) {
+      return modelResponse(LONG_HINDI_THREE_CARD_READING.replace(/।$/u, ''), 'stop', 390);
+    }
+    return body.max_tokens >= 630
+      ? modelResponse(LONG_HINDI_THREE_CARD_READING, 'stop', 452)
+      : modelResponse('यह दूसरा उत्तर भी टोकन सीमा पर अधूरा रह गया', 'length', body.max_tokens);
+  };
+
+  const html = await generateFreeTeaserHtml(HINDI_THREE_CARD_FIELDS, environment);
+  const visible = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+  assert.equal(requests.length, 2);
+  assert.equal(environment.claims.length, 2);
+  assert.equal(requests[0].max_tokens, 420);
+  assert.equal(requests[1].max_tokens, 630);
+  assert.match(requests[1].messages[1].content, /ended with an incomplete final sentence/i);
+  assert.match(visible, /।$/u);
+  assert.doesNotMatch(visible, /…/u);
 });
 
 test('two truncated Hindi drafts stop after one retry and never serve an English fallback', async (t) => {
