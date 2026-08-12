@@ -140,6 +140,20 @@ test('advanced astrology fixtures are exact browser payloads and reject impossib
   assert.equal(validateCase('Astrocartography', {
     context: astrocartography[2].replace('+41.0082', '+99.9999'),
   }).ok, false);
+
+  const chiron = cases.find(([type]) => type === 'Chiron Astrology');
+  const boundaryConfidence = `${chiron[5]} Timed confirmation recommended.`;
+  const boundaryContext = `Canonical input — birthDate=2026-06-20. Reading scope: ${chiron[4]}. Calculation confidence: ${boundaryConfidence}.`;
+  assert.equal(validateCase('Chiron Astrology', {
+    context: boundaryContext,
+    signals: 'Chiron sign: Taurus; Ephemeris date: 2026-06-20; Data source: NASA/JPL Horizons · daily geocentric ecliptic-of-date',
+    confidence: boundaryConfidence,
+  }).ok, true);
+  assert.equal(validateCase('Chiron Astrology', {
+    context: boundaryContext,
+    signals: 'Chiron sign: Taurus; Ephemeris date: 2026-06-20; Data source: NASA/JPL Horizons · daily geocentric ecliptic-of-date',
+    confidence: chiron[5],
+  }).ok, false);
 });
 
 test('solar return reproduces the browser local-calendar anchor across a UTC year boundary', () => {
