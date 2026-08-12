@@ -38,7 +38,11 @@ import {
   ANGEL_NUMBER_PACKAGE_SCOPE,
   ANGEL_NUMBER_PAGE,
   ANGEL_NUMBER_SNAPSHOT_VERSION,
+  PERSONAL_777_FUNNEL_VERSION,
+  PERSONAL_777_PACKAGE_SCOPE,
   angelNumberEvidence,
+  isPersonal777Snapshot,
+  personal777SupportiveCards,
   safeAngelNumberSnapshot,
 } from '@/lib/angel-number';
 import {
@@ -967,9 +971,11 @@ async function verifiedReadingIntent(
   let angelNumberVerifiedFields: JsonObject = {};
   if (intentKind === 'angel_number') {
     const angelSnapshot = safeAngelNumberSnapshot(snapshot);
+    const personal777 = Boolean(angelSnapshot && isPersonal777Snapshot(angelSnapshot));
+    const expectedFunnel = personal777 ? PERSONAL_777_FUNNEL_VERSION : ANGEL_NUMBER_FUNNEL_VERSION;
     if (!angelSnapshot
       || text(row.page, 160) !== ANGEL_NUMBER_PAGE
-      || text(row.funnel_version, 128) !== ANGEL_NUMBER_FUNNEL_VERSION
+      || text(row.funnel_version, 128) !== expectedFunnel
       || text(row.category, 20) !== ANGEL_NUMBER_LIFE_AREAS[angelSnapshot.lifeArea].category
       || text(row.deck, 32) !== 'angel_number'
       || text(row.card_name, 80) !== `Angel number ${angelSnapshot.number}`
@@ -979,31 +985,64 @@ async function verifiedReadingIntent(
       || itemProperty(item, ['angel situation']) !== (angelSnapshot.situation || '')) {
       throw new QueueOperationError('CHECKOUT_INTENT_ANGEL_NUMBER_READING_MISMATCH');
     }
-    if (product.tier === 'premium' && !angelSnapshot.additionalNumbers.length && !angelSnapshot.birthDate) {
+    if (personal777
+      && (product.tier === 'standard'
+        || text(row.reading_type, 80) !== 'Personal 777'
+        || itemProperty(item, ['reading mode']) !== 'personal_777'
+        || itemProperty(item, ['article source']) !== angelSnapshot.sourcePage
+        || itemProperty(item, ['article topic']) !== angelSnapshot.articleTopic)) {
+      throw new QueueOperationError('CHECKOUT_INTENT_PERSONAL_777_READING_MISMATCH');
+    }
+    if (product.tier === 'premium' && !personal777 && !angelSnapshot.additionalNumbers.length && !angelSnapshot.birthDate) {
       throw new QueueOperationError('CHECKOUT_INTENT_ANGEL_NUMBER_PATTERN_REQUIRED');
     }
-    const scope = ANGEL_NUMBER_PACKAGE_SCOPE[product.tier];
+    if (personal777 && product.tier === 'premium') {
+      const expectedCards = personal777SupportiveCards({
+        intentId,
+        readingId: text(row.reading_id, 80),
+        question: text(row.question, 400),
+        secret,
+      });
+      if (!expectedCards || JSON.stringify(expectedCards) !== JSON.stringify(angelSnapshot.supportiveCards)) {
+        throw new QueueOperationError('CHECKOUT_INTENT_PERSONAL_777_CARDS_INVALID');
+      }
+    }
+    if (personal777 && product.tier === 'medium' && angelSnapshot.supportiveCards.length) {
+      throw new QueueOperationError('CHECKOUT_INTENT_PERSONAL_777_CARDS_INVALID');
+    }
+    const scope = personal777
+      ? PERSONAL_777_PACKAGE_SCOPE[product.tier as 'medium' | 'premium']
+      : ANGEL_NUMBER_PACKAGE_SCOPE[product.tier];
     const evidence = angelNumberEvidence(angelSnapshot);
     const patternInputs = [angelSnapshot.number, ...angelSnapshot.additionalNumbers];
+    const supportiveCards = personal777 && product.tier === 'premium'
+      ? angelSnapshot.supportiveCards.map((card) => `${card.position}: ${card.name} (${card.orientation})`).join('; ')
+      : '';
     angelNumberVerifiedFields = {
-      type: 'Angel Number',
-      readingType: 'Angel Number',
-      tool: `${ANGEL_NUMBER_PAGE} · situational angel-number decoder`,
+      type: personal777 ? 'Personal 777' : 'Angel Number',
+      readingType: personal777 ? 'Personal 777' : 'Angel Number',
+      tool: personal777 ? `${angelSnapshot.sourcePage} · paid-only personal 777 answer` : `${ANGEL_NUMBER_PAGE} · situational angel-number decoder`,
       question: text(row.question, 400),
       freeQuestion: text(row.question, 400),
-      context: `${evidence}. Free contextual preview: ${angelSnapshot.preview}. Paid package contract: ${scope.title}. ${scope.instruction}`,
-      freeContext: angelSnapshot.preview,
-      cards: '',
-      spread: patternInputs.length > 1
-        ? `Main number ${angelSnapshot.number} ↔ supplied pattern ${angelSnapshot.additionalNumbers.join(' · ')}`
-        : `Main number ${angelSnapshot.number} · ${angelSnapshot.lifeAreaLabel}`,
+      context: personal777
+        ? `${evidence}. Pre-payment context contains no personal result. Verified paid package contract: ${scope.title}. ${scope.instruction}`
+        : `${evidence}. Free contextual preview: ${angelSnapshot.preview}. Paid package contract: ${scope.title}. ${scope.instruction}`,
+      freeContext: personal777 ? '' : angelSnapshot.preview,
+      cards: supportiveCards,
+      spread: supportiveCards
+        ? 'Three-card supportive spread · What 777 is highlighting now · The hidden pattern or block · The most supportive next direction'
+        : patternInputs.length > 1
+          ? `Main number ${angelSnapshot.number} ↔ supplied pattern ${angelSnapshot.additionalNumbers.join(' · ')}`
+          : `Main number ${angelSnapshot.number} · ${angelSnapshot.lifeAreaLabel}`,
       signals: [
         `Core symbolism: ${angelSnapshot.coreTitle}`,
         `Support: ${angelSnapshot.support}`,
         `Caution: ${angelSnapshot.caution}`,
         `Grounded next step: ${angelSnapshot.nextStep}`,
       ].join('; '),
-      scope: `${scope.title}. Use only the exact supplied numbers, context and optional birth date. ${scope.instruction}`,
+      scope: personal777
+        ? `${scope.title}. Use only 777, the exact customer question, the selected topic${supportiveCards ? ' and the three server-verified supportive cards' : ''}. ${scope.instruction}`
+        : `${scope.title}. Use only the exact supplied numbers, context and optional birth date. ${scope.instruction}`,
       confidence: 'Angel-number symbolism is a reflective framework, not proof of a supernatural message, a prediction, or access to another person’s private thoughts.',
       focus: angelSnapshot.lifeAreaLabel,
       readingId: text(row.reading_id, 80),
@@ -1018,6 +1057,11 @@ async function verifiedReadingIntent(
       angelNumberSituation: angelSnapshot.situation || '',
       packageTitle: scope.title,
       deliveryWindowMinutes: 90,
+      readingMode: angelSnapshot.readingMode || '',
+      articleSource: angelSnapshot.sourcePage || '',
+      articleTopic: angelSnapshot.articleTopic || '',
+      followupCredits: personal777 && product.tier === 'premium' ? 1 : 0,
+      supportiveCardCount: angelSnapshot.supportiveCards.length,
       angelNumberSnapshot: angelSnapshot,
     };
   }
@@ -1698,6 +1742,10 @@ async function persistPaidOrder(
     || 'General guidance for the path ahead';
   const confirmedQuestion = text(draft.question || originalQuestion, 400) || originalQuestion;
   const reviewStatus = normalizedReviewStatus(draft);
+  const verifiedFollowupCredits = intent?.intentKind === 'angel_number'
+    ? Math.max(0, Math.min(1, Number(intent.verifiedFields.followupCredits) || 0))
+    : 0;
+  const totalReadingCredits = Math.max(1, readingCredits(items) + verifiedFollowupCredits);
   const attribution = readingAttribution(first);
   const customerContext = customerLocaleContext({
     locale: draft.verifiedFields?.locale || draft.verifiedFields?.lang || payload.customer_locale,
@@ -1786,10 +1834,10 @@ async function persistPaidOrder(
       ${orderId}, ${text(payload.name, 40) || null}, ${String(draft.accessToken)},
       ${text(payload.email || payload.contact_email, 320) || null}, ${text(draft.name, 80) || null},
       ${text(payload.financial_status, 40) || null}, ${sku || null}, ${packageAuthority.tier},
-      ${Math.max(1, readingCredits(items))}, ${originalQuestion}, ${confirmedQuestion},
+      ${totalReadingCredits}, ${originalQuestion}, ${confirmedQuestion},
       ${sql.json(sourceContext as never)},
       ${sql.json({
-        readingCredits: Math.max(1, readingCredits(items)),
+        readingCredits: totalReadingCredits,
         tier: packageAuthority.tier,
         ...(intent ? {
           checkoutIntentVerified: true,
@@ -1830,6 +1878,11 @@ async function persistPaidOrder(
             angelNumber: text(intent.verifiedFields.angelNumber, 16),
             angelNumberCore: text(intent.verifiedFields.angelNumberCore, 16),
             angelNumberSnapshotVersion: text(intent.verifiedFields.angelNumberSnapshotVersion, 64),
+            readingMode: text(intent.verifiedFields.readingMode, 40),
+            articleSource: text(intent.verifiedFields.articleSource, 160),
+            articleTopic: text(intent.verifiedFields.articleTopic, 40),
+            supportiveCardCount: Number(intent.verifiedFields.supportiveCardCount),
+            followupCredits: Number(intent.verifiedFields.followupCredits),
           } : {}),
           ...(intent.intentKind === 'numerology_compatibility' ? {
             packageTitle: text(intent.verifiedFields.packageTitle, 100),

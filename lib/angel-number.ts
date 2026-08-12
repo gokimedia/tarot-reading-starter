@@ -1,8 +1,59 @@
+import { createHmac } from 'node:crypto';
 import type { ReadingTier, YesNoCategory } from '@/lib/reading-products';
 
 export const ANGEL_NUMBER_PAGE = '/pages/angel-number-meaning';
 export const ANGEL_NUMBER_FUNNEL_VERSION = 'angel-situational-funnel-2026-08-v1';
 export const ANGEL_NUMBER_SNAPSHOT_VERSION = 'angel-number-snapshot-v1';
+export const PERSONAL_777_FUNNEL_VERSION = '777-personal-answer-2026-08-v1';
+export const PERSONAL_777_SOURCE_PAGE = '/blogs/guide/777-meaning';
+export const PERSONAL_777_READING_MODE = 'personal_777';
+
+export const PERSONAL_777_TOPICS = Object.freeze({
+  love: 'love_relationships',
+  twin: 'specific_person',
+  career: 'career_money',
+  spiritual: 'spiritual_growth',
+  decision: 'change_decision',
+} as const);
+
+export type Personal777Topic = keyof typeof PERSONAL_777_TOPICS;
+
+export const PERSONAL_777_PACKAGE_SCOPE = Object.freeze({
+  medium: Object.freeze({
+    title: 'Personal 777 Answer',
+    instruction: 'Directly answer the exact question, explain why 777 may be catching attention now, interpret it only within the selected topic, name what needs attention, and finish with exactly three practical next steps.',
+  }),
+  premium: Object.freeze({
+    title: 'Deep 777 Reading',
+    instruction: 'Include the complete Personal 777 Answer, then analyze the deeper pattern and hidden block, state the most supported direction without claiming certainty, interpret all three server-selected supportive cards in their exact positions and orientations, and finish with a practical 7-day guidance plan. The purchase includes one follow-up question.',
+  }),
+});
+
+export const PERSONAL_777_CARD_POSITIONS = Object.freeze([
+  'What 777 is highlighting now',
+  'The hidden pattern or block',
+  'The most supportive next direction',
+] as const);
+
+const PERSONAL_777_CARD_NAMES = Object.freeze([
+  'The Fool', 'The Magician', 'The High Priestess', 'The Empress', 'The Emperor',
+  'The Hierophant', 'The Lovers', 'The Chariot', 'Strength', 'The Hermit',
+  'Wheel of Fortune', 'Justice', 'The Hanged Man', 'Death', 'Temperance', 'The Devil',
+  'The Tower', 'The Star', 'The Moon', 'The Sun', 'Judgement', 'The World',
+  'Ace of Cups', 'Two of Cups', 'Three of Cups', 'Four of Cups', 'Five of Cups',
+  'Six of Cups', 'Seven of Cups', 'Eight of Cups', 'Nine of Cups', 'Ten of Cups',
+  'Page of Cups', 'Knight of Cups', 'Queen of Cups', 'King of Cups',
+  'Ace of Pentacles', 'Two of Pentacles', 'Three of Pentacles', 'Four of Pentacles',
+  'Five of Pentacles', 'Six of Pentacles', 'Seven of Pentacles', 'Eight of Pentacles',
+  'Nine of Pentacles', 'Ten of Pentacles', 'Page of Pentacles', 'Knight of Pentacles',
+  'Queen of Pentacles', 'King of Pentacles',
+  'Ace of Swords', 'Two of Swords', 'Three of Swords', 'Four of Swords', 'Five of Swords',
+  'Six of Swords', 'Seven of Swords', 'Eight of Swords', 'Nine of Swords', 'Ten of Swords',
+  'Page of Swords', 'Knight of Swords', 'Queen of Swords', 'King of Swords',
+  'Ace of Wands', 'Two of Wands', 'Three of Wands', 'Four of Wands', 'Five of Wands',
+  'Six of Wands', 'Seven of Wands', 'Eight of Wands', 'Nine of Wands', 'Ten of Wands',
+  'Page of Wands', 'Knight of Wands', 'Queen of Wands', 'King of Wands',
+] as const);
 
 export const ANGEL_NUMBER_LIFE_AREAS = Object.freeze({
   love_relationships: Object.freeze({ label: 'Love & relationships', category: 'love' as const }),
@@ -110,6 +161,17 @@ export type SafeAngelNumberSnapshot = {
   preview: string;
   additionalNumbers: string[];
   birthDate: string | null;
+  sourcePage: string | null;
+  readingMode: typeof PERSONAL_777_READING_MODE | null;
+  articleTopic: Personal777Topic | null;
+  supportiveCards: Personal777Card[];
+};
+
+export type Personal777Card = {
+  id: number;
+  name: string;
+  orientation: 'Upright' | 'Reversed';
+  position: typeof PERSONAL_777_CARD_POSITIONS[number];
 };
 
 function record(value: unknown): JsonObject {
@@ -151,6 +213,68 @@ export function angelNumberCategory(area: AngelNumberLifeArea): YesNoCategory {
   return ANGEL_NUMBER_LIFE_AREAS[area].category;
 }
 
+export function isPersonal777Snapshot(snapshot: Pick<SafeAngelNumberSnapshot, 'number' | 'coreNumber' | 'reduced' | 'sourcePage' | 'readingMode' | 'articleTopic' | 'lifeArea'>) {
+  return snapshot.number === '777'
+    && snapshot.coreNumber === '777'
+    && snapshot.reduced === false
+    && snapshot.sourcePage === PERSONAL_777_SOURCE_PAGE
+    && snapshot.readingMode === PERSONAL_777_READING_MODE
+    && Boolean(snapshot.articleTopic)
+    && PERSONAL_777_TOPICS[snapshot.articleTopic as Personal777Topic] === snapshot.lifeArea;
+}
+
+function safePersonal777Cards(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const cards = value.slice(0, PERSONAL_777_CARD_POSITIONS.length).map((entry, index) => {
+    const card = record(entry);
+    const id = Number.parseInt(String(card.id || ''), 10);
+    const name = clean(card.name, 80);
+    const orientation = clean(card.orientation, 16);
+    const position = clean(card.position, 80);
+    return { id, name, orientation, position, index };
+  });
+  if (cards.length !== PERSONAL_777_CARD_POSITIONS.length
+    || new Set(cards.map((card) => card.id)).size !== cards.length
+    || cards.some((card) => card.id < 1
+      || card.id > PERSONAL_777_CARD_NAMES.length
+      || PERSONAL_777_CARD_NAMES[card.id - 1] !== card.name
+      || (card.orientation !== 'Upright' && card.orientation !== 'Reversed')
+      || PERSONAL_777_CARD_POSITIONS[card.index] !== card.position)) return [];
+  return cards.map(({ id, name, orientation, position }) => ({
+    id,
+    name,
+    orientation: orientation as Personal777Card['orientation'],
+    position: position as Personal777Card['position'],
+  }));
+}
+
+export function personal777SupportiveCards(input: {
+  intentId: string;
+  readingId: string;
+  question: string;
+  secret: string;
+}) {
+  const cards: Personal777Card[] = [];
+  const used = new Set<number>();
+  let counter = 0;
+  while (cards.length < PERSONAL_777_CARD_POSITIONS.length && counter < 256) {
+    const digest = createHmac('sha256', input.secret)
+      .update(`${input.intentId}\u001f${input.readingId}\u001f${input.question}\u001f777\u001f${counter}`, 'utf8')
+      .digest();
+    const id = (digest.readUInt16BE(0) % PERSONAL_777_CARD_NAMES.length) + 1;
+    counter += 1;
+    if (used.has(id)) continue;
+    used.add(id);
+    cards.push({
+      id,
+      name: PERSONAL_777_CARD_NAMES[id - 1],
+      orientation: digest[2] < 77 ? 'Reversed' : 'Upright',
+      position: PERSONAL_777_CARD_POSITIONS[cards.length],
+    });
+  }
+  return cards.length === PERSONAL_777_CARD_POSITIONS.length ? cards : null;
+}
+
 export function safeAngelNumberSnapshot(value: unknown): SafeAngelNumberSnapshot | null {
   const source = record(value);
   if (clean(source.version, 64) !== ANGEL_NUMBER_SNAPSHOT_VERSION) return null;
@@ -186,6 +310,28 @@ export function safeAngelNumberSnapshot(value: unknown): SafeAngelNumberSnapshot
   const birthDate = submittedBirthDate && validBirthDate(submittedBirthDate) ? submittedBirthDate : null;
   if (submittedBirthDate && !birthDate) return null;
 
+  const sourcePage = clean(source.sourcePage, 160) || null;
+  const readingModeValue = clean(source.readingMode, 40).toLowerCase();
+  const readingMode = readingModeValue === PERSONAL_777_READING_MODE ? PERSONAL_777_READING_MODE : null;
+  if (readingModeValue && !readingMode) return null;
+  const articleTopicValue = clean(source.articleTopic, 40).toLowerCase();
+  const articleTopic = Object.hasOwn(PERSONAL_777_TOPICS, articleTopicValue)
+    ? articleTopicValue as Personal777Topic
+    : null;
+  if (articleTopicValue && !articleTopic) return null;
+  if ((sourcePage || readingMode || articleTopic)
+    && (number !== '777'
+      || coreNumber !== '777'
+      || reduced
+      || sourcePage !== PERSONAL_777_SOURCE_PAGE
+      || readingMode !== PERSONAL_777_READING_MODE
+      || !articleTopic
+      || PERSONAL_777_TOPICS[articleTopic] !== lifeArea
+      || additionalNumbers.length
+      || birthDate)) return null;
+  const supportiveCards = safePersonal777Cards(source.supportiveCards);
+  if (Array.isArray(source.supportiveCards) && source.supportiveCards.length && !supportiveCards.length) return null;
+
   return {
     version: ANGEL_NUMBER_SNAPSHOT_VERSION,
     number,
@@ -203,6 +349,10 @@ export function safeAngelNumberSnapshot(value: unknown): SafeAngelNumberSnapshot
     preview,
     additionalNumbers,
     birthDate,
+    sourcePage,
+    readingMode,
+    articleTopic,
+    supportiveCards,
   };
 }
 
@@ -216,6 +366,7 @@ export function angelNumberEvidence(snapshot: SafeAngelNumberSnapshot) {
     snapshot.userContext ? `Customer context: ${snapshot.userContext}` : '',
     patternInputs.length > 1 ? `Supplied sign pattern: ${patternInputs.join(', ')}` : '',
     snapshot.birthDate ? `Optional birth date supplied for Life Path calculation: ${snapshot.birthDate}` : '',
+    snapshot.articleTopic ? `777 article topic: ${snapshot.articleTopic}` : '',
   ].filter(Boolean);
   return pieces.join('; ');
 }

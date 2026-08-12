@@ -5,7 +5,7 @@ import { DAILY_TAROT_FUNNEL_VERSION } from '@/lib/daily-tarot';
 import { DAILY_HOROSCOPE_FUNNEL_VERSION } from '@/lib/daily-horoscope';
 import { BIRTH_CHART_FUNNEL_VERSION } from '@/lib/birth-chart';
 import { BIG_THREE_FUNNEL_VERSION } from '@/lib/big-three';
-import { ANGEL_NUMBER_FUNNEL_VERSION } from '@/lib/angel-number';
+import { ANGEL_NUMBER_FUNNEL_VERSION, PERSONAL_777_FUNNEL_VERSION } from '@/lib/angel-number';
 import { ZODIAC_COMPATIBILITY_FUNNEL_VERSION } from '@/lib/zodiac-compatibility';
 import { MOON_LUNAR_FUNNEL_VERSION } from '@/lib/moon-lunar';
 import { NUMEROLOGY_COMPATIBILITY_FUNNEL_VERSION } from '@/lib/numerology-compatibility';
@@ -100,7 +100,7 @@ function signedIntentVariantId(attributes: JsonObject[], funnelVersion: string, 
   if (funnelVersion === BIG_THREE_FUNNEL_VERSION) {
     return readingPackage('big_three', tier)?.variantId || '';
   }
-  if (funnelVersion === ANGEL_NUMBER_FUNNEL_VERSION) {
+  if (funnelVersion === ANGEL_NUMBER_FUNNEL_VERSION || funnelVersion === PERSONAL_777_FUNNEL_VERSION) {
     return readingPackage('angel_number', tier)?.variantId || '';
   }
   if (funnelVersion === ZODIAC_COMPATIBILITY_FUNNEL_VERSION) {

@@ -12,8 +12,11 @@ import { validateNewSharedToolSnapshot } from '@/lib/new-shared-tool-evidence.mj
 import {
   ANGEL_NUMBER_FUNNEL_VERSION,
   ANGEL_NUMBER_PAGE,
+  PERSONAL_777_FUNNEL_VERSION,
   angelNumberCategory,
   isAngelNumberLifeArea,
+  isPersonal777Snapshot,
+  personal777SupportiveCards,
   safeAngelNumberSnapshot,
 } from '@/lib/angel-number';
 import {
@@ -337,25 +340,37 @@ export async function POST(request: Request) {
     snapshot = compatibilitySnapshot;
   } else if (angelNumber) {
     const lifeArea = clean(body.intent, 40).toLowerCase();
-    if (funnelVersion !== ANGEL_NUMBER_FUNNEL_VERSION || !isAngelNumberLifeArea(lifeArea)) {
+    if ((funnelVersion !== ANGEL_NUMBER_FUNNEL_VERSION && funnelVersion !== PERSONAL_777_FUNNEL_VERSION)
+      || !isAngelNumberLifeArea(lifeArea)) {
       return json({ error: 'invalid_angel_number_intent' }, 422, origin);
     }
     const angelSnapshot = safeAngelNumberSnapshot(body.snapshot);
     if (!angelSnapshot || angelSnapshot.lifeArea !== lifeArea) {
       return json({ error: 'invalid_angel_number_snapshot' }, 422, origin);
     }
-    if (tier === 'premium' && !angelSnapshot.additionalNumbers.length && !angelSnapshot.birthDate) {
+    const personal777 = isPersonal777Snapshot(angelSnapshot);
+    if ((funnelVersion === PERSONAL_777_FUNNEL_VERSION) !== personal777
+      || (personal777 && (tier === 'standard' || angelSnapshot.userContext !== question))) {
+      return json({ error: 'invalid_personal_777_intent' }, 422, origin);
+    }
+    if (tier === 'premium' && !personal777 && !angelSnapshot.additionalNumbers.length && !angelSnapshot.birthDate) {
       return json({ error: 'angel_number_pattern_input_required' }, 422, origin);
     }
+    const supportiveCards = personal777 && tier === 'premium'
+      ? personal777SupportiveCards({ intentId: id, readingId, question, secret })
+      : [];
+    if (personal777 && tier === 'premium' && !supportiveCards) {
+      return json({ error: 'personal_777_cards_unavailable' }, 503, origin);
+    }
     page = ANGEL_NUMBER_PAGE;
-    readingType = 'Angel Number';
+    readingType = personal777 ? 'Personal 777' : 'Angel Number';
     category = angelNumberCategory(lifeArea);
     deck = 'angel_number';
     answer = 'CONDITIONAL';
     cardName = `Angel number ${angelSnapshot.number}`;
     cardId = 0;
     intentKind = 'angel_number';
-    snapshot = angelSnapshot;
+    snapshot = { ...angelSnapshot, supportiveCards };
   } else if (bigThree) {
     const focus = clean(body.intent, 40).toLowerCase();
     if (funnelVersion !== BIG_THREE_FUNNEL_VERSION || !isBigThreeFocus(focus)) {
