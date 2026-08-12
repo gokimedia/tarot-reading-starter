@@ -14,13 +14,16 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@ai-sdk/gateway": "4.0.51",
     "@supabase/supabase-js": "2.112.0",
     "@vercel/oidc": "^3.8.1",
+    "ai": "^7.0.64",
     "astronomy-engine": "2.1.19",
     "next": "^16.0.0",
     "postgres": "^3.4.9",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "zod": "4.1.11"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

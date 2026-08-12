@@ -7,6 +7,7 @@ import {
   SHARED_TOOL_COMMERCE_EVENT_NAMES,
   SHARED_TOOL_EVENT_NAMES,
   SHARED_TOOL_FUNNEL_VERSION,
+  SHARED_TOOL_PAGE_ALLOWED_TIERS,
   SHARED_TOOL_PAGE_TOOL_TYPES,
   SHARED_TOOL_PAGES,
   SHARED_TOOL_SOURCE_SHA256,
@@ -18,9 +19,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('generated shared-tool contract covers 40 live pages and 75 unique variants', () => {
-  assert.equal(SHARED_TOOL_PAGES.length, 40);
-  assert.equal(new Set(SHARED_TOOL_PAGES).size, 40);
+test('generated shared-tool contract covers 59 live pages and 75 unique variants', () => {
+  assert.equal(SHARED_TOOL_PAGES.length, 59);
+  assert.equal(new Set(SHARED_TOOL_PAGES).size, 59);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-reading'), false);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-tarot-reading'), true);
   assert.equal(SHARED_TOOL_VARIANT_IDS.length, 75);
@@ -33,13 +34,29 @@ test('generated shared-tool contract covers 40 live pages and 75 unique variants
 
   for (const page of SHARED_TOOL_PAGES) {
     const toolType = SHARED_TOOL_PAGE_TOOL_TYPES[page];
-    for (const tier of ['essential', 'deeper', 'indepth']) {
+    const allowedTiers = SHARED_TOOL_PAGE_ALLOWED_TIERS[page];
+    assert.ok(Array.isArray(allowedTiers) && allowedTiers.length >= 1, `${page} must declare allowed tiers`);
+    for (const tier of allowedTiers) {
       const contract = sharedToolContract(page, toolType, tier);
       assert.ok(contract, `${page}/${toolType}/${tier} must resolve`);
       assert.ok(SHARED_TOOL_VARIANT_IDS.includes(contract.variantId));
       assert.deepEqual(sharedToolVariantContract(page, toolType, tier, contract.variantId), contract);
       assert.deepEqual(sharedToolPaidOrderContract(page, toolType, contract.paidTier, contract.variantId, contract.sku, contract.price), contract);
     }
+  }
+
+  for (const page of [
+    '/pages/name-numerology-calculator',
+    '/pages/aura-color-quiz',
+    '/pages/destiny-matrix-calculator',
+    '/pages/midheaven-calculator',
+    '/pages/ai-dream-interpreter',
+  ]) {
+    const toolType = SHARED_TOOL_PAGE_TOOL_TYPES[page];
+    assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS[page], ['deeper', 'indepth']);
+    assert.equal(sharedToolContract(page, toolType, 'essential'), null, `${page} must reject the $5.99 tier`);
+    assert.ok(sharedToolContract(page, toolType, 'deeper'));
+    assert.ok(sharedToolContract(page, toolType, 'indepth'));
   }
 });
 

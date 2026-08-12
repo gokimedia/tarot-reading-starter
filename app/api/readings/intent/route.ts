@@ -8,6 +8,7 @@ import {
   sharedToolVariantContract,
 } from '@/lib/generated/shared-tool-manifest.mjs';
 import { verifyShopifyReadingVariant } from '@/lib/shopify-reading-variant.mjs';
+import { validateNewSharedToolSnapshot } from '@/lib/new-shared-tool-evidence.mjs';
 import {
   ANGEL_NUMBER_FUNNEL_VERSION,
   ANGEL_NUMBER_PAGE,
@@ -521,6 +522,25 @@ export async function POST(request: Request) {
       || !snapshotTool
       || !snapshotCuriosityQuestion) {
       return sharedCheckoutRejection(422, 'SHARED_SNAPSHOT_CONTRACT_MISMATCH', origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+      });
+    }
+    const typedEvidence = validateNewSharedToolSnapshot({
+      page: pageValue,
+      toolType,
+      snapshot: {
+        type: snapshotType,
+        context: snapshotContext,
+        signals: snapshotSignals,
+        scope: snapshotScope,
+        confidence: snapshotConfidence,
+      },
+    });
+    if (typedEvidence.applies && !typedEvidence.ok) {
+      return sharedCheckoutRejection(422, 'SHARED_TYPED_EVIDENCE_MISMATCH', origin, {
         page: pageValue,
         toolType,
         tier: storefrontTier,
