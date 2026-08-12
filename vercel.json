@@ -1,6 +1,35 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/api/cron/readings",
+      "schedule": "* * * * *"
+    }
+  ],
+  "rewrites": [
+    { "source": "/funnel-version", "destination": "/api/readings/funnel-version" },
+    { "source": "/generate", "destination": "/api/readings/generate" },
+    { "source": "/free-reading", "destination": "/api/readings/free-reading" },
+    { "source": "/detect-language", "destination": "/api/readings/detect-language" },
+    { "source": "/free-entitlement", "destination": "/api/readings/free-entitlement" },
+    { "source": "/free-session", "destination": "/api/readings/free-session" },
+    { "source": "/free-chat", "destination": "/api/readings/free-chat" },
+    { "source": "/checkout-snapshot", "destination": "/api/readings/checkout-snapshot" },
+    { "source": "/checkout-context", "destination": "/api/readings/checkout-context" },
+    { "source": "/reading-intent", "destination": "/api/readings/intent" },
+    { "source": "/funnel-events", "destination": "/api/readings/funnel-events" },
+    { "source": "/email-reading", "destination": "/api/readings/email-reading" },
+    { "source": "/email/unsubscribe", "destination": "/api/readings/email/unsubscribe" },
+    { "source": "/member-reading", "destination": "/api/readings/member-reading" },
+    { "source": "/unlocked", "destination": "/api/readings/unlocked" },
+    { "source": "/demo/:path*", "destination": "/api/readings/demo/:path*" },
+    { "source": "/artwork/:path*", "destination": "/api/readings/artwork/:path*" },
+    { "source": "/r", "destination": "/api/readings/r" },
+    { "source": "/r/:path*", "destination": "/api/readings/r/:path*" },
+    { "source": "/webhook/orders-paid", "destination": "/api/shopify/orders-paid" },
+    { "source": "/inject.js", "destination": "/api/readings/inject.js" }
+  ],
   "headers": [
     {
       "source": "/api/card/(.*)",

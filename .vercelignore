@@ -1,13 +1,12 @@
+.git
 .vercel
 .next
 node_modules
 *.log
 .env*
-!.env.example
 supabase/.temp
 qa
+tests
+scripts
 tmp
-_consistency
-private-assets
 tsconfig.tsbuildinfo
-coverage

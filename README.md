@@ -4,6 +4,10 @@
 
 A minimal **Next.js 16** App Router starter template for building tarot reading applications. Deploy to Vercel in one click, customize, and ship.
 
+This branch also contains Deckaura's production-compatible reading backend for
+Vercel Functions. Supabase Postgres replaces Cloudflare KV and Durable Object
+state while preserving the existing storefront API contract.
+
 **Powered by [Deckaura](https://deckaura.com)** — full 78-card dataset, free tools, and interpretive guides.
 
 ## Features
@@ -14,6 +18,13 @@ A minimal **Next.js 16** App Router starter template for building tarot reading 
 - Example pages: daily card, three-card spread
 - API route for programmatic card lookup
 - Ready for Fluid Compute / Vercel Functions
+- Supabase-backed 24-hour preview/session persistence and atomic rate limits
+- Shopify paid-order webhook ingestion and scheduled 70–85 minute delivery
+- Multilingual question detection, same-language previews and follow-up copy
+- Idempotent preview replay, paid generation and email delivery
+- Cost-aware routing: DeepSeek V4 Flash/Pro for free guidance and language detection
+- Claude Sonnet 5 for every paid customer-facing reading, with DeepSeek semantic review
+- Supabase-backed webhook and delivery queues with controlled retries
 - MIT licensed
 
 ## Quick Start
@@ -63,6 +74,35 @@ Or deploy from CLI:
 npm i -g vercel
 vercel deploy
 ```
+
+### Deckaura backend setup
+
+Apply the SQL files in `supabase/migrations/` in filename order, then configure
+the following Vercel environment variables without committing their values:
+
+`POSTGRES_URL`, `ENTITLEMENT_PEPPER`, `CRON_SECRET`, `SHOPIFY_STORE` (or the
+integration-provided `SHOPIFY_STORE_DOMAIN`), `SHOPIFY_CLIENT_ID`,
+`SHOPIFY_CLIENT_SECRET`, `SHOPIFY_WEBHOOK_SECRET`, `MEMBER_SIGNING_SECRET`,
+`READING_SERVICE_ORIGIN`, `READING_DELAY_MIN`, `READING_DELAY_MAX`, and
+`FREE_AI_DAILY_BUDGET_USD`.
+
+For a Dev Dashboard app, the backend exchanges `SHOPIFY_CLIENT_ID` and
+`SHOPIFY_CLIENT_SECRET` for a short-lived Admin API access token, caches it in
+the function instance, refreshes it before expiry, and retries one time after a
+Shopify `401`. `SHOPIFY_ADMIN_TOKEN` remains supported only as a temporary
+fallback when the client credentials are not configured. `SHOPIFY_WEBHOOK_SECRET`
+must remain the secret Shopify uses to sign this app's webhooks; for the same
+Dev Dashboard app it can be set to the same client-secret value.
+
+`DEEPSEEK_DIRECT_API_KEY` and `ANTHROPIC_API_KEY` are the primary model paths
+when configured. Vercel AI Gateway is used when the matching direct key is not
+configured and as the fallback for retryable direct-provider failures. None of
+these credentials are exposed to the storefront.
+
+The storefront-compatible routes remain at `/free-reading`,
+`/detect-language`, `/free-entitlement`, `/free-session`, `/generate`,
+`/webhook/orders-paid`, and `/r/*`. Vercel Cron invokes
+`/api/cron/readings` every minute in production.
 
 ## About Deckaura
 
