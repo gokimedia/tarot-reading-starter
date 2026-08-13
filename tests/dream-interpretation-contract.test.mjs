@@ -75,6 +75,27 @@ test('dream contracts reject unapproved labels, duplicate themes and malformed i
   }), null);
 });
 
+test('dream output rejects generation-tech wording before it can reach the page', () => {
+  const base = {
+    headline: 'A threshold beside moving emotion',
+    summary: 'This pattern invites reflection on how emotion and access meet in the situation you are considering, while keeping personal associations central.',
+    themes: [{
+      name: 'Water',
+      reflection: 'Water can support reflection on emotional movement, pace, and what may be difficult to contain.',
+      question: 'Which feeling needs room before it needs an explanation?',
+    }],
+    groundingSteps: [
+      'Write one personal association for the listed theme before drawing a conclusion.',
+      'Choose one small real-world action that can test the reflection without assuming it is true.',
+    ],
+    safetyNote: 'This is symbolic reflection, not a diagnosis, memory claim, factual finding, or prediction.',
+  };
+  assert.ok(safeDreamAiOutput(base));
+  for (const phrase of ['AI', 'artificial intelligence', 'DeepSeek', 'ChatGPT', 'language model', 'model provider', 'Vercel', 'interpretation service', 'yapay zekâ']) {
+    assert.equal(safeDreamAiOutput({ ...base, summary: `${base.summary} ${phrase}.` }), null, phrase);
+  }
+});
+
 test('request JSON is byte-bounded even without a Content-Length header', async () => {
   const valid = new Request('https://reading.deckaura.com/api/dreams/interpret', {
     method: 'POST',

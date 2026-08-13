@@ -98,8 +98,8 @@ export const NEW_SHARED_TOOL_SMOKE_FIXTURES = Object.freeze({
     'Astronomy Engine positions plus date-adjusted Lahiri-style ayanamsa.',
   ),
   '/pages/dream-interpreter': fixture(
-    'Privacy-minimized result; Deckaura derived allowlisted themes, tone and a length band on its server, then sent only those signals to the interpretation model. Raw dream text was not sent to that model, retained, or attached to checkout.',
-    'Dream themes: Water, Vehicle or journey; Emotional tone: curious; Dream length band: 50–149 words; Privacy mode: Server-minimized · raw dream not sent to the interpretation model or checkout',
+    'Privacy-minimized result; Deckaura used allowlisted themes, tone and a length band to create this reflection. Raw dream text was not retained or attached to checkout.',
+    'Dream themes: Water, Vehicle or journey; Emotional tone: curious; Dream length band: 50–149 words; Privacy mode: Temporary processing · raw dream excluded from storage, analytics and checkout',
     'Reflect only on allowlisted dream themes and the selected tone; no diagnosis, recovered-memory claim, factual third-party claim or prediction.',
     'Symbolic reflection generated from allowlisted themes; personal meaning may differ.',
   ),
