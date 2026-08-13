@@ -171,6 +171,7 @@ type QueueCounters = {
 };
 
 export type ReadingQueueRunResult = {
+  recoveredWebhooks: number;
   webhooks: QueueCounters;
   deliveries: QueueCounters;
   lifecycleEmails: QueueCounters;
@@ -2518,6 +2519,40 @@ async function migrateLegacyPostPurchase(env: WorkerEnvironment, limit = 25) {
   return { migrated, invalid, remaining: listed.list_complete === false };
 }
 
+async function recoverPreFixUnknownTimeBirthChartWebhooks() {
+  const sql = db();
+  const recovered = await sql<Array<{ webhook_id: string }>>`
+    update deckaura.webhook_events as events
+       set status = 'received',
+           attempts = 0,
+           available_at = clock_timestamp(),
+           leased_by = null,
+           lease_token = null,
+           lease_expires_at = null,
+           error_message = null,
+           dead_lettered_at = null,
+           updated_at = clock_timestamp()
+     where events.dead_lettered_at is not null
+       and events.error_message in (
+         'CHECKOUT_INTENT_BIRTH_CHART_READING_MISMATCH',
+         'QueueOperationError:CHECKOUT_INTENT_BIRTH_CHART_READING_MISMATCH'
+       )
+       and events.received_at < ${new Date('2026-08-13T11:15:00.000Z')}
+       and exists (
+         select 1
+           from jsonb_array_elements(events.payload->'line_items') as item,
+                jsonb_array_elements(item->'properties') as property
+          where lower(trim(leading '_' from property->>'name')) = 'birth time status'
+            and property->>'value' = 'unknown'
+       )
+    returning events.webhook_id
+  `;
+  if (recovered.length) {
+    console.info({ event: 'birth_chart_webhook_dead_letters_recovered', count: recovered.length });
+  }
+  return recovered.length;
+}
+
 export async function processReadingQueues(options: { deadlineMs?: number } = {}): Promise<ReadingQueueRunResult> {
   const startedAt = Date.now();
   const deadlineMs = Math.max(startedAt + 30_000, options.deadlineMs || startedAt + 255_000);
@@ -2533,6 +2568,7 @@ export async function processReadingQueues(options: { deadlineMs?: number } = {}
     DEFAULT_LIFECYCLE_EMAIL_LIMIT,
     25,
   );
+  const recoveredWebhooks = await recoverPreFixUnknownTimeBirthChartWebhooks();
 
   for (let index = 0; index < webhookLimit && Date.now() < deadlineMs - 10_000; index += 1) {
     const claimed = await deliveryRetry.claimShopifyWebhooks(workerId, 1, WEBHOOK_LEASE_SECONDS);
@@ -2571,6 +2607,7 @@ export async function processReadingQueues(options: { deadlineMs?: number } = {}
   }
 
   return {
+    recoveredWebhooks,
     webhooks,
     deliveries,
     lifecycleEmails,
