@@ -1,25 +1,17 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { validShopifyHmac } from '@/lib/shopify-webhook-auth';
 import { deliveryRetry } from '@/lib/worker-env';
 
 export const runtime = 'nodejs';
 export const maxDuration = 10;
 
-function validShopifyHmac(raw: string, supplied: string, secret: string) {
-  if (!supplied || !secret) return false;
-  const expected = createHmac('sha256', secret).update(raw, 'utf8').digest();
-  let received: Buffer;
-  try {
-    received = Buffer.from(supplied, 'base64');
-  } catch {
-    return false;
-  }
-  return expected.length === received.length && timingSafeEqual(expected, received);
-}
 export async function POST(request: Request) {
   const raw = await request.text();
-  const secret = String(process.env.SHOPIFY_WEBHOOK_SECRET || '');
   const hmac = String(request.headers.get('x-shopify-hmac-sha256') || '');
-  if (!validShopifyHmac(raw, hmac, secret)) {
+  if (!validShopifyHmac(raw, hmac, [
+    process.env.SHOPIFY_WEBHOOK_SECRET,
+    process.env.SHOPIFY_CLIENT_SECRET,
+  ])) {
     return new Response('Invalid signature', { status: 401 });
   }
 

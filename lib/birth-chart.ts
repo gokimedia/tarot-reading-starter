@@ -318,12 +318,51 @@ export function safeBirthChartSnapshot(value: unknown): SafeBirthChartSnapshot |
   return new TextEncoder().encode(JSON.stringify(snapshot)).byteLength <= 8_192 ? snapshot : null;
 }
 
+function hydrateSignedPersistedAmbiguities(source: JsonObject): JsonObject | null {
+  const placements = Array.isArray(source.placements) ? source.placements : [];
+  const hydrated: JsonObject[] = [];
+  for (const entry of placements) {
+    const placement = record(entry);
+    if (placement.ambiguous !== true) {
+      hydrated.push(placement);
+      continue;
+    }
+
+    const possibleSigns = Array.isArray(placement.possibleSigns)
+      ? placement.possibleSigns.map((value) => clean(value, 20))
+      : [];
+    const firstIndex = SIGNS.indexOf(possibleSigns[0] as typeof SIGNS[number]);
+    const secondIndex = SIGNS.indexOf(possibleSigns[1] as typeof SIGNS[number]);
+    const submittedLongitude = longitude(placement.longitude);
+    const submittedSign = clean(placement.sign, 20);
+    const adjacent = firstIndex >= 0 && secondIndex >= 0
+      && (Math.abs(firstIndex - secondIndex) === 1 || Math.abs(firstIndex - secondIndex) === SIGNS.length - 1);
+    if (possibleSigns.length !== 2
+      || firstIndex === secondIndex
+      || !adjacent
+      || submittedLongitude == null
+      || SIGNS[signIndex(submittedLongitude)] !== submittedSign
+      || !possibleSigns.includes(submittedSign)) return null;
+
+    // The first sanitizer persisted the verified possible signs but omitted
+    // the raw range endpoints. Recreate interior points for the strict
+    // sanitizer; the signed canonical signs remain the source of truth.
+    hydrated.push({
+      ...placement,
+      startLongitude: firstIndex * 30 + 15,
+      endLongitude: secondIndex * 30 + 15,
+    });
+  }
+  return { ...source, placements: hydrated };
+}
+
 /**
- * Accepts the one legacy birth-chart shape that the old sanitizer itself
- * persisted: a fully validated current transit whose longitude was omitted
- * from the canonical output. This must only be used after the persisted
- * snapshot hash and checkout-intent signatures have both been verified.
- * Untrusted checkout input must continue to use safeBirthChartSnapshot.
+ * Accepts canonical birth-chart fields that the old sanitizer itself
+ * persisted without their raw reconstruction inputs: ambiguous-placement
+ * range endpoints and, in an older shape, current-transit longitude. This
+ * must only be used after both the snapshot hash and checkout-intent
+ * signatures have been verified. Untrusted checkout input must continue to
+ * use safeBirthChartSnapshot.
  */
 export function safeSignedPersistedBirthChartSnapshot(
   value: unknown,
@@ -333,12 +372,14 @@ export function safeSignedPersistedBirthChartSnapshot(
   if (strict) return strict;
   if (!options?.integrityVerified) return null;
 
-  const source = record(value);
+  const source = hydrateSignedPersistedAmbiguities(record(value));
+  if (!source) return null;
   const transit = record(source.currentTransit);
+  if (source.currentTransit == null || Object.hasOwn(transit, 'longitude')) {
+    return safeBirthChartSnapshot(source);
+  }
   const transitKeys = Object.keys(transit);
-  if (source.currentTransit == null
-    || Object.hasOwn(transit, 'longitude')
-    || transitKeys.length !== 4
+  if (transitKeys.length !== 4
     || !transitKeys.every((key) => ['moving', 'natal', 'type', 'orb'].includes(key))
     || typeof transit.moving !== 'string'
     || typeof transit.natal !== 'string'
