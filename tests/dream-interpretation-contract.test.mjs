@@ -4,11 +4,13 @@ import test from 'node:test';
 import {
   DREAM_PRIVACY_MODE,
   dreamEvidence,
+  dreamModelSignals,
   immediateSafetyOutput,
   needsImmediateSafetyResponse,
   safeDreamAiOutput,
   safeDreamInput,
 } from '../lib/dream-interpretation.mjs';
+import { buildDreamProviderRequest, parseDreamProviderEnvelope } from '../lib/dream-provider-request.mjs';
 import { BoundedJsonBodyError, readBoundedJson } from '../lib/bounded-json-body.mjs';
 
 const route = await readFile(new URL('../app/api/dreams/interpret/route.ts', import.meta.url), 'utf8');
@@ -31,6 +33,33 @@ test('dream input and AI output are bounded and evidence excludes raw text', () 
   const evidence = dreamEvidence(input, output);
   assert.equal(evidence.signals[3].value, DREAM_PRIVACY_MODE);
   assert.doesNotMatch(JSON.stringify({ output, evidence }), /SECRET_CANARY/);
+});
+
+test('DeepSeek request contains only coarse allowlisted signals, never raw dream or identifiers', () => {
+  const canary = 'SECRET_CANARY Alice Example alice@example.com 123 Main Street 203.0.113.19 networkHash-abcdef dreamed of water and a locked door.';
+  const signals = dreamModelSignals({ dream: canary, tone: 'curious' });
+  assert.deepEqual(signals, {
+    themes: ['Water', 'Door or key'],
+    emotionalTone: 'curious',
+    dreamLengthBand: 'under 50 words',
+  });
+  const body = buildDreamProviderRequest('deepseek-v4-flash', signals);
+  const serialized = JSON.stringify(body);
+  assert.match(serialized, /deepseek-v4-flash/);
+  assert.match(serialized, /json_object/);
+  assert.match(serialized, /"thinking":\{"type":"disabled"\}/);
+  const userMessage = body.messages[1].content;
+  assert.deepEqual(JSON.parse(userMessage.slice(userMessage.indexOf('{'))), signals);
+  assert.doesNotMatch(serialized, /SECRET_CANARY|Alice Example|alice@example\.com|123 Main Street|203\.0\.113\.19|networkHash-abcdef/);
+  assert.throws(() => buildDreamProviderRequest('not-deepseek', signals), /unsupported_dream_model/);
+});
+
+test('DeepSeek envelope must finish normally before structured output is accepted', () => {
+  const base = { message: { content: '{"ok":true}' } };
+  assert.equal(parseDreamProviderEnvelope({ choices: [{ ...base, finish_reason: 'stop' }] }).content, '{"ok":true}');
+  for (const finish_reason of ['length', 'content_filter', 'insufficient_system_resource']) {
+    assert.throws(() => parseDreamProviderEnvelope({ choices: [{ ...base, finish_reason }] }));
+  }
 });
 
 test('dream contracts reject unapproved labels, duplicate themes and malformed input', () => {
@@ -96,23 +125,29 @@ test('explicit present-tense self-harm intent receives a fixed safety response',
   assert.match(output.summary, /local emergency services or a crisis line/i);
 });
 
-test('route enforces origin, Supabase quotas, ZDR, model fallback and log-safe failures', () => {
+test('route enforces origin, Supabase quotas, coarse-signal DeepSeek fallback and log-safe failures', () => {
   assert.match(route, /freeReadingBudgets\.claim/);
   assert.match(route, /network:\$\{networkHash\}/);
   assert.match(route, /global:dream_ai_v1/);
-  assert.match(route, /zeroDataRetention:\s*true/);
-  assert.match(route, /disallowPromptTraining:\s*true/);
-  assert.match(route, /models:\s*\[FALLBACK_MODEL\]/);
-  assert.match(route, /reasoning:\s*'none'/);
-  assert.match(route, /Never quote the dream verbatim or repeat names, addresses, contact details/);
+  assert.match(route, /const DEEPSEEK_ENDPOINT = 'https:\/\/api\.deepseek\.com\/chat\/completions'/);
+  assert.match(route, /const MODEL = 'deepseek-v4-flash'/);
+  assert.match(route, /const FALLBACK_MODEL = 'deepseek-v4-pro'/);
+  assert.match(route, /buildDreamProviderRequest\(model, signals\)/);
+  assert.match(route, /callDeepSeek\(MODEL, signals, 24_000\)/);
+  assert.match(route, /callDeepSeek\(FALLBACK_MODEL, signals, 24_000\)/);
+  assert.match(route, /DEEPSEEK_DIRECT_API_KEY \|\| process\.env\.DEEPSEEK_API_KEY/);
+  assert.doesNotMatch(route, /alibaba\/qwen/);
+  assert.doesNotMatch(route, /openai\/gpt/);
+  assert.doesNotMatch(route, /gateway\(|Output\.object|zeroDataRetention|disallowPromptTraining/);
   assert.match(route, /needsImmediateSafetyResponse/);
+  assert.match(route, /dreamModelSignals\(input\)/);
   assert.match(route, /readBoundedJson\(request, 12_000\)/);
-  assert.match(route, /GatewayError\.isInstance/);
   assert.match(route, /aiUsage\.record/);
-  assert.match(route, /modelAttempts/);
-  assert.match(route, /canonicalSlug/);
-  assert.match(route, /status:\s*delivery\.usedFallback\s*\?\s*'fallback'\s*:\s*'success'/);
-  assert.match(route, /fallbackFrom:\s*delivery\.usedFallback\s*\?\s*MODEL/);
+  assert.match(route, /provider: 'deepseek-direct'/);
+  assert.match(route, /status: completion\.fallbackFrom \? 'fallback' : 'success'/);
   assert.doesNotMatch(route, /console\.(?:log|warn|error)\([^\n]*(?:input\.dream|source|request\.json)/);
+  assert.doesNotMatch(route, /JSON\.stringify\((?:input|source|networkHash)/);
+  assert.doesNotMatch(route, /content:[^\n]*input\.dream/);
   assert.match(route, /private, no-store, max-age=0/);
+  assert.equal(route.includes('/api/internal/dream-'), false);
 });

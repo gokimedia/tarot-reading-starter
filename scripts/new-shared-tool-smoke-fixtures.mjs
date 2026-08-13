@@ -98,8 +98,8 @@ export const NEW_SHARED_TOOL_SMOKE_FIXTURES = Object.freeze({
     'Astronomy Engine positions plus date-adjusted Lahiri-style ayanamsa.',
   ),
   '/pages/ai-dream-interpreter': fixture(
-    'Privacy-minimized AI result; raw dream text was processed ephemerally and was not retained by Deckaura or attached to checkout.',
-    'Dream themes: Water, Vehicle or journey; Emotional tone: curious; Dream length band: 50–149 words; Privacy mode: Ephemeral Vercel AI · raw dream excluded from analytics and paid order',
+    'Privacy-minimized AI result; Deckaura derived allowlisted themes, tone and a length band on its server, then sent only those signals to DeepSeek. Raw dream text was not sent to the model, retained, or attached to checkout.',
+    'Dream themes: Water, Vehicle or journey; Emotional tone: curious; Dream length band: 50–149 words; Privacy mode: Server-minimized DeepSeek · raw dream not sent to the model or checkout',
     'Reflect only on allowlisted dream themes and the selected tone; no diagnosis, recovered-memory claim, factual third-party claim or prediction.',
     'AI-assisted symbolic reflection grounded in allowlisted themes; personal meaning may differ.',
   ),

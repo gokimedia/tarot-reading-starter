@@ -12,6 +12,11 @@ export type DreamAiOutput = {
 };
 export function safeDreamInput(value: unknown): DreamInput | null;
 export function dreamLengthBand(dream: unknown): 'under 50 words' | '50–149 words' | '150+ words';
+export function dreamModelSignals(input: unknown): {
+  themes: string[];
+  emotionalTone: string;
+  dreamLengthBand: 'under 50 words' | '50–149 words' | '150+ words';
+} | null;
 export function safeDreamAiOutput(value: unknown): DreamAiOutput | null;
 export function dreamEvidence(input: DreamInput, output: DreamAiOutput): {
   signals: Array<{ label: string; value: string }>;
