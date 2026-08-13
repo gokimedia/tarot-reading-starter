@@ -42,7 +42,7 @@ const cases = [
   typedCase('Astrocartography', '/pages/astrocartography-calculator', 'Astrocartography City Calculator'),
   typedCase('Nakshatra', '/pages/nakshatra-calculator', 'Janma Nakshatra Calculator'),
   typedCase('Sade Sati', '/pages/sade-sati-calculator', 'Sade Sati Calculator'),
-  typedCase('Dream Interpretation', '/pages/ai-dream-interpreter', 'Private Dream Symbol Interpreter'),
+  typedCase('Dream Interpretation', '/pages/dream-interpreter', 'Private Dream Interpreter'),
   typedCase('I Ching', '/pages/i-ching-reading', 'I Ching Three-Coin Reading'),
   typedCase('Pendulum', '/pages/pendulum-reading', 'Digital Pendulum Reading'),
   typedCase('Lenormand', '/pages/lenormand-reading', 'Three-Card Lenormand Reading'),

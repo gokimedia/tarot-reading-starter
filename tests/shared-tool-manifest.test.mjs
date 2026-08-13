@@ -50,7 +50,7 @@ test('generated shared-tool contract covers 59 live pages and 75 unique variants
     '/pages/aura-color-quiz',
     '/pages/destiny-matrix-calculator',
     '/pages/midheaven-calculator',
-    '/pages/ai-dream-interpreter',
+    '/pages/dream-interpreter',
   ]) {
     const toolType = SHARED_TOOL_PAGE_TOOL_TYPES[page];
     assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS[page], ['deeper', 'indepth']);

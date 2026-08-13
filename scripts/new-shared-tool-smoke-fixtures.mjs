@@ -97,11 +97,11 @@ export const NEW_SHARED_TOOL_SMOKE_FIXTURES = Object.freeze({
     'Traditional three-sign Sade Sati status only; no dasha or event prediction.',
     'Astronomy Engine positions plus date-adjusted Lahiri-style ayanamsa.',
   ),
-  '/pages/ai-dream-interpreter': fixture(
-    'Privacy-minimized AI result; Deckaura derived allowlisted themes, tone and a length band on its server, then sent only those signals to DeepSeek. Raw dream text was not sent to the model, retained, or attached to checkout.',
-    'Dream themes: Water, Vehicle or journey; Emotional tone: curious; Dream length band: 50–149 words; Privacy mode: Server-minimized DeepSeek · raw dream not sent to the model or checkout',
+  '/pages/dream-interpreter': fixture(
+    'Privacy-minimized result; Deckaura derived allowlisted themes, tone and a length band on its server, then sent only those signals to the interpretation model. Raw dream text was not sent to that model, retained, or attached to checkout.',
+    'Dream themes: Water, Vehicle or journey; Emotional tone: curious; Dream length band: 50–149 words; Privacy mode: Server-minimized · raw dream not sent to the interpretation model or checkout',
     'Reflect only on allowlisted dream themes and the selected tone; no diagnosis, recovered-memory claim, factual third-party claim or prediction.',
-    'AI-assisted symbolic reflection grounded in allowlisted themes; personal meaning may differ.',
+    'Symbolic reflection generated from allowlisted themes; personal meaning may differ.',
   ),
   '/pages/i-ching-reading': fixture(
     'Six line values bottom-to-top=7,7,7,8,7,8; focus=general.',

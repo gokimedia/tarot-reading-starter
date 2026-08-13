@@ -234,7 +234,7 @@ export async function POST(request: Request) {
       model: completion.model,
       status: completion.fallbackFrom ? 'fallback' : 'success',
       locale: 'en',
-      page: '/pages/ai-dream-interpreter',
+      page: '/pages/dream-interpreter',
       inputTokens: completion.inputTokens,
       outputTokens: completion.outputTokens,
       cachedInputTokens: 0,

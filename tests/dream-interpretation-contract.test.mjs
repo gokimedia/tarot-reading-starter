@@ -143,6 +143,8 @@ test('route enforces origin, Supabase quotas, coarse-signal DeepSeek fallback an
   assert.match(route, /dreamModelSignals\(input\)/);
   assert.match(route, /readBoundedJson\(request, 12_000\)/);
   assert.match(route, /aiUsage\.record/);
+  assert.match(route, /page: '\/pages\/dream-interpreter'/);
+  assert.doesNotMatch(route, /page: '\/pages\/ai-dream-interpreter'/);
   assert.match(route, /provider: 'deepseek-direct'/);
   assert.match(route, /status: completion\.fallbackFrom \? 'fallback' : 'success'/);
   assert.doesNotMatch(route, /console\.(?:log|warn|error)\([^\n]*(?:input\.dream|source|request\.json)/);
