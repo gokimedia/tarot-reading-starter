@@ -19,9 +19,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('generated shared-tool contract covers 59 live pages and 75 unique variants', () => {
-  assert.equal(SHARED_TOOL_PAGES.length, 59);
-  assert.equal(new Set(SHARED_TOOL_PAGES).size, 59);
+test('generated shared-tool contract covers 60 live pages and 75 unique variants', () => {
+  assert.equal(SHARED_TOOL_PAGES.length, 60);
+  assert.equal(new Set(SHARED_TOOL_PAGES).size, 60);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-reading'), false);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-tarot-reading'), true);
   assert.equal(SHARED_TOOL_VARIANT_IDS.length, 75);
@@ -51,6 +51,7 @@ test('generated shared-tool contract covers 59 live pages and 75 unique variants
     '/pages/destiny-matrix-calculator',
     '/pages/midheaven-calculator',
     '/pages/dream-interpreter',
+    '/pages/personal-tarot-reading',
   ]) {
     const toolType = SHARED_TOOL_PAGE_TOOL_TYPES[page];
     assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS[page], ['deeper', 'indepth']);
@@ -58,6 +59,19 @@ test('generated shared-tool contract covers 59 live pages and 75 unique variants
     assert.ok(sharedToolContract(page, toolType, 'deeper'));
     assert.ok(sharedToolContract(page, toolType, 'indepth'));
   }
+
+  const personalFocused = sharedToolContract('/pages/personal-tarot-reading', 'Personal Tarot', 'deeper');
+  assert.deepEqual(personalFocused, {
+    page: '/pages/personal-tarot-reading',
+    toolType: 'Personal Tarot',
+    storefrontTier: 'deeper',
+    paidTier: 'medium',
+    variantId: '53782500638993',
+    sku: 'READING-MEDIUM',
+    price: 9.99,
+  });
+  assert.equal(sharedToolContract('/pages/personal-tarot-reading', 'Tarot Personality', 'deeper'), null);
+  assert.equal(sharedToolContract('/pages/personal-tarot-reading', 'Personal Tarot', 'essential'), null);
 });
 
 test('Twin Flame page, type, tier and variant are an exact fail-closed contract', () => {
