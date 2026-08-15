@@ -82,6 +82,27 @@ test('career fallback treats a current-role paraphrase as the same second altern
   assert.match(output, /stay in your current role/i);
 });
 
+test('a customer-supplied private-state boundary stays relevant without becoming a claim', () => {
+  const fields = {
+    question: 'What can I understand about my connection with Jordan without assuming their private feelings?',
+    lang: 'en', locale: 'en-US', type: 'Three Card Tarot',
+    tool: '/pages/free-tarot-reading', spread: 'Three Card',
+    context: 'Past: The Moon upright. Present: Queen of Swords upright. Future: Six of Pentacles reversed.',
+    signals: 'Past: The Moon Upright; Present: Queen of Swords Upright; Future: Six of Pentacles Reversed',
+    cards: 'The Moon, Queen of Swords, Six of Pentacles',
+  };
+  const bounded = conciseDeterministicFreeTeaser(fields, 'en');
+  const boundedAudit = freeTeaserAudit(bounded, fields, 58);
+  assert.equal(boundedAudit.ok, true, `${boundedAudit.reason}: ${bounded}`);
+
+  const unrelated = {
+    ...fields,
+    question: 'How can I communicate more clearly in this connection?',
+  };
+  const boilerplate = `${conciseDeterministicFreeTeaser(unrelated, 'en')} The cards cannot verify another person's private feelings.`;
+  assert.equal(freeTeaserAudit(boilerplate, unrelated, 58).reason, 'used irrelevant private-state boilerplate for this question');
+});
+
 test('personal contact and explicit return use distinct curiosity bridges', () => {
   const base = {
     type: 'Tarot',
