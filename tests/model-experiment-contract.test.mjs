@@ -7,6 +7,7 @@ import {
   deepSeekPricingWindow,
   estimatedModelCostMicros,
   freePreviewPayload,
+  generateFreeTeaserHtml,
   normalizedModelUsage,
 } from '../lib/legacy-worker.mjs';
 
@@ -86,6 +87,19 @@ test('free preview exposes privacy-safe experiment attribution without raw model
   assert.ok(!('prompt' in payload));
 });
 
+test('a served answer with a failed tone contract is classified as degraded', async () => {
+  const fields = {
+    question: 'was fühlt lena für mich?', lang: 'de', readingId: 'experiment_tone_degraded',
+    type: 'Three Card Tarot', tool: '/pages/free-tarot-reading', spread: 'Three Card',
+    context: 'Past: Ace of Cups. Present: Four of Cups. Future: Two of Wands reversed.',
+    signals: 'Past: Ace of Cups Upright; Present: Four of Cups Upright; Future: Two of Wands Reversed',
+    cards: 'Ace of Cups, Four of Cups, Two of Wands',
+  };
+  await generateFreeTeaserHtml(fields, {});
+  assert.equal(fields.freePreviewAuditStatus, 'degraded');
+  assert.ok(fields.freePreviewAuditReason);
+});
+
 test('runtime and Shopify webhook preserve model experiment attribution', async () => {
   const [worker, queue] = await Promise.all([
     readFile(workerPath, 'utf8'),
@@ -98,6 +112,7 @@ test('runtime and Shopify webhook preserve model experiment attribution', async 
   assert.match(worker, /eventName:\s*"reading_model_experiment_assigned"/);
   assert.match(worker, /generationContractVersion:\s*context\.promptVersion/);
   assert.match(worker, /generation_contract_version:\s*fields\.freePreviewPromptVersion/);
+  assert.match(worker, /audit_reason:\s*fields\.freePreviewAuditReason/);
   assert.doesNotMatch(worker, /metadata:\s*\{[\s\S]{0,900}promptVersion:\s*context\.promptVersion/);
   assert.match(worker, /if \(fields\.experimentKey === FREE_PREVIEW_MODEL_EXPERIMENT_KEY\)/);
   assert.match(worker, /freePreviewServedModel:\s*replay\.servedModel/);

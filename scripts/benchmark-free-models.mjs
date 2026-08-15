@@ -1,13 +1,19 @@
+import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { freeTeaserAudit, generateFreeTeaserHtml } from '../lib/legacy-worker.mjs';
+import { freeTeaserAudit } from '../lib/legacy-worker.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const outputDir = resolve(here, '..', 'analysis');
-const directKey = String(process.env.DEEPSEEK_DIRECT_API_KEY || process.env.DEEPSEEK_API_KEY || '').trim();
-if (!directKey) throw new Error('A DeepSeek API key is required for the benchmark.');
+const controlDeployment = String(process.env.CONTROL_DEPLOYMENT || '').trim();
+const challengerDeployment = String(process.env.CHALLENGER_DEPLOYMENT || '').trim();
+const vercelScope = String(process.env.VERCEL_SCOPE || 'gokimedias-projects').trim();
+const runId = String(Date.now());
+if (!controlDeployment || !challengerDeployment) {
+  throw new Error('CONTROL_DEPLOYMENT and CHALLENGER_DEPLOYMENT are required.');
+}
 
 const base = {
   type: 'Three Card Tarot',
@@ -107,8 +113,7 @@ function benchmarkFields(fixture, variant) {
     lang: fixture.lang,
     locale: fixture.locale,
     readingId: `benchmark_${fixture.id}_${variant}`,
-    experimentKey: 'free_answer_model_v1',
-    experimentVariant: variant,
+    visitorId: `benchmark_${runId}_${fixture.id}_${variant}`,
   };
 }
 
@@ -125,22 +130,27 @@ function htmlToText(html) {
     .trim();
 }
 
-const usageEvents = [];
-const env = {
-  DEEPSEEK_DIRECT_API_KEY: directKey,
-  FREE_PREVIEW_MODEL_TIMEOUT_MS: '30000',
-  FREE_AI_DAILY_BUDGET_USD: '50',
-  AI_BUDGETS: {
-    async claim() { return { allowed: true }; },
-    async settle() { return { allowed: true }; },
-  },
-  AI_USAGE: {
-    async record(event) {
-      usageEvents.push(structuredClone(event));
-      return `benchmark-${usageEvents.length}`;
-    },
-  },
-};
+function invokeDeployment(deployment, fields) {
+  const vercelScript = resolve(process.env.APPDATA || '', 'npm', 'vercel.ps1');
+  const child = spawnSync('powershell.exe', [
+    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', vercelScript,
+    'curl', '/free-reading', '--deployment', deployment, '--scope', vercelScope,
+    '--yes', '--no-color', '--', '--silent', '--show-error', '--request', 'POST',
+    '--header', 'Origin: https://deckaura.com', '--header', 'Content-Type: application/json',
+    '--data-raw', JSON.stringify(fields),
+  ], {
+    cwd: resolve(here, '..'),
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: 45_000,
+  });
+  if (child.error) throw child.error;
+  if (child.status !== 0) throw new Error(String(child.stderr || child.stdout || `vercel curl exited ${child.status}`).trim().slice(0, 500));
+  const raw = String(child.stdout || '').trim();
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart < 0) throw new Error(`No JSON response: ${raw.slice(0, 300)}`);
+  return JSON.parse(raw.slice(jsonStart));
+}
 
 const startedAt = new Date().toISOString();
 const results = [];
@@ -152,15 +162,18 @@ for (let fixtureIndex = 0; fixtureIndex < fixtures.length; fixtureIndex += 1) {
     const start = performance.now();
     let html = '';
     let error = '';
+    let data = {};
     try {
-      html = await generateFreeTeaserHtml(fields, env);
+      const deployment = variant === 'pro_full' ? challengerDeployment : controlDeployment;
+      data = invokeDeployment(deployment, fields);
+      html = String(data.teaser || '');
+      if (!html) error = String(data.reason || data.error || 'no teaser').slice(0, 240);
     } catch (caught) {
       error = String(caught?.code || caught?.message || caught).slice(0, 240);
     }
     const latencyMs = Math.round(performance.now() - start);
     const plainText = htmlToText(html);
     const audit = plainText ? freeTeaserAudit(plainText, fields, 58) : { ok: false, reason: error || 'no output', wordCount: 0 };
-    const calls = usageEvents.filter((event) => event?.metadata?.readingId === fields.readingId);
     results.push({
       fixtureId: fixture.id,
       lang: fixture.lang,
@@ -169,21 +182,15 @@ for (let fixtureIndex = 0; fixtureIndex < fixtures.length; fixtureIndex += 1) {
       orientations: fixture.orientations,
       variant,
       plannedModel: variant === 'pro_full' ? 'deepseek-v4-pro' : 'deepseek-v4-flash',
-      servedModel: fields.freePreviewServedModel || '',
-      servedSource: fields.freePreviewServedSource || '',
-      auditStatus: fields.freePreviewAuditStatus || '',
-      promptVersion: fields.freePreviewPromptVersion || '',
+      servedModel: String(data.servedModel || (variant === 'flash_control' && html ? 'deepseek-v4-flash' : '')),
+      servedSource: String(data.servedSource || ''),
+      auditStatus: String(data.auditStatus || ''),
+      promptVersion: String(data.promptVersion || ''),
+      experimentKey: String(data.experimentKey || ''),
+      experimentVariant: String(data.experimentVariant || ''),
       output: plainText,
       audit,
       latencyMs,
-      usage: {
-        calls: calls.length,
-        inputTokens: calls.reduce((sum, event) => sum + Number(event.inputTokens || 0), 0),
-        outputTokens: calls.reduce((sum, event) => sum + Number(event.outputTokens || 0), 0),
-        cachedInputTokens: calls.reduce((sum, event) => sum + Number(event.cachedInputTokens || 0), 0),
-        costMicros: calls.reduce((sum, event) => sum + Number(event.costMicros || 0), 0),
-        latencyMs: calls.reduce((sum, event) => sum + Number(event.latencyMs || 0), 0),
-      },
       error,
     });
     process.stdout.write(`benchmark ${results.length}/${fixtures.length * 2}: ${fixture.id} ${variant} ${audit.ok ? 'pass' : 'fail'}\n`);
@@ -228,7 +235,6 @@ const summary = Object.fromEntries(['flash_control', 'pro_full'].map((variant) =
     answers: rows.length,
     technicalPasses: rows.filter((row) => row.audit.ok).length,
     deterministicFallbacks: rows.filter((row) => row.servedModel === 'deterministic').length,
-    totalCostUsd: rows.reduce((sum, row) => sum + row.usage.costMicros, 0) / 1_000_000,
     meanLatencyMs: Math.round(rows.reduce((sum, row) => sum + row.latencyMs, 0) / rows.length),
   }];
 }));
