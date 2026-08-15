@@ -104,7 +104,339 @@ test('a customer-supplied private-state boundary stays relevant without becoming
   ]) {
     const claimedAudit = freeTeaserAudit(`${bounded} ${claim}`, fields, 58);
     assert.equal(claimedAudit.ok, false, claim);
-    assert.equal(claimedAudit.reason, 'used irrelevant private-state boilerplate for this question', claim);
+    assert.equal(claimedAudit.reason, 'assigned an unsupported private state to a named person', claim);
+  }
+
+  const directFeelingsQuestion = {
+    ...fields,
+    question: 'What does Jordan feel about me?',
+    focus: 'Love and relationships',
+  };
+  const directFallback = conciseDeterministicFreeTeaser(directFeelingsQuestion, 'en');
+  for (const claim of [
+    "Jordan's private feelings are love and longing.",
+    "Jordan's private thoughts are that they love you.",
+    'The private feelings of Jordan are love and longing.',
+    "They are love and longing, although Jordan's private feelings cannot be known.",
+    "It is love and longing, but Jordan's private feelings cannot be verified.",
+    "Jordan's private feelings cannot be known. They are love and longing.",
+    "They are affection and devotion, although Jordan's private feelings cannot be known.",
+    "They are tenderness and hope, although Jordan's private feelings remain unknown.",
+    "Those feelings carry affection and devotion, although Jordan's private feelings cannot be known.",
+    "Jordan's private feelings remain unknown. Those feelings reveal tenderness and hope.",
+    "They seem full of affection, although Jordan's private feelings cannot be known.",
+    "Jordan's private feelings remain unknown. That feeling reveals affection and devotion.",
+    "Jordan's private feelings remain unknown. His feeling carries tenderness and hope.",
+  ]) {
+    assert.equal(
+      freeTeaserAudit(`${directFallback} ${claim}`, directFeelingsQuestion, 58).reason,
+      'assigned an unsupported private state to a named person',
+      claim,
+    );
+  }
+  for (const safeBoundary of [
+    "Jordan's private feelings cannot be known from these cards.",
+    "We cannot know Jordan's private feelings from these cards.",
+    "Do not assume Jordan's private feelings; focus on observable behavior.",
+    "It is impossible to know whether Jordan's feelings are love.",
+  ]) {
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(safeBoundary, directFeelingsQuestion), false, safeBoundary);
+  }
+
+  const portugueseSingularFields = {
+    ...fields,
+    question: 'O que meu namorado Carlos sente por mim?',
+    focus: 'Amor e relacionamentos',
+    lang: 'pt',
+    locale: 'pt-BR',
+  };
+  const portugueseSingularFallback = conciseDeterministicFreeTeaser(portugueseSingularFields, 'pt');
+  const portugueseSingularAudit = freeTeaserAudit(
+    `${portugueseSingularFallback} Os sentimentos privados de Carlos são desconhecidos. Ele mostra carinho e devoção.`,
+    portugueseSingularFields,
+    58,
+  );
+  assert.equal(portugueseSingularAudit.ok, false);
+  assert.equal(portugueseSingularAudit.reason, 'assigned an unsupported private state to a named person');
+
+  const relationshipLabelMatrix = [
+    {
+      fields: { ...fields, question: 'What does my boyfriend Jordan feel about me?', lang: 'en' },
+      unsafe: 'His private feelings remain unknown. He shows affection and devotion.',
+      safe: 'His private feelings remain unknown. The cards describe two observable patterns.',
+    },
+    {
+      fields: { ...fields, question: 'Erkek arkadaşım Ali benim hakkımda ne hissediyor?', lang: 'tr', locale: 'tr-TR' },
+      unsafe: 'Onun özel duyguları bilinemez. O şefkat ve bağlılık gösterir.',
+      safe: 'Onun özel duyguları bilinemez. Kartlar iki gözlemlenebilir örüntüyü gösterir.',
+    },
+    {
+      fields: { ...fields, question: '¿Qué siente mi novio Carlos por mí?', lang: 'es', locale: 'es-ES' },
+      unsafe: 'Sus sentimientos privados son desconocidos. Él muestra cariño y devoción.',
+      safe: 'Sus sentimientos privados son desconocidos. Las cartas describen dos patrones observables.',
+    },
+    {
+      fields: { ...fields, question: 'O que meu namorado Carlos sente por mim?', lang: 'pt', locale: 'pt-BR' },
+      unsafe: 'Seus sentimentos privados são desconhecidos. Ele mostra carinho e devoção.',
+      safe: 'Seus sentimentos privados são desconhecidos. As cartas descrevem dois padrões observáveis.',
+    },
+    {
+      fields: { ...fields, question: 'Was fühlt mein Freund Lukas für mich?', lang: 'de', locale: 'de-DE' },
+      unsafe: 'Seine privaten Gefühle bleiben unbekannt. Er zeigt Zuneigung und Hingabe.',
+      safe: 'Seine privaten Gefühle bleiben unbekannt. Die Karten beschreiben zwei beobachtbare Muster.',
+    },
+  ];
+  for (const fixture of relationshipLabelMatrix) {
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.unsafe, fixture.fields), true, fixture.unsafe);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.safe, fixture.fields), false, fixture.safe);
+  }
+  const germanRelationshipFixture = relationshipLabelMatrix.at(-1);
+  const germanRelationshipFallback = conciseDeterministicFreeTeaser(germanRelationshipFixture.fields, 'de');
+  assert.equal(
+    freeTeaserAudit(`${germanRelationshipFallback} ${germanRelationshipFixture.unsafe}`, germanRelationshipFixture.fields, 58).reason,
+    'assigned an unsupported private state to a named person',
+  );
+  for (const fixture of [
+    {
+      fields: relationshipLabelMatrix[1].fields,
+      lang: 'tr',
+      unsafe: "Ali'nin özel duyguları bilinemez. Şu duygu şefkat ve bağlılık gösterir.",
+    },
+    {
+      fields: germanRelationshipFixture.fields,
+      lang: 'de',
+      unsafe: 'Lukas’ private Gefühle bleiben unbekannt. Dieser Gedanke offenbart Zuneigung und Hingabe.',
+    },
+  ]) {
+    const fallback = conciseDeterministicFreeTeaser(fixture.fields, fixture.lang);
+    assert.equal(
+      freeTeaserAudit(`${fallback} ${fixture.unsafe}`, fixture.fields, 58).reason,
+      'assigned an unsupported private state to a named person',
+      fixture.unsafe,
+    );
+  }
+
+  const loveFocusOnly = {
+    ...fields,
+    question: 'What is the best way to communicate with Jordan?',
+    focus: 'Love and relationships',
+  };
+  assert.equal(
+    freeTeaserAssignsUnsupportedStateToName("Jordan's private feelings are love and longing.", loveFocusOnly),
+    true,
+  );
+
+  const nominalMatrix = [
+    {
+      fields: { ...fields, question: 'What does Jordan feel about me?', focus: 'Love and relationships', lang: 'en' },
+      unsafe: "Jordan's feelings are love and longing.",
+      contradictory: [
+        "Jordan's private feelings cannot be known and are love and longing.",
+        "Jordan's private feelings cannot be known, but are love and longing.",
+      ],
+      reverse: "They are love and longing, although Jordan's private feelings cannot be known.",
+      sentenceContinuation: "Jordan's private feelings cannot be known. They are love and longing.",
+      substantiveReverse: "They are affection and devotion, although Jordan's private feelings cannot be known.",
+      substantiveContinuation: "Jordan's private feelings remain unknown. They are tenderness and hope.",
+      structuralUnsafe: [
+        "Those feelings carry affection and devotion, although Jordan's private feelings cannot be known.",
+        "Jordan's private feelings remain unknown. Those feelings reveal tenderness and hope.",
+        "They seem full of affection, although Jordan's private feelings cannot be known.",
+      ],
+      singularUnsafe: "He shows affection and devotion, although Jordan's private feelings cannot be known.",
+      demonstrativeUnsafe: "That feeling reveals affection and devotion, although Jordan's private feelings cannot be known.",
+      possessiveSingularUnsafe: "His feeling carries tenderness and hope, while Jordan's private feelings remain unknown.",
+      safeAnaphora: "They are unknown, while Jordan's private feelings remain unknown.",
+      safeExplicitAnaphora: "Those feelings cannot be known, while Jordan's private feelings remain unknown.",
+      demonstrativeSafeEpistemic: "That feeling cannot be known, while Jordan's private feelings remain unknown.",
+      demonstrativeCardControl: "That card describes two observable patterns, while Jordan's private feelings remain unknown.",
+      singularSafeEpistemic: "His feelings cannot be known, while Jordan's private feelings remain unknown.",
+      neutralAnaphora: "They are the cards in this spread, although Jordan's private feelings remain unknown.",
+      neutralExplicitAnaphora: "Those feelings are not evidence from these cards, while Jordan's private feelings remain unknown.",
+      ambiguousAction: "They describe two observable patterns, while Jordan's private feelings remain unknown.",
+      neutralCardAction: "The cards describe two observable patterns, while Jordan's private feelings remain unknown.",
+      safe: [
+        "Jordan's private feelings remain unknown.",
+        "We cannot know Jordan's private feelings from these cards.",
+        "It is impossible to know whether Jordan's feelings are love.",
+      ],
+    },
+    {
+      fields: { ...fields, question: '¿Qué siente Ana por mí?', focus: 'Amor y relaciones', lang: 'es', locale: 'es-ES' },
+      unsafe: 'Los sentimientos de Ana son amor y deseo.',
+      contradictory: [
+        'Los sentimientos privados de Ana no se pueden saber y son amor y deseo.',
+        'Los sentimientos privados de Ana son desconocidos, pero son amor y deseo.',
+      ],
+      reverse: 'Son amor y deseo, aunque los sentimientos privados de Ana son desconocidos.',
+      sentenceContinuation: 'Los sentimientos privados de Ana son desconocidos. Son amor y deseo.',
+      substantiveReverse: 'Ellos son cariño y devoción, aunque los sentimientos privados de Ana son desconocidos.',
+      substantiveContinuation: 'Los sentimientos privados de Ana son desconocidos. Ellos son ternura y esperanza.',
+      structuralUnsafe: [
+        'Esos sentimientos contienen cariño y devoción, aunque los sentimientos privados de Ana son desconocidos.',
+        'Los sentimientos privados de Ana son desconocidos. Esos sentimientos revelan ternura y esperanza.',
+        'Ellos parecen llenos de cariño, aunque los sentimientos privados de Ana son desconocidos.',
+      ],
+      singularUnsafe: 'Ella muestra cariño y devoción, aunque los sentimientos privados de Ana son desconocidos.',
+      demonstrativeUnsafe: 'Este sentimiento revela cariño y devoción, aunque los sentimientos privados de Ana son desconocidos.',
+      possessiveSingularUnsafe: 'Su sentimiento revela ternura y esperanza, mientras los sentimientos privados de Ana son desconocidos.',
+      safeAnaphora: 'Ellos son desconocidos, mientras los sentimientos privados de Ana son desconocidos.',
+      safeExplicitAnaphora: 'Esos sentimientos no se pueden conocer, mientras los sentimientos privados de Ana son desconocidos.',
+      demonstrativeSafeEpistemic: 'Este sentimiento es desconocido, mientras los sentimientos privados de Ana son desconocidos.',
+      demonstrativeCardControl: 'Esta carta describe dos patrones observables, mientras los sentimientos privados de Ana son desconocidos.',
+      singularSafeEpistemic: 'Sus sentimientos no se pueden conocer, mientras los sentimientos privados de Ana son desconocidos.',
+      neutralAnaphora: 'Ellas son las cartas de esta tirada, aunque los sentimientos privados de Ana son desconocidos.',
+      neutralExplicitAnaphora: 'Esos sentimientos no son evidencia de estas cartas, mientras los sentimientos privados de Ana son desconocidos.',
+      ambiguousAction: 'Ellas describen dos patrones observables, mientras los sentimientos privados de Ana son desconocidos.',
+      neutralCardAction: 'Las cartas describen dos patrones observables, mientras los sentimientos privados de Ana son desconocidos.',
+      safe: [
+        'No podemos saber los sentimientos privados de Ana.',
+        'No podemos saber los sentimientos privados de Ana por estas cartas.',
+        'No asumas los sentimientos privados de Ana; céntrate en la conducta observable.',
+        'Es imposible saber si los sentimientos de Ana son amor.',
+      ],
+    },
+    {
+      fields: { ...fields, question: 'Ali benim hakkımda ne hissediyor?', focus: 'Aşk ve ilişkiler', lang: 'tr', locale: 'tr-TR' },
+      unsafe: "Ali'nin duyguları aşk ve özlemdir.",
+      contradictory: [
+        "Ali'nin özel duyguları bilinemez ve aşktır.",
+        "Ali'nin özel duyguları bilinemez ama aşktır.",
+      ],
+      reverse: "Onlar aşk ve özlemdir ama Ali'nin özel duyguları bilinemez.",
+      sentenceContinuation: "Ali'nin özel duyguları bilinemez. Onlar aşk ve özlemdir.",
+      substantiveReverse: "Onlar şefkat ve bağlılıktır ama Ali'nin özel duyguları bilinemez.",
+      substantiveContinuation: "Ali'nin özel duyguları bilinemez. Onlar şefkat ve umuttur.",
+      structuralUnsafe: [
+        "Bu duygular şefkat ve bağlılık taşır ama Ali'nin özel duyguları bilinemez.",
+        "Ali'nin özel duyguları bilinemez. Bu duygular şefkat ve umut gösterir.",
+        "Onlar şefkat dolu görünüyor ama Ali'nin özel duyguları bilinemez.",
+      ],
+      singularUnsafe: "O şefkat ve bağlılık gösterir ama Ali'nin özel duyguları bilinemez.",
+      demonstrativeUnsafe: "Bu duygu şefkat ve bağlılık gösterir ama Ali'nin özel duyguları bilinemez.",
+      possessiveSingularUnsafe: "Onun duygusu şefkat ve umut gösterir ama Ali'nin özel duyguları bilinemez.",
+      safeAnaphora: "Onlar bilinmiyor ama Ali'nin özel duyguları bilinemez.",
+      safeExplicitAnaphora: "Bu duygular bilinemez ama Ali'nin özel duyguları bilinemez.",
+      demonstrativeSafeEpistemic: "Bu duygu bilinemez ama Ali'nin özel duyguları bilinemez.",
+      demonstrativeCardControl: "Bu kart iki gözlemlenebilir örüntüyü gösterir ama Ali'nin özel duyguları bilinemez.",
+      morphologyUnsafe: "Şu duygu şefkat ve bağlılık gösterir ama Ali'nin özel duyguları bilinemez.",
+      morphologySafeEpistemic: "Şu duygu bilinemez ama Ali'nin özel duyguları bilinemez.",
+      morphologyCardControl: "Şu kart iki gözlemlenebilir örüntüyü gösterir ama Ali'nin özel duyguları bilinemez.",
+      singularSafeEpistemic: "Onun duyguları bilinemez ama Ali'nin özel duyguları bilinemez.",
+      neutralAnaphora: "Bunlar bu açılımdaki kartlardır ama Ali'nin özel duyguları bilinemez.",
+      neutralExplicitAnaphora: "Bu duygular bu kartlardan kanıt değildir ama Ali'nin özel duyguları bilinemez.",
+      ambiguousAction: "Bunlar iki gözlemlenebilir örüntüyü gösterir ama Ali'nin özel duyguları bilinemez.",
+      neutralCardAction: "Kartlar iki gözlemlenebilir örüntüyü gösterir ama Ali'nin özel duyguları bilinemez.",
+      safe: [
+        "Ali'nin özel duygularını varsayma.",
+        "Ali'nin özel duyguları bu kartlardan bilinemez.",
+        "Ali'nin duygularının aşk olup olmadığını bilmek imkânsızdır.",
+      ],
+    },
+    {
+      fields: { ...fields, question: 'O que Ana sente por mim?', focus: 'Amor e relacionamentos', lang: 'pt', locale: 'pt-BR' },
+      unsafe: 'Os sentimentos de Ana são amor e desejo.',
+      contradictory: [
+        'Os sentimentos privados de Ana não se podem saber e são amor e desejo.',
+        'Os sentimentos privados de Ana são desconhecidos, mas são amor e desejo.',
+      ],
+      reverse: 'São amor e desejo, mas os sentimentos privados de Ana são desconhecidos.',
+      sentenceContinuation: 'Os sentimentos privados de Ana são desconhecidos. São amor e desejo.',
+      substantiveReverse: 'Eles são carinho e devoção, mas os sentimentos privados de Ana são desconhecidos.',
+      substantiveContinuation: 'Os sentimentos privados de Ana são desconhecidos. Eles são ternura e esperança.',
+      structuralUnsafe: [
+        'Esses sentimentos carregam carinho e devoção, mas os sentimentos privados de Ana são desconhecidos.',
+        'Os sentimentos privados de Ana são desconhecidos. Esses sentimentos revelam ternura e esperança.',
+        'Eles parecem cheios de carinho, mas os sentimentos privados de Ana são desconhecidos.',
+      ],
+      singularUnsafe: 'Ele mostra carinho e devoção, mas os sentimentos privados de Ana são desconhecidos.',
+      demonstrativeUnsafe: 'Esse sentimento revela carinho e devoção, mas os sentimentos privados de Ana são desconhecidos.',
+      possessiveSingularUnsafe: 'Seu sentimento revela ternura e esperança, mas os sentimentos privados de Ana são desconhecidos.',
+      safeAnaphora: 'Eles são desconhecidos, mas os sentimentos privados de Ana são desconhecidos.',
+      safeExplicitAnaphora: 'Esses sentimentos não podem ser conhecidos, mas os sentimentos privados de Ana são desconhecidos.',
+      demonstrativeSafeEpistemic: 'Esse sentimento é desconhecido, mas os sentimentos privados de Ana são desconhecidos.',
+      demonstrativeCardControl: 'Essa carta descreve dois padrões observáveis, mas os sentimentos privados de Ana são desconhecidos.',
+      singularSafeEpistemic: 'Seus sentimentos não podem ser conhecidos, mas os sentimentos privados de Ana são desconhecidos.',
+      neutralAnaphora: 'Elas são as cartas desta tiragem, mas os sentimentos privados de Ana são desconhecidos.',
+      neutralExplicitAnaphora: 'Esses sentimentos não são evidência destas cartas, mas os sentimentos privados de Ana são desconhecidos.',
+      ambiguousAction: 'Elas descrevem dois padrões observáveis, enquanto os sentimentos privados de Ana são desconhecidos.',
+      neutralCardAction: 'As cartas descrevem dois padrões observáveis, enquanto os sentimentos privados de Ana são desconhecidos.',
+      safe: [
+        'Os sentimentos privados de Ana são desconhecidos.',
+        'Não podemos saber os sentimentos privados de Ana por estas cartas.',
+        'Não presuma os sentimentos privados de Ana; concentre-se no comportamento observável.',
+        'É impossível saber se os sentimentos de Ana são amor.',
+      ],
+    },
+    {
+      fields: { ...fields, question: 'Was fühlt Lena für mich?', focus: 'Liebe und Beziehungen', lang: 'de', locale: 'de-DE' },
+      unsafe: 'Lenas Gefühle sind Liebe und Sehnsucht.',
+      contradictory: [
+        'Lenas private Gefühle sind unbekannt und zugleich Liebe.',
+        'Lenas private Gefühle sind unbekannt, aber sind Liebe und Sehnsucht.',
+      ],
+      reverse: 'Sie sind Liebe und Sehnsucht, aber Lenas private Gefühle bleiben unbekannt.',
+      sentenceContinuation: 'Lenas private Gefühle bleiben unbekannt. Sie sind Liebe und Sehnsucht.',
+      substantiveReverse: 'Sie sind Zuneigung und Hingabe, aber Lenas private Gefühle bleiben unbekannt.',
+      substantiveContinuation: 'Lenas private Gefühle bleiben unbekannt. Sie sind Zärtlichkeit und Hoffnung.',
+      structuralUnsafe: [
+        'Diese Gefühle tragen Zuneigung und Hingabe in sich, aber Lenas private Gefühle bleiben unbekannt.',
+        'Lenas private Gefühle bleiben unbekannt. Diese Gefühle offenbaren Zärtlichkeit und Hoffnung.',
+        'Sie scheinen voller Zuneigung zu sein, aber Lenas private Gefühle bleiben unbekannt.',
+      ],
+      singularUnsafe: 'Er zeigt Zuneigung und Hingabe, aber Lenas private Gefühle bleiben unbekannt.',
+      demonstrativeUnsafe: 'Dieses Gefühl offenbart Zuneigung und Hingabe, aber Lenas private Gefühle bleiben unbekannt.',
+      possessiveSingularUnsafe: 'Sein Gefühl offenbart Zärtlichkeit und Hoffnung, aber Lenas private Gefühle bleiben unbekannt.',
+      safeAnaphora: 'Sie sind unbekannt, aber Lenas private Gefühle bleiben unbekannt.',
+      safeExplicitAnaphora: 'Diese Gefühle bleiben unbekannt, aber Lenas private Gefühle bleiben unbekannt.',
+      demonstrativeSafeEpistemic: 'Dieses Gefühl bleibt unbekannt, aber Lenas private Gefühle bleiben unbekannt.',
+      demonstrativeCardControl: 'Diese Karte beschreibt zwei beobachtbare Muster, aber Lenas private Gefühle bleiben unbekannt.',
+      morphologyUnsafe: 'Dieser Gedanke offenbart Zuneigung und Hingabe, aber Lenas private Gefühle bleiben unbekannt.',
+      morphologySafeEpistemic: 'Dieser Gedanke bleibt unbekannt, aber Lenas private Gefühle bleiben unbekannt.',
+      morphologyCardControl: 'Diese Karte beschreibt zwei beobachtbare Muster, aber Lenas private Gefühle bleiben unbekannt.',
+      singularSafeEpistemic: 'Seine Gefühle bleiben unbekannt, aber Lenas private Gefühle bleiben unbekannt.',
+      neutralAnaphora: 'Sie sind die Karten in dieser Legung, aber Lenas private Gefühle bleiben unbekannt.',
+      neutralExplicitAnaphora: 'Diese Gefühle sind kein Beleg aus diesen Karten, aber Lenas private Gefühle bleiben unbekannt.',
+      ambiguousAction: 'Sie beschreiben zwei beobachtbare Muster, aber Lenas private Gefühle bleiben unbekannt.',
+      neutralCardAction: 'Die Karten beschreiben zwei beobachtbare Muster, aber Lenas private Gefühle bleiben unbekannt.',
+      safe: [
+        'Lenas private Gefühle bleiben unbekannt.',
+        'Es ist unmöglich zu wissen, ob Lenas Gefühle Liebe sind.',
+      ],
+    },
+  ];
+  for (const fixture of nominalMatrix) {
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.unsafe, fixture.fields), true, fixture.unsafe);
+    for (const contradictory of fixture.contradictory) {
+      assert.equal(freeTeaserAssignsUnsupportedStateToName(contradictory, fixture.fields), true, contradictory);
+    }
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.reverse, fixture.fields), true, fixture.reverse);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.sentenceContinuation, fixture.fields), true, fixture.sentenceContinuation);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.substantiveReverse, fixture.fields), true, fixture.substantiveReverse);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.substantiveContinuation, fixture.fields), true, fixture.substantiveContinuation);
+    for (const structuralUnsafe of fixture.structuralUnsafe) {
+      assert.equal(freeTeaserAssignsUnsupportedStateToName(structuralUnsafe, fixture.fields), true, structuralUnsafe);
+    }
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.singularUnsafe, fixture.fields), true, fixture.singularUnsafe);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.demonstrativeUnsafe, fixture.fields), true, fixture.demonstrativeUnsafe);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.possessiveSingularUnsafe, fixture.fields), true, fixture.possessiveSingularUnsafe);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.safeAnaphora, fixture.fields), false, fixture.safeAnaphora);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.safeExplicitAnaphora, fixture.fields), false, fixture.safeExplicitAnaphora);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.demonstrativeSafeEpistemic, fixture.fields), false, fixture.demonstrativeSafeEpistemic);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.demonstrativeCardControl, fixture.fields), false, fixture.demonstrativeCardControl);
+    if (fixture.morphologyUnsafe) {
+      assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.morphologyUnsafe, fixture.fields), true, fixture.morphologyUnsafe);
+      assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.morphologySafeEpistemic, fixture.fields), false, fixture.morphologySafeEpistemic);
+      assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.morphologyCardControl, fixture.fields), false, fixture.morphologyCardControl);
+    }
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.singularSafeEpistemic, fixture.fields), false, fixture.singularSafeEpistemic);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.neutralAnaphora, fixture.fields), false, fixture.neutralAnaphora);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.neutralExplicitAnaphora, fixture.fields), false, fixture.neutralExplicitAnaphora);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.ambiguousAction, fixture.fields), true, fixture.ambiguousAction);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(fixture.neutralCardAction, fixture.fields), false, fixture.neutralCardAction);
+    for (const safeBoundary of fixture.safe) {
+      assert.equal(freeTeaserAssignsUnsupportedStateToName(safeBoundary, fixture.fields), false, safeBoundary);
+    }
   }
 
   const unrelated = {
