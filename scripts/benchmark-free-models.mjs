@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 import { freeTeaserAudit } from '../lib/legacy-worker.mjs';
 
@@ -11,6 +13,7 @@ const controlDeployment = String(process.env.CONTROL_DEPLOYMENT || '').trim();
 const challengerDeployment = String(process.env.CHALLENGER_DEPLOYMENT || '').trim();
 const vercelScope = String(process.env.VERCEL_SCOPE || 'gokimedias-projects').trim();
 const runId = String(Date.now());
+const requestedLimit = Number.parseInt(String(process.env.BENCHMARK_LIMIT || ''), 10);
 if (!controlDeployment || !challengerDeployment) {
   throw new Error('CONTROL_DEPLOYMENT and CHALLENGER_DEPLOYMENT are required.');
 }
@@ -99,6 +102,7 @@ const fixtures = [
     orientations: ['Upright', 'Reversed', 'Upright'],
   },
 ];
+const runFixtures = fixtures.slice(0, Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, fixtures.length) : fixtures.length);
 
 const positions = ['Past', 'Present', 'Future'];
 function benchmarkFields(fixture, variant) {
@@ -130,14 +134,18 @@ function htmlToText(html) {
     .trim();
 }
 
+const requestDirectory = mkdtempSync(join(tmpdir(), 'deckaura-model-benchmark-'));
+let requestCounter = 0;
 function invokeDeployment(deployment, fields) {
   const vercelScript = resolve(process.env.APPDATA || '', 'npm', 'vercel.ps1');
+  const requestFile = join(requestDirectory, `request-${requestCounter += 1}.json`);
+  writeFileSync(requestFile, JSON.stringify(fields), 'utf8');
   const child = spawnSync('powershell.exe', [
     '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', vercelScript,
     'curl', '/free-reading', '--deployment', deployment, '--scope', vercelScope,
     '--yes', '--no-color', '--', '--silent', '--show-error', '--request', 'POST',
     '--header', 'Origin: https://deckaura.com', '--header', 'Content-Type: application/json',
-    '--data-raw', JSON.stringify(fields),
+    '--data-binary', `@${requestFile}`,
   ], {
     cwd: resolve(here, '..'),
     encoding: 'utf8',
@@ -154,8 +162,8 @@ function invokeDeployment(deployment, fields) {
 
 const startedAt = new Date().toISOString();
 const results = [];
-for (let fixtureIndex = 0; fixtureIndex < fixtures.length; fixtureIndex += 1) {
-  const fixture = fixtures[fixtureIndex];
+for (let fixtureIndex = 0; fixtureIndex < runFixtures.length; fixtureIndex += 1) {
+  const fixture = runFixtures[fixtureIndex];
   const order = fixtureIndex % 2 === 0 ? ['flash_control', 'pro_full'] : ['pro_full', 'flash_control'];
   for (const variant of order) {
     const fields = benchmarkFields(fixture, variant);
@@ -193,14 +201,14 @@ for (let fixtureIndex = 0; fixtureIndex < fixtures.length; fixtureIndex += 1) {
       latencyMs,
       error,
     });
-    process.stdout.write(`benchmark ${results.length}/${fixtures.length * 2}: ${fixture.id} ${variant} ${audit.ok ? 'pass' : 'fail'}\n`);
+    process.stdout.write(`benchmark ${results.length}/${runFixtures.length * 2}: ${fixture.id} ${variant} ${audit.ok ? 'pass' : 'fail'}\n`);
   }
 }
 
 const blind = [];
 const blindMap = [];
-for (let index = 0; index < fixtures.length; index += 1) {
-  const fixture = fixtures[index];
+for (let index = 0; index < runFixtures.length; index += 1) {
+  const fixture = runFixtures[index];
   const pair = results.filter((row) => row.fixtureId === fixture.id);
   const flash = pair.find((row) => row.variant === 'flash_control');
   const pro = pair.find((row) => row.variant === 'pro_full');
@@ -220,7 +228,7 @@ for (let index = 0; index < fixtures.length; index += 1) {
 const completedAt = new Date().toISOString();
 await mkdir(outputDir, { recursive: true });
 await Promise.all([
-  writeFile(resolve(outputDir, 'deepseek-model-benchmark-20260815.json'), `${JSON.stringify({ startedAt, completedAt, fixtures: fixtures.length, results }, null, 2)}\n`, 'utf8'),
+  writeFile(resolve(outputDir, 'deepseek-model-benchmark-20260815.json'), `${JSON.stringify({ startedAt, completedAt, fixtures: runFixtures.length, results }, null, 2)}\n`, 'utf8'),
   writeFile(resolve(outputDir, 'deepseek-model-benchmark-blind-20260815.json'), `${JSON.stringify({ startedAt, completedAt, rubric: {
     dimensions: ['directness', 'card_evidence', 'groundedness', 'language_naturalness', 'useful_next_step'],
     scale: '1-5 each',
@@ -238,4 +246,7 @@ const summary = Object.fromEntries(['flash_control', 'pro_full'].map((variant) =
     meanLatencyMs: Math.round(rows.reduce((sum, row) => sum + row.latencyMs, 0) / rows.length),
   }];
 }));
+if (requestDirectory.startsWith(tmpdir()) && requestDirectory.includes('deckaura-model-benchmark-')) {
+  rmSync(requestDirectory, { recursive: true, force: true });
+}
 process.stdout.write(`${JSON.stringify(summary)}\n`);

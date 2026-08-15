@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   detectQuestionLanguage,
+  freeTeaserAudit,
   freePreviewOutputTokenBudget,
   generateFreeTeaserHtml,
 } from '../lib/legacy-worker.mjs';
@@ -80,6 +81,35 @@ test('script-heavy free previews receive a larger bounded output budget', () => 
     isOtherLanguage: true,
     useThinking: false,
   }), 620);
+});
+
+test('a hard-audit-passing model answer gets a bounded empathy repair instead of a generic fallback', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const environment = modelEnvironment();
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const fields = {
+    lang: 'en', locale: 'en-US', question: 'Will Alex contact me again?',
+    type: 'Three Card Tarot', tool: '/pages/free-tarot-reading', spread: 'Three Card',
+    context: 'Past: Page of Cups upright. Present: The Hermit reversed. Future: Eight of Wands upright.',
+    signals: 'Past: Page of Cups Upright; Present: The Hermit Reversed; Future: Eight of Wands Upright',
+    cards: 'Page of Cups, The Hermit, Eight of Wands', readingId: 'tone_repair_contract',
+  };
+  const modelDraft = 'The spread leans toward possible renewed contact from Alex, but only if the current silence begins to change through observable action. Page of Cups upright in the Past shows an opening for a sincere message, while The Hermit reversed in the Present warns that isolation can keep the connection in the same loop. Eight of Wands upright in the Future brings speed, messages, and movement, so the cards agree that communication needs to become direct rather than imagined. Watch whether a clear message arrives and is followed by consistent effort before you invest more energy.';
+  const before = freeTeaserAudit(modelDraft, fields, 58);
+  assert.equal(before.ok, true, before.reason);
+  assert.equal(before.tone.ok, false);
+  assert.equal(before.tone.reason, "missed an emotionally present reflection of the customer's experience");
+
+  globalThis.fetch = async () => modelResponse(modelDraft, 'stop', 132);
+  const html = await generateFreeTeaserHtml(fields, environment);
+
+  assert.match(html, /It makes sense that this uncertainty has felt heavy\./);
+  assert.match(html, /Eight of Wands upright in the Future brings speed, messages, and movement/);
+  assert.equal(fields.freePreviewServedModel, 'deepseek-v4-flash');
+  assert.equal(fields.freePreviewServedSource, 'model_initial_tone_repair');
+  assert.equal(fields.freePreviewAuditStatus, 'passed');
 });
 
 test('Hindi free preview rewrites once after finish_reason length and keeps the locale contract', async (t) => {

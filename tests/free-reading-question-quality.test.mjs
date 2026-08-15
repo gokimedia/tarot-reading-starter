@@ -66,6 +66,22 @@ test('free writer plan completes the answer without manufacturing a sales gap', 
   assert.match(freeCuriosityQuestion(feelings, 'en'), /observable change|steadier communication|reciprocal effort|clearer boundaries/i);
 });
 
+test('career fallback treats a current-role paraphrase as the same second alternative', () => {
+  const fields = {
+    question: 'Should I accept the new job offer or stay where I am?',
+    lang: 'en', locale: 'en-US', type: 'Three Card Tarot',
+    tool: '/pages/free-tarot-reading', spread: 'Three Card',
+    context: 'Situation: Eight of Pentacles upright. Challenge: Two of Swords reversed. Advice: The Chariot upright.',
+    signals: 'Situation: Eight of Pentacles Upright; Challenge: Two of Swords Reversed; Advice: The Chariot Upright',
+    cards: 'Eight of Pentacles, Two of Swords, The Chariot',
+  };
+  const output = conciseDeterministicFreeTeaser(fields, 'en');
+  const audit = freeTeaserAudit(output, fields, 58);
+  assert.equal(audit.ok, true, `${audit.reason}: ${output}`);
+  assert.match(output, /accept the new job offer/i);
+  assert.match(output, /stay in your current role/i);
+});
+
 test('personal contact and explicit return use distinct curiosity bridges', () => {
   const base = {
     type: 'Tarot',
