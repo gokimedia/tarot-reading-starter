@@ -96,6 +96,9 @@ test('runtime and Shopify webhook preserve model experiment attribution', async 
   assert.match(worker, /const initialModel = plannedModel/);
   assert.match(worker, /attempt\(retryNudge, initialModel, false, "free-preview-quality-retry"\)/);
   assert.match(worker, /eventName:\s*"reading_model_experiment_assigned"/);
+  assert.match(worker, /generationContractVersion:\s*context\.promptVersion/);
+  assert.match(worker, /generation_contract_version:\s*fields\.freePreviewPromptVersion/);
+  assert.doesNotMatch(worker, /metadata:\s*\{[\s\S]{0,900}promptVersion:\s*context\.promptVersion/);
   assert.match(worker, /if \(fields\.experimentKey === FREE_PREVIEW_MODEL_EXPERIMENT_KEY\)/);
   assert.match(worker, /freePreviewServedModel:\s*replay\.servedModel/);
   assert.match(worker, /freePreviewServedSource:\s*replay\.servedSource/);
