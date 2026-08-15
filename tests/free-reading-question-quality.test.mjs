@@ -95,6 +95,17 @@ test('a customer-supplied private-state boundary stays relevant without becoming
   const boundedAudit = freeTeaserAudit(bounded, fields, 58);
   assert.equal(boundedAudit.ok, true, `${boundedAudit.reason}: ${bounded}`);
 
+  for (const claim of [
+    "Jordan's private feelings are love and longing.",
+    "Jordan's private thoughts are that they love you.",
+    'Jordan has private feelings of love for you.',
+    'Los sentimientos privados de Jordan son amor y deseo.',
+  ]) {
+    const claimedAudit = freeTeaserAudit(`${bounded} ${claim}`, fields, 58);
+    assert.equal(claimedAudit.ok, false, claim);
+    assert.equal(claimedAudit.reason, 'used irrelevant private-state boilerplate for this question', claim);
+  }
+
   const unrelated = {
     ...fields,
     question: 'How can I communicate more clearly in this connection?',
