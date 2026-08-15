@@ -1439,6 +1439,8 @@ function readingAttribution(item: JsonObject) {
   const toolPage = itemProperty(item, ['tool page']);
   const intentKind = itemProperty(item, ['intent kind']);
   const readingMode = itemProperty(item, ['reading mode']) || (intentKind === 'shared_tool' ? 'shared_tool' : '');
+  const validExperiment = experimentKey === 'reading_email_capture_v1' && ['after_result', 'after_limit'].includes(experimentVariant)
+    || experimentKey === 'free_answer_model_v1' && ['flash_control', 'pro_full'].includes(experimentVariant);
   const answersUsed = Math.max(0, Math.min(10, Number.parseInt(itemProperty(item, ['free answers used']), 10) || 0));
   const claimedPage = sourcePage || toolPage;
   const page = ['/pages/free-tarot-reading', '/pages/7-card-tarot-reading', '/pages/career-tarot-reading', '/pages/numerology-calculator', '/pages/yes-or-no-tarot', LOVE_TAROT_PAGE, DAILY_TAROT_PAGE, DAILY_HOROSCOPE_PAGE, BIRTH_CHART_PAGE, BIG_THREE_PAGE, ANGEL_NUMBER_PAGE, ZODIAC_COMPATIBILITY_PAGE, MOON_LUNAR_PAGE, ...Object.keys(SHARED_TOOL_PAGE_TOOL_TYPES)].includes(claimedPage)
@@ -1453,8 +1455,8 @@ function readingAttribution(item: JsonObject) {
     snapshotVersion,
     recommendedPackage: ['standard', 'medium', 'premium'].includes(recommendedPackage) ? recommendedPackage : '',
     selectedPackage: ['standard', 'medium', 'premium'].includes(selectedPackage) ? selectedPackage : '',
-    experimentKey: experimentKey === 'reading_email_capture_v1' ? experimentKey : '',
-    experimentVariant: ['after_result', 'after_limit'].includes(experimentVariant) ? experimentVariant : '',
+    experimentKey: validExperiment ? experimentKey : '',
+    experimentVariant: validExperiment ? experimentVariant : '',
     page,
     readingMode,
     answersUsed,
