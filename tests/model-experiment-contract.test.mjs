@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   assignFreePreviewModelExperiment,
+  collectReadingItems,
   deepSeekPricingWindow,
   estimatedModelCostMicros,
   freePreviewPayload,
@@ -13,6 +14,22 @@ import {
 
 const workerPath = new URL('../lib/legacy-worker.mjs', import.meta.url);
 const queuePath = new URL('../lib/reading-queue-processor.ts', import.meta.url);
+
+test('legacy and current promised-question properties survive Shopify order hydration', () => {
+  for (const propertyName of ['_Full Reading Question', '_Curiosity Question']) {
+    const [item] = collectReadingItems({
+      line_items: [{
+        sku: 'READING-MEDIUM',
+        quantity: 1,
+        properties: [
+          { name: 'Your question', value: 'What pattern should I understand?' },
+          { name: propertyName, value: 'What condition changes the direction?' },
+        ],
+      }],
+    });
+    assert.equal(item.fields.curiosityQuestion, 'What condition changes the direction?');
+  }
+});
 
 test('free model experiment is off by default and has a hard zero-percent kill switch', async () => {
   const identity = { visitorName: `visitor:${'a'.repeat(64)}` };
@@ -84,10 +101,15 @@ test('free preview exposes privacy-safe experiment attribution without raw model
   assert.equal(payload.servedModel, 'deepseek-v4-pro');
   assert.equal(payload.servedSource, 'model_initial');
   assert.equal(payload.auditStatus, 'passed');
+  assert.equal(payload.preview.html, payload.teaser);
+  assert.equal(payload.preview.lockLabel, '');
+  assert.deepEqual(payload.preview.reserved, {
+    futureInterpretation: false, verdict: false, decidingCondition: false, timing: false, nextStep: false,
+  });
   assert.ok(!('prompt' in payload));
 });
 
-test('a served answer with a failed tone contract is classified as degraded', async () => {
+test('deterministic reserved preview fallback clears the tone contract', async () => {
   const fields = {
     question: 'was fühlt lena für mich?', lang: 'de', readingId: 'experiment_tone_degraded',
     type: 'Three Card Tarot', tool: '/pages/free-tarot-reading', spread: 'Three Card',
@@ -96,8 +118,9 @@ test('a served answer with a failed tone contract is classified as degraded', as
     cards: 'Ace of Cups, Four of Cups, Two of Wands',
   };
   await generateFreeTeaserHtml(fields, {});
-  assert.equal(fields.freePreviewAuditStatus, 'degraded');
-  assert.ok(fields.freePreviewAuditReason);
+  assert.equal(fields.freePreviewAuditStatus, 'passed');
+  assert.equal(fields.freePreviewAuditReason, '');
+  assert.equal(fields.freePreviewServedModel, 'deterministic');
 });
 
 test('runtime and Shopify webhook preserve model experiment attribution', async () => {

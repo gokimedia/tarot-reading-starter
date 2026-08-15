@@ -81,35 +81,79 @@ test('script-heavy free previews receive a larger bounded output budget', () => 
     isOtherLanguage: true,
     useThinking: false,
   }), 620);
+  assert.equal(freePreviewOutputTokenBudget({
+    isFiveRune: false,
+    isSevenCard: false,
+    isThreeCard: true,
+    isOneCard: false,
+    isOtherLanguage: false,
+    useThinking: false,
+  }), 360);
+  assert.equal(freePreviewOutputTokenBudget({
+    isFiveRune: false,
+    isSevenCard: false,
+    isThreeCard: true,
+    isOneCard: false,
+    isOtherLanguage: true,
+    useThinking: false,
+  }), 620);
 });
 
-test('a hard-audit-passing model answer gets a bounded empathy repair instead of a generic fallback', async (t) => {
+test('canonical reserved previews use the audited deterministic fast path without model latency', async (t) => {
   const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
   const environment = modelEnvironment();
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
-  const fields = {
-    lang: 'en', locale: 'en-US', question: 'Will Alex contact me again?',
-    type: 'Three Card Tarot', tool: '/pages/free-tarot-reading', spread: 'Three Card',
-    context: 'Past: Page of Cups upright. Present: The Hermit reversed. Future: Eight of Wands upright.',
-    signals: 'Past: Page of Cups Upright; Present: The Hermit Reversed; Future: Eight of Wands Upright',
-    cards: 'Page of Cups, The Hermit, Eight of Wands', readingId: 'tone_repair_contract',
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    throw new Error('reserved fast path must not call a model provider');
   };
-  const modelDraft = 'The spread leans toward possible renewed contact from Alex, but only if the current silence begins to change through observable action. Page of Cups upright in the Past shows an opening for a sincere message, while The Hermit reversed in the Present warns that isolation can keep the connection in the same loop. Eight of Wands upright in the Future brings speed, messages, and movement, so the cards agree that communication needs to become direct rather than imagined. Watch whether a clear message arrives and is followed by consistent effort before you invest more energy.';
-  const before = freeTeaserAudit(modelDraft, fields, 58);
-  assert.equal(before.ok, true, before.reason);
-  assert.equal(before.tone.ok, false);
-  assert.equal(before.tone.reason, "missed an emotionally present reflection of the customer's experience");
+  const fixtures = [
+    {
+      question: 'Will Alex contact me again?',
+      spread: 'Three Card',
+      context: 'Past: Page of Cups upright. Present: The Hermit reversed. Future: Eight of Wands upright.',
+      signals: 'Past: Page of Cups Upright; Present: The Hermit Reversed; Future: Eight of Wands Upright',
+      cards: 'Page of Cups, The Hermit, Eight of Wands',
+      readingId: 'reserved_fast_path_ppf',
+      minWords: 180,
+      visiblePattern: /Future position holds Eight of Wands upright, but its interpretation stays sealed/i,
+    },
+    {
+      question: 'Should I take the offer?',
+      spread: 'Yes or No Tarot',
+      context: 'Three-card Yes or No Tarot.',
+      signals: 'Card 1: The Star Upright - YES; Card 2: The Moon Reversed - MAYBE; Card 3: The Sun Upright - YES; Overall Lean: YES',
+      cards: 'The Star, The Moon, The Sun',
+      readingId: 'reserved_fast_path_yesno',
+      minWords: 95,
+      visiblePattern: /full reading reveals the answer's direction, the exact deciding condition, timing, and the next step/i,
+    },
+  ];
 
-  globalThis.fetch = async () => modelResponse(modelDraft, 'stop', 132);
-  const html = await generateFreeTeaserHtml(fields, environment);
+  for (const fixture of fixtures) {
+    const fields = {
+      ...fixture,
+      lang: 'en',
+      locale: 'en-US',
+      type: 'Three Card Tarot',
+      tool: '/pages/free-tarot-reading',
+    };
+    const html = await generateFreeTeaserHtml(fields, environment);
+    const visible = html.replace(/<[^>]+>/g, ' ').replace(/&#0*39;|&apos;/gi, "'").replace(/&quot;/gi, '"').replace(/\s+/g, ' ').trim();
+    const audit = freeTeaserAudit(html, fields, fixture.minWords);
+    assert.equal(audit.ok, true, `${fixture.readingId}: ${audit.reason}: ${html}`);
+    assert.match(visible, fixture.visiblePattern);
+    assert.equal(fields.freePreviewServedModel, 'deterministic');
+    assert.equal(fields.freePreviewServedSource, 'deterministic_reserved_fast_path');
+    assert.equal(fields.freePreviewAuditStatus, 'passed');
+  }
 
-  assert.match(html, /It makes sense that this uncertainty has felt heavy\./);
-  assert.match(html, /Eight of Wands upright in the Future brings speed, messages, and movement/);
-  assert.equal(fields.freePreviewServedModel, 'deepseek-v4-flash');
-  assert.equal(fields.freePreviewServedSource, 'model_initial_tone_repair');
-  assert.equal(fields.freePreviewAuditStatus, 'passed');
+  assert.equal(modelCalls, 0);
+  assert.equal(environment.claims.length, 0, 'fast path must not claim model budget');
+  assert.equal(environment.settlements.length, 0, 'fast path must not settle model usage');
 });
 
 test('Hindi free preview rewrites once after finish_reason length and keeps the locale contract', async (t) => {

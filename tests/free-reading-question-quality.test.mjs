@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  TAROT_CARD_NAMES,
   conciseDeterministicFreeTeaser,
   freeCuriosityQuestion,
   freePreviewPayload,
@@ -13,6 +14,14 @@ import {
   publicFreePreviewDenial,
   readingQuestionQuality,
 } from '../lib/legacy-worker.mjs';
+
+const RESERVED_PREVIEW_AXIS_QUESTIONS = Object.freeze({
+  en: 'What pattern should I understand before changing careers?',
+  tr: 'Kariyer değiştirmeden önce hangi örüntüyü anlamalıyım?',
+  es: '¿Qué patrón debo entender antes de cambiar de carrera?',
+  de: 'Welches Muster sollte ich verstehen, bevor ich den Beruf wechsle?',
+  pt: 'Que padrão devo compreender antes de mudar de carreira?',
+});
 
 test('free-reading question quality rejects bare names and meaningless subjects', () => {
   for (const question of ['Jennifer', 'Ali?', 'selami selanbas', 'klmnopqr', 'helloooo']) {
@@ -43,7 +52,7 @@ test('subject-only guidance follows the question language', () => {
   assert.match(english.message, /not only a name or topic/i);
 });
 
-test('free writer plan completes the answer without manufacturing a sales gap', () => {
+test('Past Present Future preview reserves the verdict and ends with a concrete lock promise', () => {
   const fields = {
     question: 'Will Alex contact me again?',
     type: 'Tarot',
@@ -55,15 +64,250 @@ test('free writer plan completes the answer without manufacturing a sales gap', 
     lang: 'en',
   };
   const plan = freeWriterPlan(fields, 'en');
-  assert.match(plan.output_boundary, /complete ending|observable condition|grounded next step/i);
-  assert.doesNotMatch(plan.output_boundary, /final sentence must name|without resolving/i);
-  assert.match(plan.output_boundary, /Do not manufacture an unresolved mystery, sales gap/i);
+  assert.match(plan.output_boundary, /exact question once/i);
+  assert.match(plan.output_boundary, /leave the Future interpretation, verdict, deciding condition, timing and next step reserved/i);
   const fallback = conciseDeterministicFreeTeaser(fields, 'en');
-  assert.doesNotMatch(fallback, /deeper thread|leave open here|what they leave open|unresolved condition/i);
-  assert.match(fallback, /next decision|next move|next step|watch|clarify/i);
+  const audit = freeTeaserAudit(fallback, fields, 58);
+  assert.equal(audit.ok, true, `${audit.reason}: ${fallback}`);
+  assert.ok(audit.wordCount >= 180 && audit.wordCount <= 210);
+  assert.match(fallback, /Will Alex contact me again\?/);
+  assert.match(fallback, /Ace of Cups upright in the Past position/i);
+  assert.match(fallback, /Four of Cups upright in the Present position/i);
+  assert.match(fallback, /Future position holds Two of Wands reversed, but its interpretation stays sealed/i);
+  assert.match(fallback, /full reading reveals the Future card's meaning, the answer's direction, the exact deciding condition, timing, and the next step/i);
+  const structured = freePreviewPayload('token123', fallback, fields).preview;
+  assert.deepEqual(structured.reserved, {
+    futureInterpretation: true,
+    verdict: true,
+    decidingCondition: true,
+    timing: true,
+    nextStep: true,
+  });
+  assert.doesNotMatch(structured.html, /Two of Wands|answer's direction|deciding condition|next step/i);
+  assert.match(structured.lockLabel, /Future card's meaning/i);
   const feelings = { ...fields, question: 'What does Alex feel about me?' };
   assert.doesNotMatch(freeCuriosityQuestion(feelings, 'en'), /point open|leave open|deeper thread|unresolved/i);
   assert.match(freeCuriosityQuestion(feelings, 'en'), /observable change|steadier communication|reciprocal effort|clearer boundaries/i);
+});
+
+test('reserved fallback accepts safe card vocabulary and stays inside its word contract', () => {
+  const base = {
+    question: 'What pattern should I understand before changing careers?',
+    type: 'Tarot',
+    tool: '/pages/free-tarot-reading',
+    spread: 'three',
+    scope: '3-card Three Card draw for one focused question',
+    confidence: 'Symbolic tarot direction, not a factual prediction',
+    lang: 'en',
+  };
+  const cases = [
+    {
+      context: 'Spread: Three Card. Cards: Past: Two of Wands, Present: Nine of Wands, Future: Eight of Wands (Reversed).',
+      signals: 'Past: Two of Wands Upright; Present: Nine of Wands Upright; Future: Eight of Wands Reversed',
+      cards: 'Two of Wands, Nine of Wands, Eight of Wands',
+      visible: /Two of Wands upright in the Past position.*longer-range direction/i,
+      locked: /Future position holds Eight of Wands reversed, but its interpretation stays sealed/i,
+    },
+    {
+      context: 'Spread: Three Card. Cards: Past: The Emperor, Present: Justice, Future: The Star.',
+      signals: 'Past: The Emperor Upright; Present: Justice Upright; Future: The Star Upright',
+      cards: 'The Emperor, Justice, The Star',
+      visible: /The Emperor upright in the Past position/i,
+      locked: /Future position holds The Star upright, but its interpretation stays sealed/i,
+    },
+    {
+      context: 'Spread: Three Card. Cards: Past: The High Priestess, Present: Justice, Future: The Star.',
+      signals: 'Past: The High Priestess Upright; Present: Justice Upright; Future: The Star Upright',
+      cards: 'The High Priestess, Justice, The Star',
+      visible: /information still not visible/i,
+      locked: /Future position holds The Star upright, but its interpretation stays sealed/i,
+    },
+  ];
+  for (const fixture of cases) {
+    const fields = { ...base, ...fixture };
+    const fallback = conciseDeterministicFreeTeaser(fields, 'en');
+    const audit = freeTeaserAudit(fallback, fields, 58);
+    assert.equal(audit.ok, true, `${audit.reason}: ${fallback}`);
+    assert.ok(audit.wordCount >= 180 && audit.wordCount <= 210);
+    assert.match(fallback, fixture.visible);
+    assert.match(fallback, fixture.locked);
+  }
+});
+
+test('every tarot card, position, orientation, and supported locale has an audit-safe reserved fallback', () => {
+  const locales = Object.keys(RESERVED_PREVIEW_AXIS_QUESTIONS);
+  const positions = ['Past', 'Present', 'Future'];
+  const orientations = ['Upright', 'Reversed'];
+  let checked = 0;
+
+  for (const lang of locales) {
+    for (let positionIndex = 0; positionIndex < positions.length; positionIndex += 1) {
+      for (const cardName of TAROT_CARD_NAMES) {
+        for (const orientation of orientations) {
+          const anchors = ['Justice', 'The Hermit', 'The World', 'Temperance'].filter((name) => name !== cardName);
+          const cards = positionIndex === 0
+            ? [cardName, anchors[0], anchors[1]]
+            : positionIndex === 1
+              ? [anchors[0], cardName, anchors[1]]
+              : [anchors[0], anchors[1], cardName];
+          const cardOrientations = positions.map((_, index) => index === positionIndex ? orientation : 'Upright');
+          const fields = {
+            question: RESERVED_PREVIEW_AXIS_QUESTIONS[lang],
+            type: 'Tarot',
+            tool: '/pages/free-tarot-reading',
+            spread: 'three',
+            signals: positions.map((position, index) => `${position}: ${cards[index]} ${cardOrientations[index]}`).join('; '),
+            cards: cards.join(', '),
+            lang,
+          };
+          const fallback = conciseDeterministicFreeTeaser(fields, lang);
+          const audit = freeTeaserAudit(fallback, fields, 58);
+          const fixture = `${lang}/${positions[positionIndex]}/${cardName}/${orientation}`;
+
+          assert.equal(audit.ok, true, `${fixture}: ${audit.reason}: ${fallback}`);
+          assert.ok(audit.wordCount >= 180 && audit.wordCount <= 210, `${fixture}: ${audit.wordCount} words`);
+          assert.match(fallback, new RegExp(RESERVED_PREVIEW_AXIS_QUESTIONS[lang].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'u'), fixture);
+          assert.deepEqual(freePreviewPayload('axis-token', fallback, fields).preview.reserved, {
+            futureInterpretation: true,
+            verdict: true,
+            decidingCondition: true,
+            timing: true,
+            nextStep: true,
+          }, fixture);
+          checked += 1;
+        }
+      }
+    }
+  }
+
+  assert.equal(checked, TAROT_CARD_NAMES.length * positions.length * orientations.length * locales.length);
+});
+
+test('question language governs reserved runtime labels when the storefront locale is English', async () => {
+  const fixtures = [
+    {
+      lang: 'tr',
+      question: 'Kariyer değiştirmeden önce hangi örüntüyü anlamalıyım?',
+      focus: 'Kariyer değişimi',
+      visibleCards: /Değnek İkilisi \(Düz\).*Değnek Dokuzlusu \(Düz\)/u,
+      visiblePositions: /Geçmiş.*Şimdi/u,
+      lockedFuture: /Gelecek konumundaki Değnek Sekizlisi \(Ters\)/u,
+      lockLabel: /Tam okuma, Gelecek kartının anlamını/u,
+    },
+    {
+      lang: 'es',
+      question: '¿Qué patrón debo entender antes de cambiar de carrera?',
+      focus: 'Cambio de carrera',
+      visibleCards: /Dos de Bastos \(al derecho\).*Nueve de Bastos \(al derecho\)/u,
+      visiblePositions: /Pasado.*Presente/u,
+      lockedFuture: /posición Futuro contiene Ocho de Bastos \(invertida\)/u,
+      lockLabel: /lectura completa revela el significado de la carta del Futuro/u,
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const fields = {
+      visitorId: `runtime_cross_${fixture.lang}`,
+      readingId: `runtime_cross_${fixture.lang}`,
+      question: fixture.question,
+      focus: fixture.focus,
+      lang: fixture.lang,
+      locale: 'en-US',
+      requestedLocale: 'en-US',
+      country: fixture.lang === 'tr' ? 'TR' : 'ES',
+      currency: 'USD',
+      market: 'global',
+      type: 'Three Card Tarot',
+      tool: '/pages/free-tarot-reading',
+      spread: 'Three Card',
+      context: 'Past: Two of Wands upright. Present: Nine of Wands upright. Future: Eight of Wands reversed.',
+      signals: 'Past: Two of Wands Upright; Present: Nine of Wands Upright; Future: Eight of Wands Reversed',
+      cards: 'Two of Wands, Nine of Wands, Eight of Wands',
+      scope: '3-card Three Card draw for one focused question',
+      confidence: 'Symbolic tarot direction, not a factual prediction',
+    };
+    const fallback = conciseDeterministicFreeTeaser(fields, fixture.lang);
+    const fallbackAudit = freeTeaserAudit(fallback, fields, 58);
+    assert.equal(fallbackAudit.ok, true, `${fixture.lang}: ${fallbackAudit.reason}: ${fallback}`);
+    assert.match(fallback, fixture.visibleCards);
+    assert.match(fallback, fixture.visiblePositions);
+    assert.match(fallback, fixture.lockedFuture);
+    assert.doesNotMatch(fallback, /\b(?:upright|reversed|Past|Present)\b/u);
+
+    const html = await generateFreeTeaserHtml(fields, {});
+    const runtimeAudit = freeTeaserAudit(html, fields, 58);
+    assert.equal(runtimeAudit.ok, true, `${fixture.lang}: ${runtimeAudit.reason}: ${html}`);
+    const payload = freePreviewPayload('runtime-cross-token', html, fields);
+    assert.match(payload.preview.lockLabel, fixture.lockLabel);
+    assert.match(payload.teaser, fixture.visibleCards);
+    assert.doesNotMatch(payload.teaser, /\b(?:upright|reversed|Past|Present)\b/u);
+    assert.equal(payload.resolvedLanguage, fixture.lang);
+  }
+});
+
+test('three-card Yes or No reserves only the answer contract and never invents a Future position', () => {
+  const yesNo = {
+    question: 'Should I take the offer?', lang: 'en', locale: 'en-US',
+    type: 'Three Card Tarot', tool: '/pages/free-tarot-reading', spread: 'Yes or No Tarot',
+    signals: 'Card 1: The Star Upright · YES; Card 2: The Moon Reversed · MAYBE; Card 3: The Sun Upright · YES; Overall Lean: YES',
+    cards: 'The Star, The Moon, The Sun',
+  };
+  const plan = freeWriterPlan(yesNo, 'en');
+  assert.equal(plan.cards.length, 3);
+  assert.doesNotMatch(plan.output_boundary, /leave the Future interpretation/i);
+  assert.match(plan.output_boundary, /answer direction, deciding condition, timing and next step reserved/i);
+  assert.match(plan.output_boundary, /Do not invent Past, Present or Future positions/i);
+  const fallback = conciseDeterministicFreeTeaser(yesNo, 'en');
+  const audit = freeTeaserAudit(fallback, yesNo, 95);
+  assert.equal(audit.ok, true, `${audit.reason}: ${fallback}`);
+  assert.equal(audit.tone.ok, true, audit.tone.reason);
+  const payload = freePreviewPayload('token123', fallback, yesNo);
+  assert.deepEqual(payload.preview.reserved, {
+    futureInterpretation: false, verdict: true, decidingCondition: true, timing: true, nextStep: true,
+  });
+  assert.match(payload.preview.lockLabel, /answer's direction.*deciding condition.*timing.*next step/i);
+  assert.doesNotMatch(payload.preview.lockLabel, /Future card|Future interpretation/i);
+  assert.doesNotMatch(payload.preview.html, /answer's direction|deciding condition|timing|next step/i);
+  assert.equal((payload.teaser.match(/The full reading reveals/g) || []).length, 1);
+  assert.match(payload.teaser, /The Star upright.*Card 1/i);
+  assert.match(payload.teaser, /The Moon reversed.*Card 2/i);
+  assert.match(payload.teaser, /The Sun upright.*Card 3/i);
+  assert.doesNotMatch(payload.teaser, /Past position|Present position|Future position/i);
+
+  const generic = { ...yesNo, spread: 'Three Card Insight', signals: 'Card 1: The Star Upright; Card 2: The Moon Reversed; Card 3: The Sun Upright' };
+  const genericPayload = freePreviewPayload('token-generic', 'A complete generic preview.', generic);
+  assert.deepEqual(genericPayload.preview.reserved, {
+    futureInterpretation: false, verdict: false, decidingCondition: false, timing: false, nextStep: false,
+  });
+  assert.equal(genericPayload.preview.lockLabel, '');
+
+  const localized = {
+    question: 'Kariyerime odaklanmalı mıyım?', lang: 'tr', locale: 'tr-TR',
+    type: 'Üç Kart Tarot', tool: '/pages/free-tarot-reading', spread: 'Geçmiş Şimdi Gelecek',
+    signals: 'Geçmiş: Kılıç Uşağı Ters; Şimdi: Kader Çarkı Ters; Gelecek: Değnek Dokuzlusu Düz',
+  };
+  assert.deepEqual(freePreviewPayload('token456', conciseDeterministicFreeTeaser(localized, 'tr'), localized).preview.reserved, {
+    futureInterpretation: true, verdict: true, decidingCondition: true, timing: true, nextStep: true,
+  });
+});
+
+test('three-card Yes or No private-state recovery stays safe and bounded in every supported locale', () => {
+  const fixtures = [
+    { question: 'Does Alex love me?', lang: 'en', locale: 'en-US', type: 'Three Card Tarot', spread: 'Yes or No Tarot', signals: 'Card 1: The Star Upright; Card 2: The Moon Reversed; Card 3: The Sun Upright' },
+    { question: 'Alex beni seviyor mu?', lang: 'tr', locale: 'tr-TR', type: 'Üç Kart Tarot', spread: 'Evet veya Hayır Tarot', signals: 'Kart 1: Yıldız Düz; Kart 2: Ay Ters; Kart 3: Güneş Düz' },
+    { question: '¿Qué siente Ana por mí?', lang: 'es', locale: 'es-ES', type: 'Tarot de tres cartas', spread: 'Tarot Sí o No', signals: 'Carta 1: La Estrella Derecha; Carta 2: La Luna Invertida; Carta 3: El Sol Derecha' },
+    { question: 'Was fühlt Lena für mich?', lang: 'de', locale: 'de-DE', type: 'Drei-Karten-Tarot', spread: 'Ja oder Nein Tarot', signals: 'Karte 1: Der Stern Aufrecht; Karte 2: Der Mond Umgekehrt; Karte 3: Die Sonne Aufrecht' },
+    { question: 'O que Ana sente por mim?', lang: 'pt', locale: 'pt-BR', type: 'Tarô de três cartas', spread: 'Tarô Sim ou Não', signals: 'Carta 1: A Estrela Direita; Carta 2: A Lua Invertida; Carta 3: O Sol Direita' },
+  ];
+  for (const fields of fixtures) {
+    const fallback = conciseDeterministicFreeTeaser(fields, fields.lang);
+    const audit = freeTeaserAudit(fallback, fields, 95);
+    assert.equal(audit.ok, true, `${fields.lang}: ${audit.reason}: ${fallback}`);
+    assert.ok(audit.wordCount >= 95 && audit.wordCount <= 145, `${fields.lang}: ${audit.wordCount}`);
+    assert.deepEqual(freePreviewPayload(`token-${fields.lang}`, fallback, fields).preview.reserved, {
+      futureInterpretation: false, verdict: true, decidingCondition: true, timing: true, nextStep: true,
+    });
+  }
 });
 
 test('career fallback treats a current-role paraphrase as the same second alternative', () => {
