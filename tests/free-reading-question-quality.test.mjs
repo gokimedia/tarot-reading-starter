@@ -90,6 +90,7 @@ test('a customer-supplied private-state boundary stays relevant without becoming
     context: 'Past: The Moon upright. Present: Queen of Swords upright. Future: Six of Pentacles reversed.',
     signals: 'Past: The Moon Upright; Present: Queen of Swords Upright; Future: Six of Pentacles Reversed',
     cards: 'The Moon, Queen of Swords, Six of Pentacles',
+    focus: 'A decision or next step',
   };
   const bounded = conciseDeterministicFreeTeaser(fields, 'en');
   const boundedAudit = freeTeaserAudit(bounded, fields, 58);
