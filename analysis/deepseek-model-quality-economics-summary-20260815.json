@@ -1,0 +1,587 @@
+{
+  "generated_at": "2026-08-15T03:32:57.699968Z",
+  "data_as_of": "2026-08-15T03:14:00Z",
+  "score_rows": [
+    {
+      "fixture": "en_contact",
+      "variant": "pro_full",
+      "mean_score": 4.8,
+      "hard_fail": false,
+      "directness": 5,
+      "card_evidence": 5,
+      "groundedness": 4,
+      "language_naturalness": 5,
+      "useful_next_step": 5
+    },
+    {
+      "fixture": "en_contact",
+      "variant": "flash_control",
+      "mean_score": 4.4,
+      "hard_fail": false,
+      "directness": 3,
+      "card_evidence": 5,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 5
+    },
+    {
+      "fixture": "en_feelings",
+      "variant": "flash_control",
+      "mean_score": 4.4,
+      "hard_fail": false,
+      "directness": 4,
+      "card_evidence": 5,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "en_feelings",
+      "variant": "pro_full",
+      "mean_score": 4.8,
+      "hard_fail": false,
+      "directness": 5,
+      "card_evidence": 5,
+      "groundedness": 5,
+      "language_naturalness": 5,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "en_career",
+      "variant": "pro_full",
+      "mean_score": 4.2,
+      "hard_fail": true,
+      "directness": 4,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 5,
+      "useful_next_step": 5
+    },
+    {
+      "fixture": "en_career",
+      "variant": "flash_control",
+      "mean_score": 4.2,
+      "hard_fail": true,
+      "directness": 4,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 5,
+      "useful_next_step": 5
+    },
+    {
+      "fixture": "tr_contact",
+      "variant": "flash_control",
+      "mean_score": 3.4,
+      "hard_fail": true,
+      "directness": 3,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 3,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "tr_contact",
+      "variant": "pro_full",
+      "mean_score": 3.4,
+      "hard_fail": true,
+      "directness": 3,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 3,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "tr_feelings",
+      "variant": "pro_full",
+      "mean_score": 3.6,
+      "hard_fail": true,
+      "directness": 4,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 3,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "tr_feelings",
+      "variant": "flash_control",
+      "mean_score": 3.6,
+      "hard_fail": true,
+      "directness": 4,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 3,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "tr_decision",
+      "variant": "flash_control",
+      "mean_score": 3.6,
+      "hard_fail": false,
+      "directness": 3,
+      "card_evidence": 4,
+      "groundedness": 5,
+      "language_naturalness": 3,
+      "useful_next_step": 3
+    },
+    {
+      "fixture": "tr_decision",
+      "variant": "pro_full",
+      "mean_score": 3.6,
+      "hard_fail": false,
+      "directness": 3,
+      "card_evidence": 4,
+      "groundedness": 5,
+      "language_naturalness": 3,
+      "useful_next_step": 3
+    },
+    {
+      "fixture": "es_contact",
+      "variant": "pro_full",
+      "mean_score": 3.6,
+      "hard_fail": true,
+      "directness": 3,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "es_contact",
+      "variant": "flash_control",
+      "mean_score": 3.6,
+      "hard_fail": true,
+      "directness": 3,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "es_career",
+      "variant": "flash_control",
+      "mean_score": 3.8,
+      "hard_fail": false,
+      "directness": 3,
+      "card_evidence": 4,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 3
+    },
+    {
+      "fixture": "es_career",
+      "variant": "pro_full",
+      "mean_score": 4.8,
+      "hard_fail": false,
+      "directness": 5,
+      "card_evidence": 5,
+      "groundedness": 4,
+      "language_naturalness": 5,
+      "useful_next_step": 5
+    },
+    {
+      "fixture": "pt_feelings",
+      "variant": "pro_full",
+      "mean_score": 4.8,
+      "hard_fail": false,
+      "directness": 5,
+      "card_evidence": 5,
+      "groundedness": 5,
+      "language_naturalness": 5,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "pt_feelings",
+      "variant": "flash_control",
+      "mean_score": 3.8,
+      "hard_fail": false,
+      "directness": 3,
+      "card_evidence": 3,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "pt_decision",
+      "variant": "flash_control",
+      "mean_score": 4.6,
+      "hard_fail": false,
+      "directness": 5,
+      "card_evidence": 5,
+      "groundedness": 4,
+      "language_naturalness": 5,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "pt_decision",
+      "variant": "pro_full",
+      "mean_score": 3.6,
+      "hard_fail": true,
+      "directness": 3,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 4
+    },
+    {
+      "fixture": "de_contact",
+      "variant": "pro_full",
+      "mean_score": 3.2,
+      "hard_fail": true,
+      "directness": 2,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 3
+    },
+    {
+      "fixture": "de_contact",
+      "variant": "flash_control",
+      "mean_score": 3.2,
+      "hard_fail": true,
+      "directness": 2,
+      "card_evidence": 2,
+      "groundedness": 5,
+      "language_naturalness": 4,
+      "useful_next_step": 3
+    },
+    {
+      "fixture": "de_decision",
+      "variant": "flash_control",
+      "mean_score": 4.0,
+      "hard_fail": false,
+      "directness": 5,
+      "card_evidence": 4,
+      "groundedness": 3,
+      "language_naturalness": 5,
+      "useful_next_step": 3
+    },
+    {
+      "fixture": "de_decision",
+      "variant": "pro_full",
+      "mean_score": 4.6,
+      "hard_fail": false,
+      "directness": 5,
+      "card_evidence": 5,
+      "groundedness": 4,
+      "language_naturalness": 5,
+      "useful_next_step": 4
+    }
+  ],
+  "quality_summary": [
+    {
+      "variant": "flash_control",
+      "directness": 3.5,
+      "card_evidence": 3.3333333333333335,
+      "groundedness": 4.75,
+      "language_naturalness": 4.0,
+      "useful_next_step": 3.8333333333333335,
+      "mean_score": 3.8833333333333337,
+      "hard_fails": 5,
+      "wins": 1,
+      "ties": 6
+    },
+    {
+      "variant": "pro_full",
+      "directness": 3.9166666666666665,
+      "card_evidence": 3.4166666666666665,
+      "groundedness": 4.75,
+      "language_naturalness": 4.25,
+      "useful_next_step": 4.083333333333333,
+      "mean_score": 4.083333333333333,
+      "hard_fails": 6,
+      "wins": 5,
+      "ties": 6
+    }
+  ],
+  "winner_counts": {
+    "flash_control": 1,
+    "pro_full": 5,
+    "tie": 6
+  },
+  "technical_rows": [
+    {
+      "variant": "flash_control",
+      "answers": 12,
+      "technical_passes": 12,
+      "deterministic_fallbacks": 10,
+      "mean_endpoint_ms": 11910
+    },
+    {
+      "variant": "pro_full",
+      "answers": 12,
+      "technical_passes": 12,
+      "deterministic_fallbacks": 7,
+      "mean_endpoint_ms": 13040
+    }
+  ],
+  "benchmark_usage": [
+    {
+      "variant": "flash_control",
+      "model": "DeepSeek Flash",
+      "answers": 12,
+      "calls": 19,
+      "input_tokens": 31697,
+      "cached_input_tokens": 27520,
+      "uncached_input_tokens": 4177,
+      "output_tokens": 4250,
+      "legacy_cost_micros": 1861,
+      "avg_call_latency_ms": 4179.4,
+      "median_call_latency_ms": 3842.0,
+      "p95_call_latency_ms": 5860.8
+    },
+    {
+      "variant": "pro_full",
+      "model": "DeepSeek Pro",
+      "answers": 12,
+      "calls": 19,
+      "input_tokens": 31642,
+      "cached_input_tokens": 24832,
+      "uncached_input_tokens": 6810,
+      "output_tokens": 4397,
+      "legacy_cost_micros": 6887,
+      "avg_call_latency_ms": 4986.1,
+      "median_call_latency_ms": 4907.0,
+      "p95_call_latency_ms": 6485.5
+    }
+  ],
+  "pricing": {
+    "Legacy recomputed (15 Aug)": {
+      "flash_control": {
+        "cached": 0.0028,
+        "uncached": 0.14,
+        "output": 0.28
+      },
+      "pro_full": {
+        "cached": 0.003625,
+        "uncached": 0.435,
+        "output": 0.87
+      }
+    },
+    "16 Aug off-peak": {
+      "flash_control": {
+        "cached": 0.007,
+        "uncached": 0.22,
+        "output": 0.66
+      },
+      "pro_full": {
+        "cached": 0.022,
+        "uncached": 0.66,
+        "output": 1.98
+      }
+    },
+    "16 Aug peak": {
+      "flash_control": {
+        "cached": 0.014,
+        "uncached": 0.44,
+        "output": 1.32
+      },
+      "pro_full": {
+        "cached": 0.044,
+        "uncached": 1.32,
+        "output": 3.96
+      }
+    }
+  },
+  "cost_rows": [
+    {
+      "variant": "flash_control",
+      "model": "DeepSeek Flash",
+      "pricing_window": "Observed / legacy DB",
+      "cost_per_answer_usd": 0.00015508333333333333
+    },
+    {
+      "variant": "flash_control",
+      "model": "DeepSeek Flash",
+      "pricing_window": "Legacy recomputed (15 Aug)",
+      "cost_per_answer_usd": 0.00015431966666666668
+    },
+    {
+      "variant": "flash_control",
+      "model": "DeepSeek Flash",
+      "pricing_window": "16 Aug off-peak",
+      "cost_per_answer_usd": 0.0003263816666666667
+    },
+    {
+      "variant": "flash_control",
+      "model": "DeepSeek Flash",
+      "pricing_window": "16 Aug peak",
+      "cost_per_answer_usd": 0.0006527633333333334
+    },
+    {
+      "variant": "pro_full",
+      "model": "DeepSeek Pro",
+      "pricing_window": "Observed / legacy DB",
+      "cost_per_answer_usd": 0.0005739166666666667
+    },
+    {
+      "variant": "pro_full",
+      "model": "DeepSeek Pro",
+      "pricing_window": "Legacy recomputed (15 Aug)",
+      "cost_per_answer_usd": 0.0005731463333333333
+    },
+    {
+      "variant": "pro_full",
+      "model": "DeepSeek Pro",
+      "pricing_window": "16 Aug off-peak",
+      "cost_per_answer_usd": 0.0011455803333333334
+    },
+    {
+      "variant": "pro_full",
+      "model": "DeepSeek Pro",
+      "pricing_window": "16 Aug peak",
+      "cost_per_answer_usd": 0.0022911606666666667
+    }
+  ],
+  "break_even_rows": [
+    {
+      "pricing_window": "Observed / legacy DB",
+      "net_contribution_per_order_usd": 5,
+      "incremental_cost_usd": 0.00041883333333333334,
+      "absolute_cvr_lift_pp": 0.008376666666666666,
+      "relative_lift_pct_vs_0_167_baseline": 5.015968063872254,
+      "one_extra_order_per_answers": 11937.92280143255
+    },
+    {
+      "pricing_window": "Observed / legacy DB",
+      "net_contribution_per_order_usd": 10,
+      "incremental_cost_usd": 0.00041883333333333334,
+      "absolute_cvr_lift_pp": 0.004188333333333333,
+      "relative_lift_pct_vs_0_167_baseline": 2.507984031936127,
+      "one_extra_order_per_answers": 23875.8456028651
+    },
+    {
+      "pricing_window": "Observed / legacy DB",
+      "net_contribution_per_order_usd": 15,
+      "incremental_cost_usd": 0.00041883333333333334,
+      "absolute_cvr_lift_pp": 0.0027922222222222224,
+      "relative_lift_pct_vs_0_167_baseline": 1.6719893546240854,
+      "one_extra_order_per_answers": 35813.768404297654
+    },
+    {
+      "pricing_window": "Legacy recomputed (15 Aug)",
+      "net_contribution_per_order_usd": 5,
+      "incremental_cost_usd": 0.00041882666666666666,
+      "absolute_cvr_lift_pp": 0.008376533333333333,
+      "relative_lift_pct_vs_0_167_baseline": 5.015888223552894,
+      "one_extra_order_per_answers": 11938.11282312492
+    },
+    {
+      "pricing_window": "Legacy recomputed (15 Aug)",
+      "net_contribution_per_order_usd": 10,
+      "incremental_cost_usd": 0.00041882666666666666,
+      "absolute_cvr_lift_pp": 0.004188266666666667,
+      "relative_lift_pct_vs_0_167_baseline": 2.507944111776447,
+      "one_extra_order_per_answers": 23876.22564624984
+    },
+    {
+      "pricing_window": "Legacy recomputed (15 Aug)",
+      "net_contribution_per_order_usd": 15,
+      "incremental_cost_usd": 0.00041882666666666666,
+      "absolute_cvr_lift_pp": 0.002792177777777778,
+      "relative_lift_pct_vs_0_167_baseline": 1.671962741184298,
+      "one_extra_order_per_answers": 35814.338469374765
+    },
+    {
+      "pricing_window": "16 Aug off-peak",
+      "net_contribution_per_order_usd": 5,
+      "incremental_cost_usd": 0.0008191986666666667,
+      "absolute_cvr_lift_pp": 0.016383973333333333,
+      "relative_lift_pct_vs_0_167_baseline": 9.810762475049899,
+      "one_extra_order_per_answers": 6103.525559123631
+    },
+    {
+      "pricing_window": "16 Aug off-peak",
+      "net_contribution_per_order_usd": 10,
+      "incremental_cost_usd": 0.0008191986666666667,
+      "absolute_cvr_lift_pp": 0.008191986666666666,
+      "relative_lift_pct_vs_0_167_baseline": 4.905381237524949,
+      "one_extra_order_per_answers": 12207.051118247262
+    },
+    {
+      "pricing_window": "16 Aug off-peak",
+      "net_contribution_per_order_usd": 15,
+      "incremental_cost_usd": 0.0008191986666666667,
+      "absolute_cvr_lift_pp": 0.005461324444444444,
+      "relative_lift_pct_vs_0_167_baseline": 3.2702541583499665,
+      "one_extra_order_per_answers": 18310.576677370893
+    },
+    {
+      "pricing_window": "16 Aug peak",
+      "net_contribution_per_order_usd": 5,
+      "incremental_cost_usd": 0.0016383973333333334,
+      "absolute_cvr_lift_pp": 0.032767946666666666,
+      "relative_lift_pct_vs_0_167_baseline": 19.621524950099797,
+      "one_extra_order_per_answers": 3051.7627795618155
+    },
+    {
+      "pricing_window": "16 Aug peak",
+      "net_contribution_per_order_usd": 10,
+      "incremental_cost_usd": 0.0016383973333333334,
+      "absolute_cvr_lift_pp": 0.016383973333333333,
+      "relative_lift_pct_vs_0_167_baseline": 9.810762475049899,
+      "one_extra_order_per_answers": 6103.525559123631
+    },
+    {
+      "pricing_window": "16 Aug peak",
+      "net_contribution_per_order_usd": 15,
+      "incremental_cost_usd": 0.0016383973333333334,
+      "absolute_cvr_lift_pp": 0.010922648888888888,
+      "relative_lift_pct_vs_0_167_baseline": 6.540508316699933,
+      "one_extra_order_per_answers": 9155.288338685446
+    }
+  ],
+  "production_usage": [
+    {
+      "stage": "initial",
+      "model": "DeepSeek Flash",
+      "calls": 3394,
+      "cost_micros": 776850,
+      "avg_cost_micros": 228.89,
+      "median_latency_ms": 2858.5,
+      "p95_latency_ms": 3883.7
+    },
+    {
+      "stage": "length retry",
+      "model": "DeepSeek Flash",
+      "calls": 38,
+      "cost_micros": 10971,
+      "avg_cost_micros": 288.71,
+      "median_latency_ms": 3919.5,
+      "p95_latency_ms": 5300.8
+    },
+    {
+      "stage": "quality retry",
+      "model": "DeepSeek Flash",
+      "calls": 585,
+      "cost_micros": 143429,
+      "avg_cost_micros": 245.18,
+      "median_latency_ms": 2869.0,
+      "p95_latency_ms": 4029.4
+    }
+  ],
+  "historical_cohorts": [
+    {
+      "cohort": "Flash-only",
+      "readings": 7197,
+      "orders": 12,
+      "observed_purchase_pct": 0.167,
+      "gross_revenue_usd": 117.81,
+      "avg_ai_cost_micros": 252.76
+    },
+    {
+      "cohort": "Historical Pro rescue selected",
+      "readings": 290,
+      "orders": 0,
+      "observed_purchase_pct": 0.0,
+      "gross_revenue_usd": 0.0,
+      "avg_ai_cost_micros": 1052.2
+    }
+  ],
+  "experiment_notes": {
+    "primary_kpi": "Contribution profit per assigned eligible visitor",
+    "synthetic_exclusion": "Exclude reading_id LIKE 'benchmark_%' from online winner analysis",
+    "purchase_attribution": "Inner-join verified purchase to server assignment by reading_id + variant",
+    "selection_bias": "Historical Pro rescue is a selected failure cohort and is not causal evidence",
+    "cache_caveat": "Benchmark cache-hit rates are unusually high; scenario costs are observed-case estimates"
+  }
+}

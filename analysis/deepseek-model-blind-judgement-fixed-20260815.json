@@ -1,0 +1,389 @@
+{
+  "blinded": true,
+  "evaluation_language": "tr",
+  "score_scale": "1-5",
+  "dimensions": [
+    "directness",
+    "card_evidence",
+    "groundedness",
+    "language_naturalness",
+    "useful_next_step"
+  ],
+  "cases": [
+    {
+      "fixtureId": "en_contact",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 5
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 5
+        }
+      },
+      "hard_failures": {
+        "A": [],
+        "B": []
+      },
+      "preference": "A",
+      "rationale_tr": "A, iletişim olasılığına ihtiyatlı ama açık yanıt verip üç kartı konum ve yönelimleriyle isabetli bağlıyor. B kartları doğru okusa da iletişim olacak mı kısmını daha dolaylı bırakıyor."
+    },
+    {
+      "fixtureId": "en_feelings",
+      "scores": {
+        "A": {
+          "directness": 4,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 4
+        }
+      },
+      "hard_failures": {
+        "A": [],
+        "B": []
+      },
+      "preference": "B",
+      "rationale_tr": "B, Ay–Kılıç Kraliçesi–ters Tılsım Altılısı dizisini doğal ve doğrudan açıklarken Jordan'ın özel duygularını uydurmuyor. A da doğru, fakat daha şablonlu ve dolaylı."
+    },
+    {
+      "fixtureId": "en_career",
+      "scores": {
+        "A": {
+          "directness": 4,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 5
+        },
+        "B": {
+          "directness": 4,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 5
+        }
+      },
+      "hard_failures": {
+        "A": [
+          "wrong_or_missing_card_specific_evidence"
+        ],
+        "B": [
+          "wrong_or_missing_card_specific_evidence"
+        ]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı ve yazılı koşulları karşılaştırma önerisi çok kullanışlı. Ancak kartlar yalnızca sıralanıyor; her kartın bu karara özgü anlamı açıklanmadığı için kart kanıtı eksik."
+    },
+    {
+      "fixtureId": "tr_contact",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        }
+      },
+      "hard_failures": {
+        "A": [
+          "wrong_or_missing_card_specific_evidence"
+        ],
+        "B": [
+          "wrong_or_missing_card_specific_evidence"
+        ]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı ve soruya net bir olasılık vermiyor. Kupa Dörtlüsü 'güven veren', ters Değnek İkilisi ise girişim ve sürdürülen çaba olarak sunularak temel anlam ve yönelimler hatalı okunuyor."
+    },
+    {
+      "fixtureId": "tr_feelings",
+      "scores": {
+        "A": {
+          "directness": 4,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        },
+        "B": {
+          "directness": 4,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        }
+      },
+      "hard_failures": {
+        "A": [
+          "wrong_or_missing_card_specific_evidence"
+        ],
+        "B": [
+          "wrong_or_missing_card_specific_evidence"
+        ]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Ay makul okunurken Kılıç Kraliçesi bulanık kalıyor; ters Tılsım Altılısının eşitsiz alışveriş veya bağımlılık yönü yerine tutarlılık ve güven verilmesi kart kanıtını bozuyor."
+    },
+    {
+      "fixtureId": "tr_decision",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 4,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 3
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 4,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 3
+        }
+      },
+      "hard_failures": {
+        "A": [],
+        "B": []
+      },
+      "preference": "tie",
+      "rationale_tr": "Aynı metinler özel duygu varsaymıyor; Adalet ile Tılsım Şövalyesini makul biçimde bağlıyor. Ters Kupa Yedilisi yorumu ve ilişkiyi sürdürme ölçütü ise yüzeysel kalıyor."
+    },
+    {
+      "fixtureId": "es_contact",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        }
+      },
+      "hard_failures": {
+        "A": [
+          "wrong_or_missing_card_specific_evidence"
+        ],
+        "B": [
+          "wrong_or_missing_card_specific_evidence"
+        ]
+      },
+      "preference": "tie",
+      "rationale_tr": "İki yanıt aynı. Gelecek konumundaki düz Değnek Sekizlisi hız, hareket ve iletişim yerine tekrarlanan tıkanma olarak okunmuş; bu temel bir kart kanıtı hatası."
+    },
+    {
+      "fixtureId": "es_career",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 4,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 3
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 5
+        }
+      },
+      "hard_failures": {
+        "A": [],
+        "B": []
+      },
+      "preference": "B",
+      "rationale_tr": "B, kabul seçeneğini koşullu biçimde açıkça öneriyor, üç kartı doğru bağlıyor ve üç aylık somut kontrol noktası veriyor. A'nın kart okuması makul, fakat sonuç ve sonraki adım soyut."
+    },
+    {
+      "fixtureId": "pt_feelings",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 4
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        }
+      },
+      "hard_failures": {
+        "A": [],
+        "B": []
+      },
+      "preference": "A",
+      "rationale_tr": "A, üç kartın özgül anlamını dengeli ve doğal Brezilya Portekizcesiyle işlerken Ana'nın özel duygularını varsaymıyor. B kartları çoğunlukla sıralayıp genel bir doğrulama önerisine dönüyor."
+    },
+    {
+      "fixtureId": "pt_decision",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 4
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        }
+      },
+      "hard_failures": {
+        "A": [],
+        "B": [
+          "wrong_or_missing_card_specific_evidence"
+        ]
+      },
+      "preference": "A",
+      "rationale_tr": "A, alanı koruyup ilerleme yönünü açıkça veriyor ve üç kartı konumlarıyla tutarlı açıklıyor. B kartları doğru ad ve yönelimlerle saysa da kartlara özgü anlam sunmayıp genel bir şablona dönüyor."
+    },
+    {
+      "fixtureId": "de_contact",
+      "scores": {
+        "A": {
+          "directness": 2,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 3
+        },
+        "B": {
+          "directness": 2,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 3
+        }
+      },
+      "hard_failures": {
+        "A": [
+          "wrong_or_missing_card_specific_evidence"
+        ],
+        "B": [
+          "wrong_or_missing_card_specific_evidence"
+        ]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı; Almanca akıcı olsa da ne yeniden iletişim ne ciddi niyet ölçütü doğrudan yanıtlanıyor. Kartlar ad, konum ve yönelim olarak listeleniyor, fakat hiçbirinin özgül anlamı açıklanmıyor."
+    },
+    {
+      "fixtureId": "de_decision",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 4,
+          "groundedness": 3,
+          "language_naturalness": 5,
+          "useful_next_step": 3
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 4
+        }
+      },
+      "hard_failures": {
+        "A": [],
+        "B": []
+      },
+      "preference": "B",
+      "rationale_tr": "İki yanıt da kartları genel olarak doğru okuyup kabulü öneriyor. B, geleceği daha koşullu ifade ediyor ve izlenecek somut bir istikrar işareti veriyor; A ise istikrarı ve kullanıcının olgunluğunu gereğinden kesin sunuyor."
+    }
+  ],
+  "aggregate": {
+    "winner_counts": {
+      "A": 3,
+      "B": 3,
+      "tie": 6
+    },
+    "hard_fail_counts": {
+      "A": {
+        "cases_with_any_hard_failure": 5,
+        "total_flags": 5,
+        "by_type": {
+          "wrong_language": 0,
+          "wrong_or_missing_card_specific_evidence": 5,
+          "unsupported_private_state_as_fact": 0,
+          "unsafe_or_coercive_advice": 0,
+          "empty_or_error": 0
+        }
+      },
+      "B": {
+        "cases_with_any_hard_failure": 6,
+        "total_flags": 6,
+        "by_type": {
+          "wrong_language": 0,
+          "wrong_or_missing_card_specific_evidence": 6,
+          "unsupported_private_state_as_fact": 0,
+          "unsafe_or_coercive_advice": 0,
+          "empty_or_error": 0
+        }
+      }
+    },
+    "mean_dimension_scores": {
+      "A": {
+        "directness": 3.8333,
+        "card_evidence": 3.5,
+        "groundedness": 4.6667,
+        "language_naturalness": 4.1667,
+        "useful_next_step": 3.8333
+      },
+      "B": {
+        "directness": 3.5833,
+        "card_evidence": 3.25,
+        "groundedness": 4.8333,
+        "language_naturalness": 4.0833,
+        "useful_next_step": 4.0833
+      }
+    },
+    "mean_overall_score": {
+      "A": 4.0,
+      "B": 3.9667
+    },
+    "overall_preference": "A",
+    "overall_rationale_tr": "Vaka galibiyetleri 3-3 ve altı vaka beraberliktir. A, daha yüksek doğrudanlık ve kart kanıtı ortalaması ile bir daha az sert hata sayesinde çok dar farkla tercih edilir; B ise groundedness ve sonraki adımda daha güçlüdür."
+  }
+}

@@ -1,0 +1,407 @@
+{
+  "judge": "v21",
+  "evaluation_mode": "blind_pairwise",
+  "scale": "1-5",
+  "dimensions": [
+    "directness",
+    "card_evidence",
+    "groundedness",
+    "language_naturalness",
+    "useful_next_step"
+  ],
+  "aggregate": {
+    "overall_preference": "A",
+    "winner_counts": {
+      "A": 4,
+      "B": 3,
+      "tie": 5
+    },
+    "hard_failure_counts": {
+      "A": 5,
+      "B": 5
+    },
+    "hard_failure_cases": {
+      "A": [
+        "en_feelings",
+        "en_career",
+        "tr_contact",
+        "tr_feelings",
+        "de_contact"
+      ],
+      "B": [
+        "en_career",
+        "tr_contact",
+        "tr_feelings",
+        "pt_decision",
+        "de_contact"
+      ]
+    },
+    "mean_scores": {
+      "A": {
+        "directness": 3.6667,
+        "card_evidence": 3.0833,
+        "groundedness": 4.1667,
+        "language_naturalness": 3.9167,
+        "useful_next_step": 3.8333,
+        "mean_dimension_score": 3.7333,
+        "mean_total_out_of_25": 18.6667
+      },
+      "B": {
+        "directness": 4.1667,
+        "card_evidence": 3.1667,
+        "groundedness": 4.25,
+        "language_naturalness": 4.3333,
+        "useful_next_step": 4.1667,
+        "mean_dimension_score": 4.0167,
+        "mean_total_out_of_25": 20.0833
+      }
+    },
+    "summary_tr": "A, vaka galibiyetlerinde 4-3 önde olduğu için genel tercihtir; beş vaka beraberedir. İki tarafın da beş zorunlu başarısızlığı vardır. B'nin ham puan ortalaması daha yüksektir; bu farkın önemli bölümü A'nın en_feelings vakasındaki boş yanıtından gelir."
+  },
+  "cases": [
+    {
+      "fixtureId": "en_contact",
+      "winner": "A",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 5,
+          "total": 22,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 4,
+          "groundedness": 3,
+          "language_naturalness": 5,
+          "useful_next_step": 4,
+          "total": 21,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        }
+      },
+      "rationale_tr": "A iletişim ihtimalini kesinleştirmediği için daha az doğrudan; buna karşılık üç kartın konum ve ters-düz anlamlarını B'den daha isabetli kuruyor ve kullanıcının iç hâlini daha az varsayıyor."
+    },
+    {
+      "fixtureId": "en_feelings",
+      "winner": "B",
+      "scores": {
+        "A": {
+          "directness": 1,
+          "card_evidence": 1,
+          "groundedness": 1,
+          "language_naturalness": 1,
+          "useful_next_step": 1,
+          "total": 5,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "empty_response"
+          ]
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 4,
+          "total": 23,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        }
+      },
+      "rationale_tr": "A boş olduğu için zorunlu başarısızdır. B, Ay, Kılıç Kraliçesi ve ters Tılsım Altılısını konumlarıyla doğru bağlar; Jordan'ın özel duygularını gerçekmiş gibi sunmadan davranıştaki karşılıklılığı izlemeyi önerir."
+    },
+    {
+      "fixtureId": "en_career",
+      "winner": "tie",
+      "scores": {
+        "A": {
+          "directness": 4,
+          "card_evidence": 1,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 5,
+          "total": 20,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "missing_card_specific_evidence"
+          ]
+        },
+        "B": {
+          "directness": 4,
+          "card_evidence": 1,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 5,
+          "total": 20,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "missing_card_specific_evidence"
+          ]
+        }
+      },
+      "rationale_tr": "Yanıtlar birebir aynı ve koşulları yazılı karşılaştırma önerisi faydalı. Ancak kart adları, konumları ve yönleri yalnızca sıralanıyor; hiçbir kartın kendine özgü anlamı açıklanmadığı için ikisi de zorunlu başarısız ve beraberlik."
+    },
+    {
+      "fixtureId": "tr_contact",
+      "winner": "tie",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4,
+          "total": 17,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "wrong_card_specific_evidence"
+          ]
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4,
+          "total": 17,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "wrong_card_specific_evidence"
+          ]
+        }
+      },
+      "rationale_tr": "Yanıtlar birebir aynı. Kupa Dörtlüsü geri çekilme ve tatminsizlik yerine belirsiz biçimde anlatılıyor; ters Değnek İkilisi ise tereddüt, dar görüş veya bilinmeyenden korku yerine çekim ve sürdürülen çabaya bağlanıyor. Bu kart hatası iki yanıtı da zorunlu başarısız yapıyor."
+    },
+    {
+      "fixtureId": "tr_feelings",
+      "winner": "tie",
+      "scores": {
+        "A": {
+          "directness": 4,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4,
+          "total": 18,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "wrong_or_missing_card_specific_evidence"
+          ]
+        },
+        "B": {
+          "directness": 4,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4,
+          "total": 18,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "wrong_or_missing_card_specific_evidence"
+          ]
+        }
+      },
+      "rationale_tr": "Yanıtlar birebir aynı ve Deniz'in özel duygularını uydurmuyor. Buna karşın Kılıç Kraliçesinin berraklık ve sınırları zayıf aktarılıyor; ters Tılsım Altılısının eşitsiz alışveriş ve koşullu verme anlamı yerine tutarlılık ve güven söyleniyor. İkisi de zorunlu başarısız."
+    },
+    {
+      "fixtureId": "tr_decision",
+      "winner": "tie",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 3,
+          "total": 17,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 3,
+          "total": 17,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        }
+      },
+      "rationale_tr": "Yanıtlar birebir aynı. Adalet doğru temellendiriliyor; ters Kupa Yedilisi ve Tılsım Şövalyesi ise ilgili ama fazla genel kalıyor. Dil kalıp hissi veriyor ve karar sorusuna net bir ölçüt sunmuyor; bu yüzden beraberlik."
+    },
+    {
+      "fixtureId": "es_contact",
+      "winner": "A",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 4,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 5,
+          "total": 23,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 4,
+          "groundedness": 3,
+          "language_naturalness": 5,
+          "useful_next_step": 4,
+          "total": 21,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        }
+      },
+      "rationale_tr": "İkisi de kart akışını doğal İspanyolcayla kuruyor. A, geri dönüşü olasılık olarak sunup tekrarlanan ve şefkatli davranışı ölçüt yapıyor; B geri dönüşü daha kesin ilan ediyor ve kullanıcının iç hâlini daha fazla varsayıyor."
+    },
+    {
+      "fixtureId": "es_career",
+      "winner": "B",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 4,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 3,
+          "total": 18,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 3,
+          "language_naturalness": 5,
+          "useful_next_step": 5,
+          "total": 23,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        }
+      },
+      "rationale_tr": "B, üç kartın işbirliği, kontrol dışı oynaklık ve somut istikrar temalarını daha doğal ve doğrudan bir karara bağlayıp yazılı koşul istemeyi öneriyor. Kullanıcının yorgunluğu ve neye çekildiği konusunda varsayım yaptığı için groundedness puanı düşürüldü."
+    },
+    {
+      "fixtureId": "pt_feelings",
+      "winner": "A",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 5,
+          "total": 24,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 4,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 5,
+          "total": 23,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        }
+      },
+      "rationale_tr": "A, Başrahibe, ters Kupa Beşlisi ve Dengeyi sessizlik, duygusal yeniden ayarlama ve ölçülü ilerleme olarak daha isabetli bağlıyor. B'nin ters Kupa Beşlisini hâlâ çözülmemiş kayıp gibi okuması kart kanıtını biraz zayıflatıyor."
+    },
+    {
+      "fixtureId": "pt_decision",
+      "winner": "A",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 4,
+          "groundedness": 3,
+          "language_naturalness": 5,
+          "useful_next_step": 4,
+          "total": 21,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4,
+          "total": 17,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "wrong_or_missing_card_specific_evidence"
+          ]
+        }
+      },
+      "rationale_tr": "A, ters Mahkeme, Değnek Dokuzlusu ve Kılıç Altılısını kapanmamış hesap, dayanıklılık ve daha sakin bir geçiş üzerinden doğrudan karara bağlıyor. B kartları çoğunlukla ad ve yön olarak sıralayıp genel öğüt veriyor; ayrıca Brezilya Portekizcesi soruya Avrupa Portekizcesi tonuyla karşılık veriyor."
+    },
+    {
+      "fixtureId": "de_contact",
+      "winner": "tie",
+      "scores": {
+        "A": {
+          "directness": 3,
+          "card_evidence": 1,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 4,
+          "total": 18,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "missing_card_specific_evidence"
+          ]
+        },
+        "B": {
+          "directness": 3,
+          "card_evidence": 1,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 4,
+          "total": 18,
+          "hard_fail": true,
+          "hard_fail_reasons": [
+            "missing_card_specific_evidence"
+          ]
+        }
+      },
+      "rationale_tr": "Yanıtlar birebir aynı, doğal Almanca ve temkinli. Ancak kartların yalnızca ad, konum ve yönleri sıralanıyor; Sota, ters Ermiş ve Değnek Sekizlisinin kendine özgü anlamları hiç açıklanmıyor. Bu nedenle ikisi de zorunlu başarısız ve beraberlik."
+    },
+    {
+      "fixtureId": "de_decision",
+      "winner": "B",
+      "scores": {
+        "A": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 3,
+          "language_naturalness": 5,
+          "useful_next_step": 3,
+          "total": 21,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        },
+        "B": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 4,
+          "total": 23,
+          "hard_fail": false,
+          "hard_fail_reasons": []
+        }
+      },
+      "rationale_tr": "İki yanıt da kartları doğru ve doğal Almancayla yorumluyor. B olasılığı daha yumuşak ifade ediyor ve kabulden önce küçük, kontrol edilebilir bir adım öneriyor; A istikrarı daha fazla vaat ediyor ve desteği ancak ilk haftalarda gözlemlemeyi söylüyor."
+    }
+  ]
+}

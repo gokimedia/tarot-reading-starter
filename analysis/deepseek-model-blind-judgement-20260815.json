@@ -1,0 +1,414 @@
+{
+  "scale": "1-5",
+  "cases": [
+    {
+      "fixture_id": "en_contact",
+      "A": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        },
+        "total": 21,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "B": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        },
+        "total": 21,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Kart anlamları doğru ve gözlenebilir tutarlılığa odaklanıyor; ancak yeniden iletişim olasılığına doğrudan bir değerlendirme vermiyor."
+    },
+    {
+      "fixture_id": "en_feelings",
+      "A": {
+        "scores": {
+          "directness": 4,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 5
+        },
+        "total": 24,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "B": {
+        "scores": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 5,
+          "language_naturalness": 5,
+          "useful_next_step": 5
+        },
+        "total": 25,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "preference": "B",
+      "rationale_tr": "İkisi de özel duyguları varsaymıyor ve üç kartı doğru bağlıyor. B aynı içeriği daha kısa, sınır ve gözlenebilir davranış odağı daha doğrudan olacak şekilde veriyor."
+    },
+    {
+      "fixture_id": "en_career",
+      "A": {
+        "scores": {
+          "directness": 1,
+          "card_evidence": 1,
+          "groundedness": 1,
+          "language_naturalness": 1,
+          "useful_next_step": 1
+        },
+        "total": 5,
+        "hard_fail": true,
+        "hard_fail_reasons": ["empty_response"]
+      },
+      "B": {
+        "scores": {
+          "directness": 1,
+          "card_evidence": 1,
+          "groundedness": 1,
+          "language_naturalness": 1,
+          "useful_next_step": 1
+        },
+        "total": 5,
+        "hard_fail": true,
+        "hard_fail_reasons": ["empty_response"]
+      },
+      "preference": "tie",
+      "rationale_tr": "Her iki cevap da boş."
+    },
+    {
+      "fixture_id": "tr_contact",
+      "A": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 2,
+          "useful_next_step": 4
+        },
+        "total": 16,
+        "hard_fail": true,
+        "hard_fail_reasons": ["wrong_card_evidence"]
+      },
+      "B": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 2,
+          "useful_next_step": 4
+        },
+        "total": 16,
+        "hard_fail": true,
+        "hard_fail_reasons": ["wrong_card_evidence"]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Ters Değnek İkilisi çekim, girişim ve sürdürülen çaba diye yorumlanarak kartın tereddüt, yön eksikliği veya bilinmeyenden korkma ekseniyle çelişiyor. Türkçe de belirgin biçimde yapay."
+    },
+    {
+      "fixture_id": "tr_feelings",
+      "A": {
+        "scores": {
+          "directness": 4,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 2,
+          "useful_next_step": 4
+        },
+        "total": 18,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "B": {
+        "scores": {
+          "directness": 4,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 2,
+          "useful_next_step": 4
+        },
+        "total": 18,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Özel duygu uydurmuyor ve gözlenebilir davranış öneriyor. Ay iyi kullanılmış; ters Tılsım Altılısındaki karşılıklılık/dengesizlik anlamı ise yeterince açık değil. Türkçe kalıp ve yapay."
+    },
+    {
+      "fixture_id": "tr_decision",
+      "A": {
+        "scores": {
+          "directness": 2,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 2,
+          "useful_next_step": 3
+        },
+        "total": 15,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "B": {
+        "scores": {
+          "directness": 2,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 2,
+          "useful_next_step": 3
+        },
+        "total": 15,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Adalet ve Tılsım Şövalyesi kısmen uygun; ters Kupa Yedilisi çok genel kalıyor. İlişkiye dönmek veya ilerlemek kararına özgü somut ölçüt sunulmuyor."
+    },
+    {
+      "fixture_id": "es_contact",
+      "A": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        },
+        "total": 17,
+        "hard_fail": true,
+        "hard_fail_reasons": ["wrong_card_evidence"]
+      },
+      "B": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        },
+        "total": 17,
+        "hard_fail": true,
+        "hard_fail_reasons": ["wrong_card_evidence"]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Düz Değnek Sekizlisi hız, hareket ve haberleşme yerine tekrar eden örüntü veya motivasyon tıkanıklığı olarak verilmiş; bu açık bir kart kanıtı hatası."
+    },
+    {
+      "fixture_id": "es_career",
+      "A": {
+        "scores": {
+          "directness": 2,
+          "card_evidence": 4,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 3
+        },
+        "total": 18,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "B": {
+        "scores": {
+          "directness": 2,
+          "card_evidence": 4,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 3
+        },
+        "total": 18,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Kart bağlantıları çoğunlukla uygun ve temkinli; fakat fırsatı kabul etme veya bekleme konusunda bir yön vermiyor, sonraki adım da fazla soyut."
+    },
+    {
+      "fixture_id": "pt_feelings",
+      "A": {
+        "scores": {
+          "directness": 4,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        },
+        "total": 19,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "B": {
+        "scores": {
+          "directness": 4,
+          "card_evidence": 3,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 4
+        },
+        "total": 19,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Özel duygu varsaymıyor ve doğrulanabilir adıma yöneltiyor; ancak kart yorumları ayırt edici olmaktan çok genel. Brezilya Portekizcesi soruya Avrupa Portekizcesi ağırlıklı yanıt verilmesi doğallığı azaltıyor."
+    },
+    {
+      "fixture_id": "pt_decision",
+      "A": {
+        "scores": {
+          "directness": 2,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 3
+        },
+        "total": 15,
+        "hard_fail": true,
+        "hard_fail_reasons": ["materially_missing_card_evidence"]
+      },
+      "B": {
+        "scores": {
+          "directness": 2,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 3,
+          "useful_next_step": 3
+        },
+        "total": 15,
+        "hard_fail": true,
+        "hard_fail_reasons": ["materially_missing_card_evidence"]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Kart adları sayılsa da yorumlar büyük ölçüde karta özgü değil; özellikle Kılıç Altılısının geçiş ve uzaklaşma anlamı karar sorusuna hiç bağlanmıyor."
+    },
+    {
+      "fixture_id": "de_contact",
+      "A": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        },
+        "total": 18,
+        "hard_fail": true,
+        "hard_fail_reasons": ["materially_missing_card_evidence"]
+      },
+      "B": {
+        "scores": {
+          "directness": 3,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        },
+        "total": 18,
+        "hard_fail": true,
+        "hard_fail_reasons": ["materially_missing_card_evidence"]
+      },
+      "preference": "tie",
+      "rationale_tr": "Metinler aynı. Kartlar, konumlar ve yönler yalnızca listeleniyor; hiçbir kartın anlamı soruya uygulanmıyor. Kart adlarını saymak tek başına anlam temelli kanıt oluşturmuyor."
+    },
+    {
+      "fixture_id": "de_decision",
+      "A": {
+        "scores": {
+          "directness": 2,
+          "card_evidence": 2,
+          "groundedness": 5,
+          "language_naturalness": 4,
+          "useful_next_step": 4
+        },
+        "total": 17,
+        "hard_fail": true,
+        "hard_fail_reasons": ["materially_missing_card_evidence"]
+      },
+      "B": {
+        "scores": {
+          "directness": 5,
+          "card_evidence": 5,
+          "groundedness": 4,
+          "language_naturalness": 5,
+          "useful_next_step": 5
+        },
+        "total": 24,
+        "hard_fail": false,
+        "hard_fail_reasons": []
+      },
+      "preference": "B",
+      "rationale_tr": "A kartları yalnızca listeliyor ve genel tavsiye veriyor. B üç kartı ayrı ayrı doğru yorumluyor, fırsata yönelen net fakat koşullu bir görüş sunuyor ve sözleşme, ekip ve görev alanı gibi doğrulanabilir kontroller öneriyor."
+    }
+  ],
+  "aggregate": {
+    "A": {
+      "dimension_totals": {
+        "directness": 33,
+        "card_evidence": 34,
+        "groundedness": 56,
+        "language_naturalness": 37,
+        "useful_next_step": 43
+      },
+      "dimension_averages": {
+        "directness": 2.75,
+        "card_evidence": 2.833,
+        "groundedness": 4.667,
+        "language_naturalness": 3.083,
+        "useful_next_step": 3.583
+      },
+      "total_points": 203,
+      "maximum_points": 300,
+      "overall_average": 3.383,
+      "hard_fail_candidates": 6
+    },
+    "B": {
+      "dimension_totals": {
+        "directness": 37,
+        "card_evidence": 37,
+        "groundedness": 55,
+        "language_naturalness": 38,
+        "useful_next_step": 44
+      },
+      "dimension_averages": {
+        "directness": 3.083,
+        "card_evidence": 3.083,
+        "groundedness": 4.583,
+        "language_naturalness": 3.167,
+        "useful_next_step": 3.667
+      },
+      "total_points": 211,
+      "maximum_points": 300,
+      "overall_average": 3.517,
+      "hard_fail_candidates": 5
+    },
+    "hard_fail_summary": {
+      "candidate_hard_fail_count": 11,
+      "case_count_with_any_hard_fail": 6,
+      "primary_reason_counts": {
+        "empty_response": 2,
+        "wrong_card_evidence": 4,
+        "materially_missing_card_evidence": 5,
+        "wrong_language": 0,
+        "invented_private_state_as_fact": 0,
+        "unsafe_or_coercive_advice": 0
+      }
+    },
+    "pairwise": {
+      "A_wins": 0,
+      "B_wins": 2,
+      "ties": 10,
+      "B_win_cases": ["en_feelings", "de_decision"],
+      "overall_preference": "B"
+    }
+  }
+}

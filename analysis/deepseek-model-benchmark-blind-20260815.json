@@ -1,0 +1,454 @@
+{
+  "startedAt": "2026-08-15T03:09:12.026Z",
+  "completedAt": "2026-08-15T03:14:11.601Z",
+  "rubric": {
+    "dimensions": [
+      "directness",
+      "card_evidence",
+      "groundedness",
+      "language_naturalness",
+      "useful_next_step"
+    ],
+    "scale": "1-5 each",
+    "hardFailures": [
+      "wrong language",
+      "wrong or missing card evidence",
+      "invented private state presented as fact",
+      "unsafe or coercive advice"
+    ]
+  },
+  "cases": [
+    {
+      "fixtureId": "en_contact",
+      "lang": "en",
+      "question": "Will Alex contact me again, and what should I watch for?",
+      "cards": [
+        {
+          "card": "Ace of Cups",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Four of Cups",
+          "position": "Present",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Two of Wands",
+          "position": "Future",
+          "orientation": "Reversed"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "The cards lean toward contact happening again, but not as a quick return to how things felt before. The Ace of Cups in the past shows there was real emotional openness between you, yet the Four of Cups right now describes a withdrawn, dissatisfied energy where one of you may be sitting back instead of reaching out. That gap between what opened and what stalled is the exact tension to watch, because the reversed Two of Wands ahead suggests hesitation and fear of stepping toward the unknown. Waiting on this can feel quietly exhausting when the connection once felt so alive. Watch whether Alex's actions stay caring and consistent before you build on any renewed contact.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "For “Will Alex contact me again, and what should I watch for? ” the cards point to the pattern shaping this connection now. Read together, the three cards connect what opened, the present tension, and the direction forming next. Mixed signals can make each small sign feel more decisive than it is. Ace of Cups upright in Past centers an emotional opening, renewed compassion; Four of Cups upright in Present highlights emotional withdrawal, dissatisfaction. Two of Wands reversed in Future tilts the story toward fear of the unknown. Now watch for caring, consistent actions; make the next decision from the consistency you can observe, not from one hopeful or fearful moment.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "en_feelings",
+      "lang": "en",
+      "question": "What can I understand about my connection with Jordan without assuming their private feelings?",
+      "cards": [
+        {
+          "card": "The Moon",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Queen of Swords",
+          "position": "Present",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Six of Pentacles",
+          "position": "Future",
+          "orientation": "Reversed"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "For “What can I understand about my connection with Jordan without assuming their private feelings? ” the cards point to the pattern shaping this connection now. Read together, the three cards connect what opened, the present tension, and the direction forming next. Mixed signals can make each small sign feel more decisive than it is. The Moon upright in Past centers uncertainty, fear, incomplete information; Queen of Swords upright in Present highlights clear boundaries, honest perception. Six of Pentacles reversed in Future tilts the story toward unequal exchange, dependence. Now watch for caring, consistent actions; make the next decision from the consistency you can observe, not from one hopeful or fearful moment.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "What you can understand about this connection with Jordan is that it has lived in a fog of uncertainty, and right now clarity matters more than guessing. The Moon upright in the past shows how much of this bond was built on incomplete information and fear of misreading things, which is exactly why assuming private feelings feels so heavy. The Queen of Swords upright in the present says you already have the honest perception to see the connection for what it is, without needing to decode anyone's hidden mind. The Six of Pentacles reversed in the future warns that the exchange may feel uneven or come with unspoken conditions, so watch whether Jordan's actions stay caring and consistent.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "en_career",
+      "lang": "en",
+      "question": "Should I accept the new job offer or stay where I am?",
+      "cards": [
+        {
+          "card": "Eight of Pentacles",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Two of Swords",
+          "position": "Present",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "The Chariot",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "Do not accept the new job offer in haste or stay in your current role by default; wait until you have compared the concrete conditions. Eight of Pentacles upright in Past, Two of Swords reversed in Present, and The Chariot upright in Future together point to the cost of both paths and the verifiable condition that should decide the choice. Request one written offer covering salary, responsibilities, workload, manager support, and exit terms. Decide by whether the written conditions and real workload show durable growth, not only temporary relief from today's pressure.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "Do not accept the new job offer in haste or stay in your current role by default; wait until you have compared the concrete conditions. Eight of Pentacles upright in Past, Two of Swords reversed in Present, and The Chariot upright in Future together point to the cost of both paths and the verifiable condition that should decide the choice. Request one written offer covering salary, responsibilities, workload, manager support, and exit terms. Decide by whether the written conditions and real workload show durable growth, not only temporary relief from today's pressure.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "tr_contact",
+      "lang": "tr",
+      "question": "Ali benimle yeniden iletişime geçecek mi, ben neye dikkat etmeliyim?",
+      "cards": [
+        {
+          "card": "Ace of Cups",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Four of Cups",
+          "position": "Present",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Two of Wands",
+          "position": "Future",
+          "orientation": "Reversed"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "“Ali benimle yeniden iletişime geçecek mi, ben neye dikkat etmeliyim?” konusunda kartlar, ilişkinin görünen yüzünün hemen altındaki akıntıyı gösteriyor. Üç kart birlikte, geçmişte açılan temanın bugünkü düğümden geçerek sıradaki yöne nasıl bağlandığını gösteriyor. Karışık sinyaller küçük bir işareti olduğundan daha ağır hissettirebilir. Geçmişte Kupa Ası duygusal bir açılma enerjisini açıyor; şimdi Kupa Dörtlüsü asıl düğümü duygular ve duygusal bağ konusunda güven veren ama sıkışmış da hissettirebilen bir durum çevresinde topluyor. Sıradaki yönü ise ters gelen Değnek İkilisi, çekim, girişim ve sürdürülen çaba temasına doğru eğiyor. Şimdi ilgili ve tutarlı davranışları izle; sonraki kararını tek bir umut veya korkuya değil, gördüğün tutarlılığa göre ver.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "“Ali benimle yeniden iletişime geçecek mi, ben neye dikkat etmeliyim?” konusunda kartlar, ilişkinin görünen yüzünün hemen altındaki akıntıyı gösteriyor. Üç kart birlikte, geçmişte açılan temanın bugünkü düğümden geçerek sıradaki yöne nasıl bağlandığını gösteriyor. Karışık sinyaller küçük bir işareti olduğundan daha ağır hissettirebilir. Geçmişte Kupa Ası duygusal bir açılma enerjisini açıyor; şimdi Kupa Dörtlüsü asıl düğümü duygular ve duygusal bağ konusunda güven veren ama sıkışmış da hissettirebilen bir durum çevresinde topluyor. Sıradaki yönü ise ters gelen Değnek İkilisi, çekim, girişim ve sürdürülen çaba temasına doğru eğiyor. Şimdi ilgili ve tutarlı davranışları izle; sonraki kararını tek bir umut veya korkuya değil, gördüğün tutarlılığa göre ver.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "tr_feelings",
+      "lang": "tr",
+      "question": "Deniz ile aramdaki bağ hakkında, onun özel duygularını varsaymadan ne anlayabilirim?",
+      "cards": [
+        {
+          "card": "The Moon",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Queen of Swords",
+          "position": "Present",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Six of Pentacles",
+          "position": "Future",
+          "orientation": "Reversed"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "“Deniz ile aramdaki bağ hakkında, onun özel duygularını varsaymadan ne anlayabilirim?” konusunda kartlar, ilişkinin görünen yüzünün hemen altındaki akıntıyı gösteriyor. Üç kart birlikte, geçmişte açılan temanın bugünkü düğümden geçerek sıradaki yöne nasıl bağlandığını gösteriyor. Karışık sinyaller küçük bir işareti olduğundan daha ağır hissettirebilir. Geçmişte Ay belirsizlik, korku ve eksik bilgi enerjisini açıyor; şimdi Kılıç Kraliçesi asıl düğümü iletişim, korku ve zor gerçekler çevresinde topluyor. Sıradaki yönü ise ters gelen Tılsım Altılısı, tutarlılık, güven ve sözünü eyleme dönüştürme temasına doğru eğiyor. Şimdi ilgili ve tutarlı davranışları izle; sonraki kararını tek bir umut veya korkuya değil, gördüğün tutarlılığa göre ver.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "“Deniz ile aramdaki bağ hakkında, onun özel duygularını varsaymadan ne anlayabilirim?” konusunda kartlar, ilişkinin görünen yüzünün hemen altındaki akıntıyı gösteriyor. Üç kart birlikte, geçmişte açılan temanın bugünkü düğümden geçerek sıradaki yöne nasıl bağlandığını gösteriyor. Karışık sinyaller küçük bir işareti olduğundan daha ağır hissettirebilir. Geçmişte Ay belirsizlik, korku ve eksik bilgi enerjisini açıyor; şimdi Kılıç Kraliçesi asıl düğümü iletişim, korku ve zor gerçekler çevresinde topluyor. Sıradaki yönü ise ters gelen Tılsım Altılısı, tutarlılık, güven ve sözünü eyleme dönüştürme temasına doğru eğiyor. Şimdi ilgili ve tutarlı davranışları izle; sonraki kararını tek bir umut veya korkuya değil, gördüğün tutarlılığa göre ver.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "tr_decision",
+      "lang": "tr",
+      "question": "Bu ilişkiye bir şans daha vermeli miyim, yoksa yoluma devam mı etmeliyim?",
+      "cards": [
+        {
+          "card": "Justice",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Seven of Cups",
+          "position": "Present",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "Knight of Pentacles",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "“Bu ilişkiye bir şans daha vermeli miyim, yoksa yoluma devam mı etmeliyim?” konusunda kartlar, yüzeyin hemen altında işleyen örüntüyü gösteriyor. Üç kart birlikte, geçmişte açılan temanın bugünkü düğümden geçerek sıradaki yöne nasıl bağlandığını gösteriyor. Karışık sinyaller küçük bir işareti olduğundan daha ağır hissettirebilir. Geçmişte Adalet adalet, sorumluluk ve doğrulanabilir gerçekler enerjisini açıyor; şimdi ters gelen Kupa Yedilisi asıl düğümü duygular ve duygusal bağ konusuna durup dikkatle bakma ihtiyacı çevresinde topluyor. Sıradaki yönü ise Tılsım Şövalyesi, güvenlik, kaynaklar ve pratik gerçeklik temasına doğru eğiyor. Şimdi bundan sonra gerçekte ne olduğu ve kontrol edebileceğin tek adım konusunu netleştir; sonraki kararını tek bir umut veya korkuya değil, gördüğün tutarlılığa göre ver.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "“Bu ilişkiye bir şans daha vermeli miyim, yoksa yoluma devam mı etmeliyim?” konusunda kartlar, yüzeyin hemen altında işleyen örüntüyü gösteriyor. Üç kart birlikte, geçmişte açılan temanın bugünkü düğümden geçerek sıradaki yöne nasıl bağlandığını gösteriyor. Karışık sinyaller küçük bir işareti olduğundan daha ağır hissettirebilir. Geçmişte Adalet adalet, sorumluluk ve doğrulanabilir gerçekler enerjisini açıyor; şimdi ters gelen Kupa Yedilisi asıl düğümü duygular ve duygusal bağ konusuna durup dikkatle bakma ihtiyacı çevresinde topluyor. Sıradaki yönü ise Tılsım Şövalyesi, güvenlik, kaynaklar ve pratik gerçeklik temasına doğru eğiyor. Şimdi bundan sonra gerçekte ne olduğu ve kontrol edebileceğin tek adım konusunu netleştir; sonraki kararını tek bir umut veya korkuya değil, gördüğün tutarlılığa göre ver.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "es_contact",
+      "lang": "es",
+      "question": "¿Ana volverá a ponerse en contacto conmigo y qué señal debería observar?",
+      "cards": [
+        {
+          "card": "Page of Cups",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "The Hermit",
+          "position": "Present",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "Eight of Wands",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "Para “¿Ana volverá a ponerse en contacto conmigo y qué señal debería observar?”, las cartas señalan la corriente que se mueve justo bajo la superficie de este vínculo. Las tres cartas conectan lo que se abrió, la tensión actual y la dirección que se está formando. Es comprensible que señales tan mezcladas hagan que cada pequeño gesto parezca decisivo. Sota de Copas abre noticias en Pasado; El Ermitaño al revés hace más visible retiro, reflexión y juicio independiente en Presente. El giro llega con Ocho de Bastos en Futuro, que inclina la historia hacia un patrón repetido o una sensación de bloqueo en la motivación. Ahora observa si hay acciones cariñosas y constantes; decide según la constancia que puedas observar, no según una sola esperanza o temor.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "Para “¿Ana volverá a ponerse en contacto conmigo y qué señal debería observar?”, las cartas señalan la corriente que se mueve justo bajo la superficie de este vínculo. Las tres cartas conectan lo que se abrió, la tensión actual y la dirección que se está formando. Es comprensible que señales tan mezcladas hagan que cada pequeño gesto parezca decisivo. Sota de Copas abre noticias en Pasado; El Ermitaño al revés hace más visible retiro, reflexión y juicio independiente en Presente. El giro llega con Ocho de Bastos en Futuro, que inclina la historia hacia un patrón repetido o una sensación de bloqueo en la motivación. Ahora observa si hay acciones cariñosas y constantes; decide según la constancia que puedas observar, no según una sola esperanza o temor.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "es_career",
+      "lang": "es",
+      "question": "¿Debo aceptar esta oportunidad laboral o esperar una opción más estable?",
+      "cards": [
+        {
+          "card": "Three of Pentacles",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Wheel of Fortune",
+          "position": "Present",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "King of Pentacles",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "Para “¿Debo aceptar esta oportunidad laboral o esperar una opción más estable?”, las cartas señalan el patrón que trabaja justo bajo la superficie. Las tres cartas conectan lo que se abrió, la tensión actual y la dirección que se está formando. Es comprensible que señales tan mezcladas hagan que cada pequeño gesto parezca decisivo. Tres de Oros abre crecimiento y esfuerzo compartido en el dinero en Pasado; La Rueda de la Fortuna al revés hace más visible un ciclo cambiante y factores fuera del control directo en Presente. El giro llega con Rey de Oros en Futuro, que inclina la historia hacia responsabilidad y una dirección firme en el dinero. Ahora aclara lo que ocurra después y el paso que sí puedes controlar; decide según la constancia que puedas observar, no según una sola esperanza o temor.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "Aceptar esta oportunidad laboral tiene más sentido que esperar, siempre que entres con los ojos abiertos. Es comprensible que esta incertidumbre te pese. El Tres de Oros en el pasado muestra que ya sabes construir seguridad junto a otros, y esa base colaborativa es real. La Rueda de la Fortuna invertida explica por qué todo se siente inestable ahora: el ciclo está revuelto y no depende solo de ti, lo cual agota cuando lo que buscas es algo firme. El Rey de Oros como futuro indica que esta oportunidad puede madurar en una responsabilidad sólida y bien sostenida, pero solo si la tratas como un paso consciente y no como una apuesta. Muévete aceptando con una condición clara de revisión a los tres meses, y observa si el entorno laboral te da señales concretas de crecimiento práctico en ese plazo.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "pt_feelings",
+      "lang": "pt",
+      "question": "O que posso entender sobre minha conexão com Ana sem presumir os sentimentos privados dela?",
+      "cards": [
+        {
+          "card": "The High Priestess",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Five of Cups",
+          "position": "Present",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "Temperance",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "O que você pode entender agora é que essa conexão pede menos pressa e mais escuta do que está visível entre vocês. A Sacerdotisa no passado mostra que muito do vínculo com Ana se formou no silêncio, na intuição e no que ficou sem nome. O Cinco de Copas invertido indica que há um peso emocional sendo reorganizado, e essa sensação de não saber o que ela sente pode estar cansando você justamente porque a clareza ainda não chegou. A Temperança aponta para um ritmo mais paciente, onde a conexão se ajusta sem forçar revelações. Observe como a convivência com Ana se comporta nas próximas semanas, especialmente nos momentos em que você escolhe não perguntar e apenas estar presente.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "Para “O que posso entender sobre minha conexão com Ana sem presumir os sentimentos privados dela?”, as cartas afastam-se de um veredito fixo e apontam para o próximo facto verificável e para o passo que está sob o seu controlo. Em Passado, A Sacerdotisa (normal) apresenta o ponto de partida e mostra onde os fatos precisam ser vistos sem exagero. Em Presente, Cinco de Copas (invertida) revela a tensão que torna a escolha mais pesada e pede que a frustração não apague o restante do quadro. Em Futuro, A Temperança (normal) aponta para uma resposta mais consciente, baseada em sinais repetidos e não num único momento. Juntas, as cartas pedem paciência com ação: confirme um fato que possa verificar, escolha um pequeno passo sob o seu controle e observe o que esse passo revela antes de decidir.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "pt_decision",
+      "lang": "pt",
+      "question": "Devo retomar este relacionamento ou proteger meu espaço e seguir em frente?",
+      "cards": [
+        {
+          "card": "Judgement",
+          "position": "Past",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "Nine of Wands",
+          "position": "Present",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Six of Swords",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "A direção aqui é proteger seu espaço e seguir em frente, sem retomar este relacionamento agora. O Julgamento invertido no passado mostra que a reconciliação honesta ficou bloqueada ou adiada, e a Nove de Paus no presente confirma que você já está perto de concluir esse ciclo, sustentando sua independência com esforço. Essa tensão entre o que ficou mal resolvido e a sua exaustão em manter as defesas é o que torna a escolha tão pesada, mas o Seis de Espadas no futuro aponta para um movimento de alívio, onde as conversas difíceis e os medos perdem força. Observe se as atitudes dele se mantêm cuidadosas e consistentes ao longo do tempo, sem pressa; essa é a condição que ainda não dá para prever.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "Para “Devo retomar este relacionamento ou proteger meu espaço e seguir em frente?”, as cartas afastam-se de um veredito fixo e apontam para o próximo facto verificável e para o passo que está sob o seu controlo. Em Passado, O Julgamento (invertida) apresenta o ponto de partida e mostra onde os fatos precisam ser vistos sem exagero. Em Presente, Nove de Paus (normal) revela a tensão que torna a escolha mais pesada e pede que a frustração não apague o restante do quadro. Em Futuro, Seis de Espadas (normal) aponta para uma resposta mais consciente, baseada em sinais repetidos e não num único momento. Juntas, as cartas pedem paciência com ação: confirme um fato que possa verificar, escolha um pequeno passo sob o seu controle e observe o que esse passo revela antes de decidir.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "de_contact",
+      "lang": "de",
+      "question": "Wird Lena sich wieder bei mir melden, und woran erkenne ich ernsthafte Absichten?",
+      "cards": [
+        {
+          "card": "Page of Cups",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "The Hermit",
+          "position": "Present",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "Eight of Wands",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "Bei „Wird Lena sich wieder bei mir melden, und woran erkenne ich ernsthafte Absichten“ zeigen die Karten ein offenes Muster statt einer unveränderlichen Vorhersage. Es ist verständlich, dass die Ungewissheit Kraft kostet und ein klares Zeichen verlockend wirkt. Die Folge Bube der Kelche (aufrecht) in „Vergangenheit“; Der Eremit (umgekehrt) in „Gegenwart“; Acht der Stäbe (aufrecht) in „Zukunft“ verbindet die Ausgangslage, die Spannung und den sinnvollsten nächsten Schritt zu einem gemeinsamen Muster. Keine einzelne Karte nimmt dir die Entscheidung ab; entscheidend ist, ob das erkennbare Muster durch konsistentes Verhalten und reale Bedingungen bestätigt wird. Kläre einen überprüfbaren Teil der Situation und wähle danach einen kleinen Schritt, den du selbst kontrollierst. So bleibt die Deutung persönlich und hilfreich, ohne aus Symbolen eine Garantie zu machen.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "Bei „Wird Lena sich wieder bei mir melden, und woran erkenne ich ernsthafte Absichten“ zeigen die Karten ein offenes Muster statt einer unveränderlichen Vorhersage. Es ist verständlich, dass die Ungewissheit Kraft kostet und ein klares Zeichen verlockend wirkt. Die Folge Bube der Kelche (aufrecht) in „Vergangenheit“; Der Eremit (umgekehrt) in „Gegenwart“; Acht der Stäbe (aufrecht) in „Zukunft“ verbindet die Ausgangslage, die Spannung und den sinnvollsten nächsten Schritt zu einem gemeinsamen Muster. Keine einzelne Karte nimmt dir die Entscheidung ab; entscheidend ist, ob das erkennbare Muster durch konsistentes Verhalten und reale Bedingungen bestätigt wird. Kläre einen überprüfbaren Teil der Situation und wähle danach einen kleinen Schritt, den du selbst kontrollierst. So bleibt die Deutung persönlich und hilfreich, ohne aus Symbolen eine Garantie zu machen.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "fixtureId": "de_decision",
+      "lang": "de",
+      "question": "Soll ich diese berufliche Chance annehmen oder auf eine stabilere Möglichkeit warten?",
+      "cards": [
+        {
+          "card": "Three of Pentacles",
+          "position": "Past",
+          "orientation": "Upright"
+        },
+        {
+          "card": "Wheel of Fortune",
+          "position": "Present",
+          "orientation": "Reversed"
+        },
+        {
+          "card": "King of Pentacles",
+          "position": "Future",
+          "orientation": "Upright"
+        }
+      ],
+      "candidates": [
+        {
+          "label": "A",
+          "output": "Die Richtung deutet klar darauf hin, dass du diese berufliche Chance annehmen solltest, auch wenn die Wahl schwer auf dir lastet. Die Drei der Münzen in der Vergangenheit zeigt, dass dein bisheriges Engagement und gemeinsames Arbeiten dich genau hierher geführt haben, während das umgekehrte Rad des Schicksals im Jetzt erklärt, warum alles so stockend und unklar wirkt, was diese Entscheidung so anstrengend macht. Der König der Münzen als Zukunft verspricht dir Stabilität und Verantwortung, wenn du diesen Schritt gehst, denn deine praktische Reife wird die Unsicherheit ausgleichen. Diese Chance bietet dir mehr Sicherheit als das Warten auf eine Möglichkeit, die vielleicht gar nicht kommt, und genau das löst deinen inneren Druck. Beobachte, was tatsächlich als Nächstes geschieht, und bereite deinen nächsten konkreten Schritt vor, den du selbst gehen kannst.",
+          "technicalAuditPassed": true,
+          "error": ""
+        },
+        {
+          "label": "B",
+          "output": "Nimm diese berufliche Chance an, denn sie trägt dich auf einen Weg, der mehr Stabilität verspricht, als das Warten es gerade tut. Die Drei der Münzen in deiner Vergangenheit zeigt, dass du schon einmal durch gemeinsame Anstrengung etwas Solides aufgebaut hast, und genau dieses Fundament macht dich jetzt bereit. Das umgekehrte Rad des Schicksals in der Gegenwart erklärt, warum sich alles blockiert oder unklar anfühlt, als würde der richtige Zeitpunkt nie kommen, und diese Ungewissheit kann auf Dauer ganz schön ermüdend sein. Der König der Münzen in der Zukunft zeigt, dass aus dieser Chance Verantwortung und ruhige Führung wachsen können, wenn du den Schritt gehst. Beobachte, ob sich in den nächsten Wochen eine erste konkrete Zusage oder ein klares Zeichen von Stabilität in dieser neuen Rolle zeigt.",
+          "technicalAuditPassed": true,
+          "error": ""
+        }
+      ]
+    }
+  ]
+}

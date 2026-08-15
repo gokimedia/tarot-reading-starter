@@ -1,0 +1,64 @@
+{
+  "blindMap": [
+    {
+      "fixtureId": "en_contact",
+      "A": "pro_full",
+      "B": "flash_control"
+    },
+    {
+      "fixtureId": "en_feelings",
+      "A": "flash_control",
+      "B": "pro_full"
+    },
+    {
+      "fixtureId": "en_career",
+      "A": "pro_full",
+      "B": "flash_control"
+    },
+    {
+      "fixtureId": "tr_contact",
+      "A": "flash_control",
+      "B": "pro_full"
+    },
+    {
+      "fixtureId": "tr_feelings",
+      "A": "pro_full",
+      "B": "flash_control"
+    },
+    {
+      "fixtureId": "tr_decision",
+      "A": "flash_control",
+      "B": "pro_full"
+    },
+    {
+      "fixtureId": "es_contact",
+      "A": "pro_full",
+      "B": "flash_control"
+    },
+    {
+      "fixtureId": "es_career",
+      "A": "flash_control",
+      "B": "pro_full"
+    },
+    {
+      "fixtureId": "pt_feelings",
+      "A": "pro_full",
+      "B": "flash_control"
+    },
+    {
+      "fixtureId": "pt_decision",
+      "A": "flash_control",
+      "B": "pro_full"
+    },
+    {
+      "fixtureId": "de_contact",
+      "A": "pro_full",
+      "B": "flash_control"
+    },
+    {
+      "fixtureId": "de_decision",
+      "A": "flash_control",
+      "B": "pro_full"
+    }
+  ]
+}
