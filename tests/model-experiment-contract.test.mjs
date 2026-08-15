@@ -7,6 +7,7 @@ import {
   deepSeekPricingWindow,
   estimatedModelCostMicros,
   freePreviewPayload,
+  normalizedModelUsage,
 } from '../lib/legacy-worker.mjs';
 
 const workerPath = new URL('../lib/legacy-worker.mjs', import.meta.url);
@@ -49,6 +50,19 @@ test('DeepSeek pricing follows the announced effective time and UTC peak windows
   assert.equal(estimatedModelCostMicros('deepseek-v4-flash', usage, offPeak), 244);
   assert.equal(estimatedModelCostMicros('deepseek-v4-flash', usage, peak), 487);
   assert.equal(estimatedModelCostMicros('deepseek-v4-pro', usage, peak), 1_461);
+});
+
+test('direct DeepSeek cache hits are parsed and charged at the cache-hit rate', () => {
+  const usage = normalizedModelUsage({
+    usage: {
+      prompt_tokens: 1_000,
+      completion_tokens: 100,
+      prompt_cache_hit_tokens: 800,
+      prompt_cache_miss_tokens: 200,
+    },
+  });
+  assert.deepEqual(usage, { inputTokens: 1_000, outputTokens: 100, cachedInputTokens: 800 });
+  assert.equal(estimatedModelCostMicros('deepseek-v4-flash', usage, Date.parse('2026-08-16T16:30:00.000Z')), 116);
 });
 
 test('free preview exposes privacy-safe experiment attribution without raw model prompts', () => {
