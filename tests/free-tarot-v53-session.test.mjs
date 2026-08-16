@@ -43,9 +43,17 @@ function jsonKv() {
 
 function rollingBudget({ limit = 3, commit = true } = {}) {
   let claims = 0;
+  let commits = 0;
+  let releases = 0;
   return {
     get claims() {
       return claims;
+    },
+    get commits() {
+      return commits;
+    },
+    get releases() {
+      return releases;
     },
     binding: {
       claim: async () => {
@@ -68,7 +76,11 @@ function rollingBudget({ limit = 3, commit = true } = {}) {
           nextAt: Date.now() + 24 * 60 * 60 * 1000,
         };
       },
-      settle: async (_claimId, consume) => ({ allowed: consume ? commit : true }),
+      settle: async (_claimId, consume) => {
+        if (consume) commits += 1;
+        else releases += 1;
+        return { allowed: consume ? commit : true };
+      },
     },
   };
 }
@@ -130,7 +142,7 @@ async function createPreview(env, body) {
   return { response, payload: await response.json() };
 }
 
-test('v55 keeps the third approved reading as the verified paid continuation when the rolling 3/24h quota rejects a new question', async () => {
+test('v56 keeps the third approved reading as the verified paid continuation when the rolling 3/24h quota rejects a new question', async () => {
   const kv = jsonKv();
   const budget = rollingBudget({ limit: 3 });
   const env = workerEnv(kv, budget);
@@ -179,6 +191,140 @@ test('v55 keeps the third approved reading as the verified paid continuation whe
   assert.equal(sessionPayload.session.servedSource, 'deterministic_reserved_fast_path');
   assert.notEqual(sessionPayload.session.question, rejectedBody.question);
   assert.notEqual(sessionPayload.session.readingId, rejectedBody.readingId);
+});
+
+test('a 429 free-preview denial can prepare one exact-question paid-new-spread without an unsafe preview token', async () => {
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 0 });
+  const env = workerEnv(kv, budget);
+  const question = 'What should I understand before choosing this exact career offer?';
+  const denied = await createPreview(env, readingBody(question, 'v56_rate_limited_01'));
+
+  assert.equal(denied.response.status, 429, JSON.stringify(denied.payload));
+  assert.equal(denied.payload.reason, 'visitor_rate_limit');
+  assert.equal(denied.payload.retryable, false);
+  assert.equal(denied.payload.offerAllowed, true);
+  assert.equal(denied.payload.token, undefined);
+  assert.equal(budget.commits, 0);
+
+  const paidResponse = await handleFreeSession(sessionRequest(VISITOR_ID, 'paid-new-spread', REQUEST_HEADERS, {
+    question,
+    requestedLocale: 'en-US',
+  }), env);
+  const paid = await paidResponse.json();
+  assert.equal(paidResponse.status, 200, JSON.stringify(paid));
+  assert.equal(paid.found, true);
+  assert.equal(paid.verified, true);
+  assert.equal(paid.source, 'paid_new_spread');
+  assert.equal(paid.session.question, question);
+  assert.equal(paid.session.funnelVersion, FREE_TAROT_FUNNEL_VERSION);
+  assert.equal(paid.session.purchaseIntentOnly, true);
+  assert.match(paid.session.token, /^[a-f0-9]{32}$/i);
+
+  const hydrated = await hydratePreviewSnapshot({
+    question,
+    freeToken: paid.session.token,
+    readingId: paid.session.readingId,
+    type: paid.session.type,
+    cards: paid.session.cards,
+    spread: paid.session.spread,
+    context: paid.session.context,
+    signals: paid.session.signals,
+    scope: paid.session.scope,
+    confidence: paid.session.confidence,
+    tool: paid.session.tool,
+    funnelVersion: paid.session.funnelVersion,
+    snapshotVersion: paid.session.snapshotVersion,
+  }, env);
+  assert.equal(hydrated.previewContinuity, true);
+  assert.equal(hydrated.question, question);
+});
+
+test('insufficient questions fail before quota reservation or preview persistence', async () => {
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 3 });
+  const env = workerEnv(kv, budget);
+  const result = await createPreview(env, readingBody('Alex', 'v56_insufficient_question_01'));
+
+  assert.equal(result.response.status, 422, JSON.stringify(result.payload));
+  assert.equal(result.payload.reason, 'QUESTION_NEEDS_CONTEXT');
+  assert.equal(budget.claims, 0);
+  assert.equal(budget.commits, 0);
+  assert.equal(budget.releases, 0);
+  assert.equal(kv.values.size, 0);
+});
+
+test('preview persistence failure releases the reserved quota and never returns checkout authority', async () => {
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 3 });
+  const env = workerEnv(kv, budget);
+  env.READINGS_CACHE = {
+    get: kv.binding.get,
+    put: async () => {
+      throw new Error('simulated cache write failure');
+    },
+    delete: kv.binding.delete,
+  };
+  const result = await createPreview(
+    env,
+    readingBody('What should I understand before changing careers?', 'v56_persist_failure_01'),
+  );
+
+  assert.equal(result.response.status, 503, JSON.stringify(result.payload));
+  assert.equal(result.payload.reason, 'snapshot_store_failed');
+  assert.equal(result.payload.token, undefined);
+  assert.equal(budget.claims, 1);
+  assert.equal(budget.commits, 0);
+  assert.equal(budget.releases, 1);
+});
+
+test('a bounded model timeout recovers deterministically and commits quota only after the preview is saved', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (_url, init = {}) => {
+    modelCalls += 1;
+    return new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        const error = new Error('aborted by test timeout');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    });
+  };
+
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 3 });
+  const env = {
+    ...workerEnv(kv, budget),
+    DEEPSEEK_DIRECT_API_KEY: 'test-only-deepseek-key',
+    FREE_PREVIEW_MODEL_TIMEOUT_MS: 25,
+    AI_BUDGETS: {
+      claim: async ({ claimId }) => ({ allowed: true, claimId }),
+      settle: async () => ({ allowed: true }),
+    },
+  };
+  const body = {
+    ...readingBody('What should I understand about my career energy today?', 'v56_timeout_recovery_01'),
+    type: 'Daily Tarot Card',
+    spread: 'Daily Card',
+    context: 'Card: The Star Upright.',
+    signals: 'Card: The Star Upright',
+    cards: 'The Star',
+    scope: '1-card Daily Card draw for one focused question',
+  };
+  const result = await createPreview(env, body);
+
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.match(result.payload.token, /^[a-f0-9]{32}$/i);
+  assert.match(result.payload.servedSource, /^deterministic_/);
+  assert.equal(modelCalls, 1, 'public preview transport failures must not multiply provider calls');
+  assert.equal(budget.claims, 1);
+  assert.equal(budget.commits, 1);
+  assert.equal(budget.releases, 0);
+  assert.ok([...kv.values.keys()].some((key) => key.startsWith('preview:')));
 });
 
 test('Free Tarot preview hydration treats the stored token question as authoritative and rejects a new question', async () => {
@@ -246,7 +392,7 @@ test('last-approved lookup is visitor-bound and fails closed after snapshot ques
   assert.equal((await deletedResponse.json()).reason, 'not_found');
 });
 
-test('v50-v55 legacy current sessions migrate once into a verified last-approved pointer, including pending records', async () => {
+test('v50-v56 legacy current sessions migrate once into a verified last-approved pointer, including pending records', async () => {
   for (const [index, funnelVersion] of FREE_TAROT_FUNNEL_VERSIONS.entries()) {
     const kv = jsonKv();
     const env = workerEnv(kv, rollingBudget({ limit: 1 }));
@@ -320,7 +466,7 @@ test('missing-version v2 Free Tarot sessions migrate only with complete owner-bo
   }
 });
 
-test('paid-new-spread creates and replays one server-authoritative v55 snapshot for the exact paid question', async () => {
+test('paid-new-spread creates and replays one server-authoritative v56 snapshot for the exact paid question', async () => {
   const kv = jsonKv();
   const env = workerEnv(kv, rollingBudget({ limit: 10 }));
   const question = 'What should I understand before accepting this new career opportunity?';
@@ -590,7 +736,7 @@ test('legacy migration rejects blocked, safety, owner, question, and funnel-vers
       if (mode === 'safety-snapshot') snapshot.fields.safetyAction = 'medical';
       if (mode === 'owner-mismatch') snapshot.ownerVisitorHash = 'visitor:unrelated-owner';
       if (mode === 'question-mismatch') snapshot.question = 'A different stored question?';
-      if (mode === 'unknown-version') snapshot.fields.funnelVersion = 'premium-choice-2026-08-v56';
+      if (mode === 'unknown-version') snapshot.fields.funnelVersion = 'premium-choice-2026-08-v57';
       kv.values.set(snapshotKey, JSON.stringify(snapshot));
     }
 

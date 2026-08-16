@@ -19,7 +19,7 @@ import {
 const root = new URL('../', import.meta.url);
 
 for (const product of Object.values(FREE_TAROT_PACKAGES)) {
-  test(`${product.tier} Free Tarot orders recover from v50-v55 reconciliation through the delivery-job boundary`, () => {
+  test(`${product.tier} Free Tarot orders recover from v50-v56 reconciliation through the delivery-job boundary`, () => {
     for (const funnelVersion of FREE_TAROT_FUNNEL_VERSIONS) {
       const variantId = freeTarotReconciledVariantId({
         funnelVersion,
@@ -50,8 +50,8 @@ for (const product of Object.values(FREE_TAROT_PACKAGES)) {
   });
 }
 
-test('v55 is current while v50-v54 remain explicit backward-recovery aliases', () => {
-  assert.equal(FREE_TAROT_FUNNEL_VERSION, 'premium-choice-2026-08-v55');
+test('v56 is current while v50-v55 remain explicit backward-recovery aliases', () => {
+  assert.equal(FREE_TAROT_FUNNEL_VERSION, 'premium-choice-2026-08-v56');
   assert.deepEqual(FREE_TAROT_FUNNEL_VERSIONS, [
     'premium-choice-2026-08-v50',
     'premium-choice-2026-08-v51',
@@ -59,6 +59,7 @@ test('v55 is current while v50-v54 remain explicit backward-recovery aliases', (
     'premium-choice-2026-08-v53',
     'premium-choice-2026-08-v54',
     'premium-choice-2026-08-v55',
+    'premium-choice-2026-08-v56',
   ]);
 });
 
@@ -68,14 +69,14 @@ test('reconciliation fails closed for an unknown release, wrong page, or unknown
     page: FREE_TAROT_PAGE,
     sku: 'READING-DEEP',
   };
-  assert.equal(freeTarotReconciledVariantId({ ...valid, funnelVersion: 'premium-choice-2026-08-v56' }), '');
+  assert.equal(freeTarotReconciledVariantId({ ...valid, funnelVersion: 'premium-choice-2026-08-v57' }), '');
   assert.equal(freeTarotReconciledVariantId({ ...valid, page: '/pages/personal-tarot-reading' }), '');
   assert.equal(freeTarotReconciledVariantId({ ...valid, sku: 'READING-UNKNOWN' }), '');
 });
 
-test('v55 paid-new-spread missed-webhook recovery keeps the canonical Free Tarot page and package authority', () => {
+test('v56 paid-new-spread missed-webhook recovery keeps the canonical Free Tarot page and package authority', () => {
   const variantId = freeTarotReconciledVariantId({
-    funnelVersion: 'premium-choice-2026-08-v55',
+    funnelVersion: 'premium-choice-2026-08-v56',
     page: FREE_TAROT_PAGE,
     sku: FREE_TAROT_PACKAGES.medium.sku,
   });
