@@ -11,6 +11,7 @@ import {
   deterministicFreeTarotCompactInsight,
   isFreeTarotCompactV57,
 } from '../lib/free-tarot-compact-insight.mjs';
+import { FREE_TAROT_FUNNEL_VERSIONS } from '../lib/free-tarot-payment-contract.mjs';
 import {
   TAROT_CARD_NAMES,
   canonicalFunnelMetadata,
@@ -355,6 +356,35 @@ test('v50-v56 remain schema-compatible and keep their existing curiosity contrac
   assert.equal(isFreeTarotCompactV57({ ...legacy, funnelVersion: FUNNEL_V57 }), true);
   assert.equal(readingCuriosityQuestion({ ...legacy, funnelVersion: FUNNEL_V57 }, 'en'), '');
   assert.equal(isFreeTarotCompactV57({ ...legacy, funnelVersion: 'premium-choice-2026-08-v58' }), false, 'v58 remains outside the v57 presentation contract');
+});
+
+test('free reading accepts v50-v57, preserves missing legacy requests, and rejects supplied future or unknown funnels', async () => {
+  for (const [index, funnelVersion] of FREE_TAROT_FUNNEL_VERSIONS.entries()) {
+    const body = readingBody(undefined, `supported_funnel_${index}`);
+    body.funnelVersion = funnelVersion;
+    const response = await handleFreeReading(readingRequest(body), workerEnv(jsonKv(), rollingBudget()));
+    assert.equal(response.status, 200, funnelVersion);
+  }
+
+  const legacyBody = readingBody(undefined, 'missing_funnel_legacy');
+  delete legacyBody.funnelVersion;
+  const legacyResponse = await handleFreeReading(readingRequest(legacyBody), workerEnv(jsonKv(), rollingBudget()));
+  assert.equal(legacyResponse.status, 200);
+
+  for (const [index, funnelVersion] of [
+    'premium-choice-2026-08-v58',
+    'premium-choice-2026-08-unknown',
+  ].entries()) {
+    const body = readingBody(undefined, `unsupported_funnel_${index}`);
+    body.funnelVersion = funnelVersion;
+    const budget = rollingBudget();
+    const response = await handleFreeReading(readingRequest(body), workerEnv(jsonKv(), budget));
+    const payload = await response.json();
+    assert.equal(response.status, 422, funnelVersion);
+    assert.equal(payload.reason, 'UNSUPPORTED_FUNNEL_VERSION');
+    assert.deepEqual(payload.missing, ['funnelVersion']);
+    assert.equal(budget.claims, 0, 'unsupported versions must fail before quota is reserved');
+  }
 });
 
 test('compact provider 429 falls back locally and commits the free draw only after the snapshot is saved', async (t) => {
