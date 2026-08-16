@@ -142,7 +142,7 @@ async function createPreview(env, body) {
   return { response, payload: await response.json() };
 }
 
-test('v56 keeps the third approved reading as the verified paid continuation when the rolling 3/24h quota rejects a new question', async () => {
+test('v57 keeps the third approved reading as the verified paid continuation when the rolling 3/24h quota rejects a new question', async () => {
   const kv = jsonKv();
   const budget = rollingBudget({ limit: 3 });
   const env = workerEnv(kv, budget);
@@ -198,7 +198,7 @@ test('a 429 free-preview denial can prepare one exact-question paid-new-spread w
   const budget = rollingBudget({ limit: 0 });
   const env = workerEnv(kv, budget);
   const question = 'What should I understand before choosing this exact career offer?';
-  const denied = await createPreview(env, readingBody(question, 'v56_rate_limited_01'));
+  const denied = await createPreview(env, readingBody(question, 'v57_rate_limited_01'));
 
   assert.equal(denied.response.status, 429, JSON.stringify(denied.payload));
   assert.equal(denied.payload.reason, 'visitor_rate_limit');
@@ -244,7 +244,7 @@ test('insufficient questions fail before quota reservation or preview persistenc
   const kv = jsonKv();
   const budget = rollingBudget({ limit: 3 });
   const env = workerEnv(kv, budget);
-  const result = await createPreview(env, readingBody('Alex', 'v56_insufficient_question_01'));
+  const result = await createPreview(env, readingBody('Alex', 'v57_insufficient_question_01'));
 
   assert.equal(result.response.status, 422, JSON.stringify(result.payload));
   assert.equal(result.payload.reason, 'QUESTION_NEEDS_CONTEXT');
@@ -267,7 +267,7 @@ test('preview persistence failure releases the reserved quota and never returns 
   };
   const result = await createPreview(
     env,
-    readingBody('What should I understand before changing careers?', 'v56_persist_failure_01'),
+    readingBody('What should I understand before changing careers?', 'v57_persist_failure_01'),
   );
 
   assert.equal(result.response.status, 503, JSON.stringify(result.payload));
@@ -307,7 +307,7 @@ test('a bounded model timeout recovers deterministically and commits quota only 
     },
   };
   const body = {
-    ...readingBody('What should I understand about my career energy today?', 'v56_timeout_recovery_01'),
+    ...readingBody('What should I understand about my career energy today?', 'v57_timeout_recovery_01'),
     type: 'Daily Tarot Card',
     spread: 'Daily Card',
     context: 'Card: The Star Upright.',
@@ -392,7 +392,7 @@ test('last-approved lookup is visitor-bound and fails closed after snapshot ques
   assert.equal((await deletedResponse.json()).reason, 'not_found');
 });
 
-test('v50-v56 legacy current sessions migrate once into a verified last-approved pointer, including pending records', async () => {
+test('v50-v57 legacy current sessions migrate once into a verified last-approved pointer, including pending records', async () => {
   for (const [index, funnelVersion] of FREE_TAROT_FUNNEL_VERSIONS.entries()) {
     const kv = jsonKv();
     const env = workerEnv(kv, rollingBudget({ limit: 1 }));
@@ -466,7 +466,7 @@ test('missing-version v2 Free Tarot sessions migrate only with complete owner-bo
   }
 });
 
-test('paid-new-spread creates and replays one server-authoritative v56 snapshot for the exact paid question', async () => {
+test('paid-new-spread creates and replays one server-authoritative v57 snapshot for the exact paid question', async () => {
   const kv = jsonKv();
   const env = workerEnv(kv, rollingBudget({ limit: 10 }));
   const question = 'What should I understand before accepting this new career opportunity?';
@@ -736,7 +736,7 @@ test('legacy migration rejects blocked, safety, owner, question, and funnel-vers
       if (mode === 'safety-snapshot') snapshot.fields.safetyAction = 'medical';
       if (mode === 'owner-mismatch') snapshot.ownerVisitorHash = 'visitor:unrelated-owner';
       if (mode === 'question-mismatch') snapshot.question = 'A different stored question?';
-      if (mode === 'unknown-version') snapshot.fields.funnelVersion = 'premium-choice-2026-08-v57';
+      if (mode === 'unknown-version') snapshot.fields.funnelVersion = 'premium-choice-2026-08-v58';
       kv.values.set(snapshotKey, JSON.stringify(snapshot));
     }
 
