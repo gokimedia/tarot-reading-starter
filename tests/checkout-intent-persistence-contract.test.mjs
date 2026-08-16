@@ -27,9 +27,10 @@ test('shared-tool card identity constraint admits only direct Yes/No card ids an
   const normalizedPrior = priorMigration.replace(/\s+/g, ' ').trim();
   const normalizedMigration = migration.replace(/\s+/g, ' ').trim();
   const unchangedBranchMarker = "or (intent_kind = 'birth_chart' and card_id = 0 and card_name = 'Natal chart')";
-  const unchangedPriorBranches = normalizedPrior.slice(normalizedPrior.indexOf(unchangedBranchMarker));
+  const unchangedBranchIndex = normalizedPrior.indexOf(unchangedBranchMarker);
 
-  assert.notEqual(unchangedPriorBranches, '', 'could not locate the protected legacy constraint branches');
+  assert.ok(unchangedBranchIndex >= 0, 'could not locate the protected legacy constraint branches');
+  const unchangedPriorBranches = normalizedPrior.slice(unchangedBranchIndex);
   assert.match(normalizedMigration, /intent_kind = 'shared_tool' and \( \(page = '\/pages\/yes-or-no-tarot' and card_id between 1 and 78\) or \(page is distinct from '\/pages\/yes-or-no-tarot' and card_id = 0\) \)/i);
   assert.doesNotMatch(normalizedMigration, /\(intent_kind = 'shared_tool' and card_id = 0\)/i);
   assert.ok(normalizedMigration.endsWith(unchangedPriorBranches), 'a non-shared-tool card_id constraint branch changed');
