@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   TAROT_CARD_NAMES,
   conciseDeterministicFreeTeaser,
+  deterministicFreeTeaser,
   freeCuriosityQuestion,
   freePreviewPayload,
   freeTeaserAudit,
@@ -1195,6 +1196,33 @@ test('deterministic recovery stays available for lowercase private-state questio
     assert.match(html, /<p>/, lang);
     assert.equal(freeTeaserAudit(html, fields, 58).ok, true, lang);
   }
+});
+
+test('Daily Tarot private-state recovery keeps a named person safe without returning a quality 422', async () => {
+  const fields = {
+    question: 'How does Alex feel today?',
+    lang: 'en',
+    locale: 'en-US',
+    readingId: 'daily_private_state_recovery',
+    type: 'Daily Tarot',
+    tool: '/pages/free-tarot-reading',
+    spread: 'Daily Card',
+    signals: 'Daily: The Moon Upright',
+    cards: 'The Moon',
+  };
+
+  for (const fallback of [
+    conciseDeterministicFreeTeaser(fields, 'en'),
+    deterministicFreeTeaser(fields, 'en'),
+  ]) {
+    const audit = freeTeaserAudit(fallback, fields, 58);
+    assert.equal(audit.ok, true, `${audit.reason}: ${fallback}`);
+    assert.doesNotMatch(fallback, /Alex (?:feels|thinks|wants|fears|loves|misses|hopes)/i);
+  }
+
+  const html = await generateFreeTeaserHtml(fields, {});
+  assert.match(html, /<p>/);
+  assert.equal(freeTeaserAudit(html, fields, 58).ok, true, html);
 });
 
 test('cosmetic degradation never masks a private-state safety failure', () => {
