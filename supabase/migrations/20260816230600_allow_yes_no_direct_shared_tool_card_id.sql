@@ -1,4 +1,5 @@
 -- Direct Yes/No is a shared-tool checkout contract, but unlike the generic
+-- Remote migration history version: 20260816230600.
 -- shared-tool rows it has one server-verified canonical Tarot card. Preserve
 -- that identity in the indexed intent row while every other shared-tool flow
 -- keeps the existing card_id = 0 sentinel.

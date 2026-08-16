@@ -22,7 +22,7 @@ test('yes_no keeps intent_kind and snapshot_hash null while dedicated intents st
 
 test('shared-tool card identity constraint admits only direct Yes/No card ids and preserves every legacy branch', async () => {
   const priorMigration = await readFile(new URL('supabase/migrations/20260811023000_shared_tool_checkout_intents.sql', root), 'utf8');
-  const migration = await readFile(new URL('supabase/migrations/20260816225841_allow_yes_no_direct_shared_tool_card_id.sql', root), 'utf8');
+  const migration = await readFile(new URL('supabase/migrations/20260816230600_allow_yes_no_direct_shared_tool_card_id.sql', root), 'utf8');
   const route = await readFile(new URL('app/api/readings/intent/route.ts', root), 'utf8');
   const normalizedPrior = priorMigration.replace(/\s+/g, ' ').trim();
   const normalizedMigration = migration.replace(/\s+/g, ' ').trim();
