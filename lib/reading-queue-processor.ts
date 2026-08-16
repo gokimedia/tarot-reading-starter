@@ -338,6 +338,19 @@ function itemProperty(item: JsonObject, wanted: string[]) {
   return '';
 }
 
+function linePresentmentMoney(item: JsonObject, payload: JsonObject) {
+  const priceSet = item.price_set && typeof item.price_set === 'object' && !Array.isArray(item.price_set)
+    ? item.price_set as JsonObject
+    : {};
+  const presentment = priceSet.presentment_money && typeof priceSet.presentment_money === 'object' && !Array.isArray(priceSet.presentment_money)
+    ? priceSet.presentment_money as JsonObject
+    : {};
+  return {
+    amount: text(presentment.amount, 40),
+    currency: text(presentment.currency_code || payload.presentment_currency, 3).toUpperCase(),
+  };
+}
+
 function orderCountryCode(payload: JsonObject) {
   const shipping = payload.shipping_address && typeof payload.shipping_address === 'object'
     ? payload.shipping_address as JsonObject
@@ -500,7 +513,12 @@ async function verifiedReadingIntent(
     throw new QueueOperationError('CHECKOUT_INTENT_EXPIRED');
   }
 
-  const secret = text(process.env.ENTITLEMENT_PEPPER, 512);
+  const secret = text(
+    process.env.ENTITLEMENT_PEPPER
+      || process.env.FREE_ENTITLEMENT_SALT
+      || process.env.SHOPIFY_WEBHOOK_SECRET,
+    512,
+  );
   if (!secret) throw new QueueOperationError('CHECKOUT_INTENT_SECRET_MISSING');
   const snapshot = row.snapshot && typeof row.snapshot === 'object' && !Array.isArray(row.snapshot)
     ? row.snapshot as JsonObject
@@ -531,8 +549,11 @@ async function verifiedReadingIntent(
   }
 
   const sharedOrderVerification = intentKind === 'shared_tool'
-    ? verifySharedToolPaidOrder({
+    ? (() => {
+      const presentmentMoney = linePresentmentMoney(item, payload);
+      return verifySharedToolPaidOrder({
       row: {
+        id: row.id,
         page: row.page,
         funnelVersion: row.funnel_version,
         readingId: row.reading_id,
@@ -551,8 +572,11 @@ async function verifiedReadingIntent(
         toolType: itemProperty(item, ['tool type']),
         snapshotVersion: itemProperty(item, ['snapshot version']),
         snapshotHash: itemProperty(item, ['snapshot hash']),
+        presentmentAmount: presentmentMoney.amount,
+        presentmentCurrency: presentmentMoney.currency,
       },
-    })
+      });
+    })()
     : null;
   if (sharedOrderVerification && 'reason' in sharedOrderVerification) {
     throw new QueueOperationError(sharedOrderVerification.reason);
@@ -1377,7 +1401,12 @@ async function verifiedTarotCheckoutContext(items: JsonObject[], env: WorkerEnvi
     throw new QueueOperationError('CHECKOUT_CONTEXT_NOT_FOUND');
   }
   if (Number(record.expiresAt || 0) <= Date.now()) throw new QueueOperationError('CHECKOUT_CONTEXT_EXPIRED');
-  const secret = text(process.env.ENTITLEMENT_PEPPER || process.env.SHOPIFY_WEBHOOK_SECRET, 512);
+  const secret = text(
+    process.env.ENTITLEMENT_PEPPER
+      || process.env.FREE_ENTITLEMENT_SALT
+      || process.env.SHOPIFY_WEBHOOK_SECRET,
+    512,
+  );
   if (!secret) throw new QueueOperationError('CHECKOUT_CONTEXT_SECRET_MISSING');
   const expectedSignature = createHmac('sha256', secret).update(checkoutContextCanonical(record), 'utf8').digest('hex');
   if (!secureHexEqual(expectedSignature, suppliedSignature) || !secureHexEqual(text(record.signature, 64), suppliedSignature)) {
@@ -1487,7 +1516,12 @@ function deterministicUuid(value: string) {
 }
 
 function lifecycleEmailHash(email: string) {
-  const secret = text(process.env.ENTITLEMENT_PEPPER || process.env.SHOPIFY_WEBHOOK_SECRET, 512);
+  const secret = text(
+    process.env.ENTITLEMENT_PEPPER
+      || process.env.FREE_ENTITLEMENT_SALT
+      || process.env.SHOPIFY_WEBHOOK_SECRET,
+    512,
+  );
   if (!secret) throw new QueueOperationError('LIFECYCLE_HASH_SECRET_MISSING');
   return createHash('sha256').update(`${secret}|lead-email|${email.toLowerCase()}`, 'utf8').digest('hex');
 }

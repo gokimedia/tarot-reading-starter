@@ -5,8 +5,10 @@ import test from 'node:test';
 import {
   SHOPIFY_ADMIN_READING_VARIANT_QUERY,
   SHOPIFY_READING_VARIANT_QUERY,
+  SHOPIFY_STOREFRONT_READING_VARIANT_QUOTE_QUERY,
   SHOPIFY_STOREFRONT_READING_VARIANT_QUERY,
   verifyShopifyReadingVariant,
+  verifyShopifyReadingVariantQuote,
 } from '../lib/shopify-reading-variant.mjs';
 
 const ENV = { SHOPIFY_STORE: 'deckaura', API_VERSION: '2026-07' };
@@ -93,6 +95,60 @@ test('uses tokenless Storefront GraphQL when the public token is absent', async 
   assert.equal(result.ok, true);
   assert.equal(call.url, 'https://deckaura.myshopify.com/api/2026-10/graphql.json');
   assert.equal(new Headers(call.init.headers).has('X-Shopify-Storefront-Access-Token'), false);
+});
+
+test('localized quote uses Shopify Markets country context and returns authoritative cents/currency', async () => {
+  assert.match(SHOPIFY_STOREFRONT_READING_VARIANT_QUOTE_QUERY, /\$country: CountryCode!/);
+  assert.match(SHOPIFY_STOREFRONT_READING_VARIANT_QUOTE_QUERY, /@inContext\(country: \$country\)/);
+  let requestBody;
+  const result = await verifyShopifyReadingVariantQuote({
+    variantId: '53782499066129', expectedSku: 'READING-DEEP', countryCode: 'DE', expectedCurrency: 'EUR',
+    env: STOREFRONT_ENV,
+    storefrontFetch: async (_url, init) => {
+      requestBody = JSON.parse(String(init.body));
+      return response({ data: { node: {
+        ...VALID_STOREFRONT_VARIANT,
+        price: { amount: '5.49', currencyCode: 'EUR' },
+      } } });
+    },
+  });
+  assert.deepEqual(result, {
+    ok: true,
+    quote: { variantId: '53782499066129', sku: 'READING-DEEP', price: 5.49, priceCents: 549, currency: 'EUR', country: 'DE' },
+  });
+  assert.equal(requestBody.variables.country, 'DE');
+  assert.equal(requestBody.variables.id, 'gid://shopify/ProductVariant/53782499066129');
+});
+
+test('localized quote fails closed on requested-currency drift, invalid country, and transport timeout', async () => {
+  const mismatch = await verifyShopifyReadingVariantQuote({
+    variantId: '53782499066129', expectedSku: 'READING-DEEP', countryCode: 'DE', expectedCurrency: 'USD',
+    env: STOREFRONT_ENV,
+    storefrontFetch: async () => response({ data: { node: {
+      ...VALID_STOREFRONT_VARIANT,
+      price: { amount: '5.49', currencyCode: 'EUR' },
+    } } }),
+  });
+  assert.equal(mismatch.status, 422);
+  assert.equal(mismatch.reason, 'SHOPIFY_VARIANT_CURRENCY_MISMATCH');
+
+  let invalidCountryFetches = 0;
+  const invalidCountry = await verifyShopifyReadingVariantQuote({
+    variantId: '53782499066129', expectedSku: 'READING-DEEP', countryCode: '../DE', expectedCurrency: 'EUR',
+    env: STOREFRONT_ENV,
+    storefrontFetch: async () => { invalidCountryFetches += 1; throw new Error('must not fetch'); },
+  });
+  assert.equal(invalidCountry.status, 422);
+  assert.equal(invalidCountry.reason, 'EXPECTED_VARIANT_QUOTE_CONTRACT_INVALID');
+  assert.equal(invalidCountryFetches, 0);
+
+  const timeout = await verifyShopifyReadingVariantQuote({
+    variantId: '53782499066129', expectedSku: 'READING-DEEP', countryCode: 'DE', expectedCurrency: 'EUR',
+    env: STOREFRONT_ENV,
+    storefrontFetch: async () => { const error = new Error('aborted'); error.name = 'AbortError'; throw error; },
+  });
+  assert.equal(timeout.status, 503);
+  assert.equal(timeout.reason, 'SHOPIFY_STOREFRONT_REQUEST_FAILED');
 });
 
 test('tokenless Storefront keeps Storefront and Admin API version precedence separate', async () => {
