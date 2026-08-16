@@ -90,6 +90,22 @@ test('v57 paid-new-spread missed-webhook recovery keeps the canonical Free Tarot
   });
 });
 
+test('/funnel-version preserves legacy compatibility fields and exposes authoritative v57 payment support', async () => {
+  const response = await readingsWorker.fetch(new Request('https://reading.deckaura.com/funnel-version', {
+    headers: { Origin: 'https://deckaura.com' },
+  }), {});
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.funnelVersion, 'clarifier-checkout-2026-08-v40');
+  assert.equal(payload.themeVersion, 45);
+  assert.equal(payload.experienceVersion, 'free-tarot-enterprise-2026-08-v45');
+  assert.equal(payload.paymentFunnelVersion, 'premium-choice-2026-08-v57');
+  assert.deepEqual(payload.acceptedPaymentFunnels, FREE_TAROT_FUNNEL_VERSIONS);
+  assert.equal(payload.nextPaymentFunnelRejected, 'premium-choice-2026-08-v58');
+});
+
 test('known Free Tarot variants fail closed when the Shopify SKU does not match', () => {
   assert.deepEqual(freeTarotPaidPackageAuthority({
     variant_id: FREE_TAROT_PACKAGES.standard.variantId,
