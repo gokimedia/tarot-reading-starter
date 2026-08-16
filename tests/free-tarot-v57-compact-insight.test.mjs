@@ -17,6 +17,7 @@ import {
   generateFreeTarotCompactInsight,
   handleFreeReading,
   handleFreeSession,
+  paidQuestionDomain,
   paidReadingContinuityContract,
   paidSemanticReviewContract,
   privacySafeLogRecord,
@@ -159,6 +160,17 @@ function compactModelResponse(content) {
   });
 }
 
+function assertCareerCompactInsight(payload, exactQuestion) {
+  const insight = String(payload.preview?.compactInsight || '');
+  const wordCount = compactInsightWordCount(insight);
+  assert.match(insight, /\b(?:work|career|professional)\b/i);
+  assert.ok(wordCount >= FREE_TAROT_COMPACT_MIN_WORDS, `wordCount=${wordCount}: ${insight}`);
+  assert.ok(wordCount <= FREE_TAROT_COMPACT_MAX_WORDS, `wordCount=${wordCount}: ${insight}`);
+  assert.equal(insight.includes(exactQuestion), false);
+  assert.doesNotMatch(insight, /\bemotional pressure\b.*\bemotional pressure\b/i);
+  assert.doesNotMatch(insight, /\b(?:this question|future|outcome|timing|condition|next step|action|advice|yes|no|maybe|will|should|must)\b/i);
+}
+
 const LOCALE_FIXTURES = Object.freeze([
   Object.freeze({ locale: 'en', card: 'Wheel of Fortune reversed', question: 'What should I understand before changing careers?' }),
   Object.freeze({ locale: 'tr', card: 'Kader Çarkı (Ters)', question: 'Kariyer değiştirmeden önce neyi anlamalıyım?' }),
@@ -167,8 +179,39 @@ const LOCALE_FIXTURES = Object.freeze([
   Object.freeze({ locale: 'pt', card: 'A Roda da Fortuna (invertida)', question: 'O que devo compreender antes de mudar de carreira?' }),
 ]);
 
+const CAREER_INFLECTION_FIXTURES = Object.freeze([
+  Object.freeze({ locale: 'en', question: 'What should I understand before changing careers?', anchor: /\b(?:work|career|professional)\b/i }),
+  Object.freeze({ locale: 'tr', question: 'Kariyerimde değişiklik yapmadan önce neyi anlamalıyım?', anchor: /(?:iş istikrarı|mesleki baskı)/i }),
+  Object.freeze({ locale: 'de', question: 'Was sollte ich vor einem Berufswechsel verstehen?', anchor: /(?:beruflicher Stabilität|Leistungsdruck)/i }),
+  Object.freeze({ locale: 'es', question: '¿Qué debo comprender sobre mis carreras profesionales?', anchor: /(?:estabilidad laboral|presión profesional)/i }),
+  Object.freeze({ locale: 'pt', question: 'O que devo compreender sobre as minhas carreiras profissionais?', anchor: /(?:estabilidade profissional|pressão profissional)/i }),
+]);
+
+const COMPACT_DOMAINS = Object.freeze([
+  'love',
+  'career',
+  'money',
+  'timing',
+  'self',
+  'trust',
+  'family',
+  'education',
+  'relocation',
+  'creative',
+  'legal',
+  'health',
+  'general',
+]);
+
 test('EN/TR/DE/ES/PT deterministic compact insights are localized, question-aware, and strictly 24-32 words', () => {
   const reservedWord = { en: 'future', tr: 'gelecek', de: 'Zukunft', es: 'futuro', pt: 'futuro' };
+  const pressurePattern = {
+    en: /emotional pressure/gi,
+    tr: /duygusal baskı/gi,
+    de: /Druck/gi,
+    es: /presión/gi,
+    pt: /pressão/gi,
+  };
   for (const fixture of LOCALE_FIXTURES) {
     const contract = {
       locale: fixture.locale,
@@ -188,6 +231,17 @@ test('EN/TR/DE/ES/PT deterministic compact insights are localized, question-awar
     assert.equal(insight.includes(fixture.question), false, fixture.locale);
     const unsafe = insight.replace(/\.$/, ` ${reservedWord[fixture.locale]}.`);
     assert.equal(auditFreeTarotCompactInsight(unsafe, contract).ok, false, `${fixture.locale} reserved-content audit`);
+
+    for (const domain of COMPACT_DOMAINS) {
+      const domainContract = { ...contract, domain };
+      const domainInsight = deterministicFreeTarotCompactInsight(domainContract);
+      const domainAudit = auditFreeTarotCompactInsight(domainInsight, domainContract);
+      assert.equal(domainAudit.ok, true, `${fixture.locale}/${domain}: ${domainAudit.reason}: ${domainInsight}`);
+      assert.ok(
+        (domainInsight.match(pressurePattern[fixture.locale]) || []).length <= 1,
+        `${fixture.locale}/${domain}: ${domainInsight}`,
+      );
+    }
   }
 });
 
@@ -214,6 +268,20 @@ test('the full v57 adapter keeps all 780 localized card/orientation fallbacks in
         assert.equal(fields.freePreviewPresentationVariant, FREE_TAROT_COMPACT_PRESENTATION_VARIANT, label);
       }
     }
+  }
+});
+
+test('localized career plurals and inflections stay career-bound in free and paid domain contracts', async () => {
+  for (const fixture of CAREER_INFLECTION_FIXTURES) {
+    const fields = {
+      ...readingBody(fixture.question, `compact_career_inflection_${fixture.locale}`),
+      lang: fixture.locale,
+      locale: fixture.locale,
+      requestedLocale: fixture.locale,
+    };
+    const insight = await generateFreeTarotCompactInsight(fields, {}, { deterministicOnly: true });
+    assert.match(insight, fixture.anchor, fixture.locale);
+    assert.equal(paidQuestionDomain(fixture.question), 'career', fixture.locale);
   }
 });
 
@@ -320,6 +388,37 @@ test('compact provider 429 falls back locally and commits the free draw only aft
   assert.equal(budget.releases, 0);
 });
 
+test('a rejected compact response keeps the exact plural careers question in the career domain', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const rejected = 'Two of Wands upright highlights an earlier work pattern, then reveals the future outcome and exact timing, while telling you which career action should happen next for certain success.';
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    return compactModelResponse(rejected);
+  };
+
+  const kv = jsonKv();
+  const budget = rollingBudget();
+  const env = workerEnv(kv, budget, {
+    DEEPSEEK_DIRECT_API_KEY: 'test-only-deepseek-key',
+    AI_BUDGETS: aiBudget(),
+  });
+  const exactQuestion = 'What should I understand before changing careers?';
+  const response = await handleFreeReading(readingRequest(readingBody(
+    exactQuestion,
+    'compact_plural_careers_01',
+  )), env);
+  const payload = await response.json();
+
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.question, exactQuestion);
+  assert.equal(modelCalls, 1);
+  assert.equal(payload.compactInsightSource, 'deterministic_audit_fallback');
+  assertCareerCompactInsight(payload, exactQuestion);
+  assert.doesNotMatch(payload.preview.compactInsight, /security, expectations, and emotional pressure/i);
+});
+
 test('compact model has one hard bounded timeout and then uses the localized deterministic fallback', async (t) => {
   const originalFetch = globalThis.fetch;
   let modelCalls = 0;
@@ -351,7 +450,7 @@ test('compact model has one hard bounded timeout and then uses the localized det
   assert.equal(modelCalls, 1, 'timeout must not retry or switch providers');
   assert.ok(elapsed < 1000, `test timeout should recover promptly, elapsed=${elapsed}`);
   assert.equal(payload.compactInsightSource, 'deterministic_timeout_fallback');
-  assert.ok(payload.preview.compactInsight);
+  assertCareerCompactInsight(payload, 'What should I understand before changing careers?');
   assert.equal(budget.commits, 1);
 });
 
