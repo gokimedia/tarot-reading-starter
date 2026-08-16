@@ -3,12 +3,23 @@ import { db } from '@/lib/db';
 import { signCheckoutIntent } from '@/lib/reading-intents';
 import { checkoutIntentSnapshotHash } from '@/lib/checkout-intent-persistence.mjs';
 import { customerLocaleContext } from '@/lib/customer-locale.mjs';
+import { workerEnvironment } from '@/lib/worker-env';
 import {
   SHARED_TOOL_FUNNEL_VERSION,
   sharedToolVariantContract,
 } from '@/lib/generated/shared-tool-manifest.mjs';
-import { verifyShopifyReadingVariant } from '@/lib/shopify-reading-variant.mjs';
+import {
+  verifyShopifyReadingVariant,
+  verifyShopifyReadingVariantQuote,
+} from '@/lib/shopify-reading-variant.mjs';
 import { validateNewSharedToolSnapshot } from '@/lib/new-shared-tool-evidence.mjs';
+import {
+  SEVEN_CARD_HORSESHOE_PAGE,
+  sevenCardHorseshoeCheckoutSnapshotFromPreview,
+  sevenCardHorseshoeCheckoutQuestionPolicy,
+  sevenCardHorseshoeVisitorAuthority,
+  validateSevenCardHorseshoeCompactSnapshot,
+} from '@/lib/seven-card-horseshoe-compact.mjs';
 import {
   ANGEL_NUMBER_FUNNEL_VERSION,
   ANGEL_NUMBER_PAGE,
@@ -259,7 +270,12 @@ export async function POST(request: Request) {
     return json({ error: 'invalid_checkout_intent' }, 422, origin);
   }
   const tier = paidTierForStorefrontTier(storefrontTier);
-  const secret = clean(process.env.ENTITLEMENT_PEPPER, 512);
+  const secret = clean(
+    process.env.ENTITLEMENT_PEPPER
+      || process.env.FREE_ENTITLEMENT_SALT
+      || process.env.SHOPIFY_WEBHOOK_SECRET,
+    512,
+  );
   if (!secret) return json({ error: 'checkout_intent_unavailable' }, 503, origin);
   const id = randomUUID();
 
@@ -272,6 +288,14 @@ export async function POST(request: Request) {
   let cardId: number;
   let intentKind: 'big_three' | 'birth_chart' | 'love_tarot' | 'daily_tarot' | 'daily_horoscope' | 'angel_number' | 'zodiac_compatibility' | 'moon_lunar' | 'numerology_compatibility' | 'shared_tool' | null = null;
   let sharedProduct: { variantId: string; sku: string; price: number } | null = null;
+  let sharedCheckoutQuote: {
+    intentId: string;
+    variantId: string;
+    sku: string;
+    priceCents: number;
+    currency: string;
+    country: string;
+  } | null = null;
   let snapshot: Record<string, unknown>;
 
   if (numerologyCompatibility) {
@@ -515,7 +539,87 @@ export async function POST(request: Request) {
         variantId: expectedVariantValue,
       });
     }
-    const sharedSnapshot = record(body.snapshot);
+    const submittedSharedSnapshot = record(body.snapshot);
+    let sharedSnapshot = submittedSharedSnapshot;
+    if (pageValue === SEVEN_CARD_HORSESHOE_PAGE) {
+      const questionPolicy = sevenCardHorseshoeCheckoutQuestionPolicy(question);
+      if (!questionPolicy.ok) {
+        return sharedCheckoutRejection(422, questionPolicy.safetyCategory
+          ? 'SHARED_SEVEN_CARD_SAFETY_BLOCKED'
+          : 'SHARED_SEVEN_CARD_QUESTION_INVALID', origin, {
+          page: pageValue,
+          toolType,
+          tier: storefrontTier,
+          variantId: expectedVariantValue,
+        });
+      }
+      const transportFallback = body.transportFallback === true || submittedSharedSnapshot.transportFallback === true;
+      const previewToken = clean(body.freeToken || body.previewToken || submittedSharedSnapshot.freeToken, 64).toLowerCase();
+      if (!transportFallback && !/^[a-f0-9]{32}$/.test(previewToken)) {
+        return sharedCheckoutRejection(422, 'SHARED_SEVEN_CARD_PREVIEW_TOKEN_INVALID', origin, {
+          page: pageValue,
+          toolType,
+          tier: storefrontTier,
+          variantId: expectedVariantValue,
+        });
+      }
+      if (!transportFallback) {
+        const visitorAuthority = await sevenCardHorseshoeVisitorAuthority(
+          clean(body.visitorId, 96),
+          process.env.ENTITLEMENT_PEPPER
+            || process.env.FREE_ENTITLEMENT_SALT
+            || process.env.SHOPIFY_WEBHOOK_SECRET,
+        );
+        if (!visitorAuthority.ok) {
+          return sharedCheckoutRejection(422, 'SHARED_SEVEN_CARD_VISITOR_AUTHORITY_INVALID', origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+          });
+        }
+        let visitorPreview: unknown;
+        let currentVisitorSession: unknown;
+        try {
+          const cache = workerEnvironment().READINGS_CACHE;
+          [visitorPreview, currentVisitorSession] = await Promise.all([
+            cache.get(`preview:${previewToken}`, 'json'),
+            cache.get(visitorAuthority.sessionKey, 'json'),
+          ]);
+        } catch {
+          return sharedCheckoutRejection(503, 'SHARED_SEVEN_CARD_PREVIEW_LOOKUP_FAILED', origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+          });
+        }
+        const authority = sevenCardHorseshoeCheckoutSnapshotFromPreview(visitorPreview);
+        const currentSession = record(currentVisitorSession);
+        const currentSessionFields = record(currentSession.fields);
+        const currentSessionExpiresAt = Number(currentSession.expiresAt);
+        if (!authority.ok
+          || !authority.snapshot
+          || clean(record(visitorPreview).ownerVisitorHash, 96) !== visitorAuthority.visitorName
+          || clean(currentSession.token, 64).toLowerCase() !== previewToken
+          || currentSession.approvalStatus !== 'approved'
+          || currentSession.offerBlocked === true
+          || currentSession.safety === true
+          || !Number.isFinite(currentSessionExpiresAt)
+          || currentSessionExpiresAt <= Date.now()
+          || clean(currentSessionFields.presentationVariant, 80) !== clean(authority.snapshot.presentationVariant, 80)
+          || clean(currentSessionFields.readingId, 80) !== clean(authority.snapshot.readingId, 80)) {
+          return sharedCheckoutRejection(422, 'SHARED_SEVEN_CARD_PREVIEW_EXPIRED_OR_INVALID', origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+          });
+        }
+        sharedSnapshot = authority.snapshot;
+      }
+      sharedSnapshot = { ...sharedSnapshot, transportFallback };
+    }
     const snapshotVersion = clean(sharedSnapshot.version, 40);
     const snapshotType = clean(sharedSnapshot.type, 80);
     const snapshotQuestion = clean(sharedSnapshot.question, 400);
@@ -527,15 +631,44 @@ export async function POST(request: Request) {
     const snapshotConfidence = clean(sharedSnapshot.confidence, 200);
     const snapshotFocus = clean(sharedSnapshot.focus, 160);
     const snapshotTool = clean(sharedSnapshot.tool, 120);
+    const snapshotPresentationVariant = clean(sharedSnapshot.presentationVariant, 80);
     const snapshotCuriosityQuestion = clean(sharedSnapshot.curiosityQuestion, 400);
+    const sevenCardValidation = validateSevenCardHorseshoeCompactSnapshot({
+      page: pageValue,
+      toolType,
+      presentationVariant: snapshotPresentationVariant,
+      snapshot: {
+        ...sharedSnapshot,
+        type: snapshotType,
+        signals: snapshotSignals,
+        cards: snapshotCards,
+        spread: snapshotSpread,
+        scope: snapshotScope,
+        confidence: snapshotConfidence,
+        tool: snapshotTool,
+        presentationVariant: snapshotPresentationVariant,
+      },
+    });
+    const exactSevenCardPage = pageValue === SEVEN_CARD_HORSESHOE_PAGE;
+    if ((exactSevenCardPage && (!sevenCardValidation.applies || !sevenCardValidation.ok))
+      || (sevenCardValidation.applies && !sevenCardValidation.ok)) {
+      return sharedCheckoutRejection(422, 'SHARED_SEVEN_CARD_EVIDENCE_MISMATCH', origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+      });
+    }
     if (snapshotVersion !== 'reading-snapshot-v2'
       || snapshotType !== toolType
       || snapshotQuestion !== question
+      || clean(sharedSnapshot.readingId, 80) !== readingId
+      || (exactSevenCardPage && question.length < 8)
       || (!snapshotSignals && !snapshotCards)
       || !snapshotScope
       || !snapshotConfidence
       || !snapshotTool
-      || !snapshotCuriosityQuestion) {
+      || (!snapshotCuriosityQuestion && !(sevenCardValidation.applies && sevenCardValidation.ok))) {
       return sharedCheckoutRejection(422, 'SHARED_SNAPSHOT_CONTRACT_MISMATCH', origin, {
         page: pageValue,
         toolType,
@@ -583,27 +716,64 @@ export async function POST(request: Request) {
         expectedPrice: contract.price,
         env: process.env,
       });
-      if (!lookup.ok && 'status' in lookup) {
-        return sharedCheckoutRejection(lookup.status, lookup.reason, origin, {
+      if (!('product' in lookup) || !lookup.product) {
+        const failure = lookup as {
+          status: 409 | 422 | 503;
+          reason: string;
+          upstreamStatus: number;
+          upstreamCode?: string;
+        };
+        return sharedCheckoutRejection(failure.status, failure.reason, origin, {
           page: pageValue,
           toolType,
           tier: storefrontTier,
           variantId: expectedVariantValue,
-          upstreamStatus: lookup.upstreamStatus,
-          upstreamCode: 'upstreamCode' in lookup && typeof lookup.upstreamCode === 'string'
-            ? lookup.upstreamCode
-            : '',
-        });
-      }
-      if (!('product' in lookup)) {
-        return sharedCheckoutRejection(503, 'SHOPIFY_VARIANT_LOOKUP_RESULT_INVALID', origin, {
-          page: pageValue,
-          toolType,
-          tier: storefrontTier,
-          variantId: expectedVariantValue,
+          upstreamStatus: failure.upstreamStatus,
+          upstreamCode: failure.upstreamCode || '',
         });
       }
       sharedProduct = lookup.product;
+    }
+    if (!sharedProduct) {
+      return sharedCheckoutRejection(503, 'SHOPIFY_VARIANT_LOOKUP_RESULT_INVALID', origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+      });
+    }
+    if (exactSevenCardPage) {
+      const quoteLookup = await verifyShopifyReadingVariantQuote({
+        variantId: sharedProduct.variantId,
+        expectedSku: sharedProduct.sku,
+        countryCode: localeContext.country || 'US',
+        expectedCurrency: localeContext.currency || 'USD',
+        env: process.env,
+      });
+      if (!('quote' in quoteLookup) || !quoteLookup.quote) {
+        const failure = quoteLookup as {
+          status: 409 | 422 | 503;
+          reason: string;
+          upstreamStatus: number;
+          upstreamCode?: string;
+        };
+        return sharedCheckoutRejection(failure.status, failure.reason, origin, {
+          page: pageValue,
+          toolType,
+          tier: storefrontTier,
+          variantId: expectedVariantValue,
+          upstreamStatus: failure.upstreamStatus,
+          upstreamCode: failure.upstreamCode || '',
+        });
+      }
+      sharedCheckoutQuote = {
+        intentId: id,
+        variantId: quoteLookup.quote.variantId,
+        sku: quoteLookup.quote.sku,
+        priceCents: quoteLookup.quote.priceCents,
+        currency: quoteLookup.quote.currency,
+        country: quoteLookup.quote.country,
+      };
     }
     page = pageValue;
     readingType = toolType;
@@ -633,7 +803,10 @@ export async function POST(request: Request) {
       focus: snapshotFocus,
       tool: snapshotTool,
       curiosityQuestion: snapshotCuriosityQuestion,
+      presentationVariant: snapshotPresentationVariant,
       readingId,
+      ...(sharedCheckoutQuote ? { checkoutQuote: sharedCheckoutQuote } : {}),
+      ...(exactSevenCardPage ? { transportFallback: sharedSnapshot.transportFallback === true } : {}),
     };
   } else {
     const categoryValue = clean(body.category, 20).toLowerCase();
@@ -743,6 +916,13 @@ export async function POST(request: Request) {
     readingType,
     snapshotHash,
     localeContext,
+    ...(sharedCheckoutQuote ? {
+      checkoutQuote: {
+        ...sharedCheckoutQuote,
+        snapshotHash,
+        expiresAt: expiresAt.toISOString(),
+      },
+    } : {}),
     ...(intentKind === 'daily_horoscope' ? {
       preview: {
         sign: snapshot.sign,
