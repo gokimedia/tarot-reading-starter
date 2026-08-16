@@ -282,6 +282,7 @@ export async function POST(request: Request) {
     currency: body.currency,
     market: body.market,
   }, request.headers);
+  let intentLocaleContext = localeContext;
 
   const requestedKind = clean(body.kind, 32).toLowerCase();
   const requestedPersonalDirect = requestedKind === 'shared_tool'
@@ -906,6 +907,17 @@ export async function POST(request: Request) {
         currency: quoteLookup.quote.currency,
         country: quoteLookup.quote.country,
       };
+      if (exactPersonalDirectPage) {
+        // A missing storefront country/currency intentionally falls back to the
+        // US/USD quote above. Bind that effective Markets context into the same
+        // signed snapshot returned to checkout; otherwise an accepted intent
+        // would fail post-purchase reconciliation against its own quote.
+        intentLocaleContext = Object.freeze({
+          ...localeContext,
+          country: quoteLookup.quote.country,
+          currency: quoteLookup.quote.currency,
+        });
+      }
     }
     page = pageValue;
     readingType = toolType;
@@ -966,7 +978,7 @@ export async function POST(request: Request) {
     snapshot = safeYesNoSnapshot(body.snapshot);
   }
 
-  snapshot = { ...snapshot, localeContext };
+  snapshot = { ...snapshot, localeContext: intentLocaleContext };
 
   const product = requestedKind === 'shared_tool'
     ? sharedProduct
@@ -1049,7 +1061,7 @@ export async function POST(request: Request) {
     tier,
     readingType,
     snapshotHash,
-    localeContext,
+    localeContext: intentLocaleContext,
     ...(sharedCheckoutQuote ? {
       checkoutQuote: {
         ...sharedCheckoutQuote,

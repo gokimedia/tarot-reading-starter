@@ -524,7 +524,52 @@ test('all three packages create localized hash-bound intents and quote changes r
   assert.equal(inserts.length, 4);
   assert.equal(inserts.at(-1).snapshot.localeContext.country, 'DE');
   assert.equal(inserts.at(-1).snapshot.checkoutQuote.currency, 'EUR');
-  assert.equal(requests.length, 12, 'each attempt verifies catalog and localized Storefront contracts');
+
+  const missingLocaleBody = routeBody('essential');
+  delete missingLocaleBody.country;
+  delete missingLocaleBody.currency;
+  const missingLocaleResponse = await POST(routeRequest(missingLocaleBody));
+  const missingLocalePayload = await missingLocaleResponse.json();
+  assert.equal(missingLocaleResponse.status, 201, JSON.stringify(missingLocalePayload));
+  assert.deepEqual(missingLocalePayload.localeContext, {
+    locale: 'en-US',
+    language: 'en',
+    country: 'US',
+    currency: 'USD',
+    market: 'us',
+  });
+  const missingLocaleSnapshot = inserts.at(-1).snapshot;
+  assert.deepEqual(missingLocaleSnapshot.localeContext, missingLocalePayload.localeContext);
+  assert.equal(missingLocaleSnapshot.checkoutQuote.country, 'US');
+  assert.equal(missingLocaleSnapshot.checkoutQuote.currency, 'USD');
+  const missingLocaleOrder = verifySharedToolPaidOrder({
+    row: {
+      id: missingLocalePayload.intentId,
+      page: PERSONAL_DIRECT_PAGE,
+      funnelVersion: SHARED_TOOL_FUNNEL_VERSION,
+      readingId: READING_ID,
+      readingType: PERSONAL_DIRECT_TYPE,
+      question: QUESTION,
+      tier: PRODUCTS.essential.paidTier,
+      variantId: PRODUCTS.essential.variantId,
+      sku: PRODUCTS.essential.sku,
+      price: PRODUCTS.essential.price,
+      snapshotHash: missingLocalePayload.snapshotHash,
+    },
+    snapshot: missingLocaleSnapshot,
+    line: {
+      intentKind: 'shared_tool',
+      toolPage: PERSONAL_DIRECT_PAGE,
+      toolType: PERSONAL_DIRECT_TYPE,
+      snapshotVersion: 'reading-snapshot-v2',
+      snapshotHash: missingLocalePayload.snapshotHash,
+      presentmentAmount: PRODUCTS.essential.price.toFixed(2),
+      presentmentCurrency: 'USD',
+    },
+  });
+  assert.equal(missingLocaleOrder.ok, true, missingLocaleOrder.reason || 'missing-locale reconciliation failed');
+  assert.equal(inserts.length, 5, 'the effective fallback locale creates one fulfillable intent');
+  assert.equal(requests.length, 14, 'each attempt verifies catalog and localized Storefront contracts');
 });
 
 test('queue verifies snapshot hash and shared post-purchase authority before consuming an intent', async () => {
