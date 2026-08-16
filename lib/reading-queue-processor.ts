@@ -37,6 +37,7 @@ import {
   SHARED_TOOL_VARIANT_IDS,
 } from '@/lib/generated/shared-tool-manifest.mjs';
 import { verifySharedToolPaidOrder } from '@/lib/shared-tool-order-contract.mjs';
+import { paidQuestionLengthLimit } from '@/lib/personal-direct-reading.mjs';
 import {
   ANGEL_NUMBER_FUNNEL_VERSION,
   ANGEL_NUMBER_LIFE_AREAS,
@@ -1657,9 +1658,10 @@ async function queueDraftForOrder(
   };
   if (existing && validAccessToken(existing.accessToken)) {
     const verifiedFields = Object.keys(mergedVerifiedFields).length ? mergedVerifiedFields : existing.verifiedFields;
-    const verifiedQuestion = text(verifiedFields?.question, 400);
+    const questionLimit = paidQuestionLengthLimit(verifiedFields);
+    const verifiedQuestion = text(verifiedFields?.question, questionLimit);
     const fallbackQuestion = 'General guidance for the path ahead';
-    const existingRealQuestion = text(existing.question || existing.originalQuestion, 400);
+    const existingRealQuestion = text(existing.question || existing.originalQuestion, questionLimit);
     const knownQuestion = verifiedQuestion || checkoutQuestion
       || (existing.status === 'confirmed' || (existingRealQuestion && existingRealQuestion !== fallbackQuestion) ? existingRealQuestion : '');
     // A property-less direct purchase carries no question at all. Locking it
@@ -1688,7 +1690,7 @@ async function queueDraftForOrder(
     }
     const draft: PaidDraft = {
       ...existing,
-      originalQuestion: text(verifiedQuestion || existing.originalQuestion || existing.question || checkoutQuestion, 400)
+      originalQuestion: text(verifiedQuestion || existing.originalQuestion || existing.question || checkoutQuestion, questionLimit)
         || fallbackQuestion,
       question: knownQuestion || fallbackQuestion,
       name: text(verifiedFields?.name, 80) || itemProperty(first, ['name', 'your name']) || existing.name,
@@ -1783,9 +1785,10 @@ async function persistPaidOrder(
   const sku = text(first.sku, 80).toUpperCase();
   const packageAuthority = paidPackageAuthority(first);
   assertPaidDraftPackageAuthority(draft, packageAuthority);
-  const originalQuestion = text(draft.originalQuestion || itemProperty(first, ['question', 'your question']), 400)
+  const questionLimit = paidQuestionLengthLimit(draft.verifiedFields);
+  const originalQuestion = text(draft.originalQuestion || itemProperty(first, ['question', 'your question']), questionLimit)
     || 'General guidance for the path ahead';
-  const confirmedQuestion = text(draft.question || originalQuestion, 400) || originalQuestion;
+  const confirmedQuestion = text(draft.question || originalQuestion, questionLimit) || originalQuestion;
   const reviewStatus = normalizedReviewStatus(draft);
   const verifiedFollowupCredits = intent?.intentKind === 'angel_number'
     ? Math.max(0, Math.min(1, Number(intent.verifiedFields.followupCredits) || 0))
@@ -2104,7 +2107,7 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
 
 async function updatePaidOrderBeforeDelivery(orderId: string, env: WorkerEnvironment) {
   const draft = await paidDraftForOrder(orderId, env);
-  const confirmedQuestion = text(draft?.question, 400);
+  const confirmedQuestion = text(draft?.question, paidQuestionLengthLimit(draft?.verifiedFields));
   const reviewStatus = draft ? normalizedReviewStatus(draft) : 'auto_locked';
   const draftTier = draft?.tier || '';
   const sql = db();

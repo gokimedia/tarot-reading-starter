@@ -14,6 +14,14 @@ import {
 } from '@/lib/shopify-reading-variant.mjs';
 import { validateNewSharedToolSnapshot } from '@/lib/new-shared-tool-evidence.mjs';
 import {
+  PERSONAL_DIRECT_PAGE,
+  PERSONAL_DIRECT_PRESENTATION_VARIANT,
+  PERSONAL_DIRECT_PUBLIC_ERROR_CODES,
+  PERSONAL_DIRECT_TYPE,
+  personalDirectQuestionPolicy,
+  validatePersonalDirectSnapshot,
+} from '@/lib/personal-direct-reading.mjs';
+import {
   SEVEN_CARD_HORSESHOE_PAGE,
   sevenCardHorseshoeCheckoutSnapshotFromPreview,
   sevenCardHorseshoeCheckoutQuestionPolicy,
@@ -133,7 +141,7 @@ function sharedCheckoutRejection(
   status: 409 | 422 | 503,
   reason: string,
   origin: string,
-  context: { page?: string; toolType?: string; tier?: string; variantId?: string; upstreamStatus?: number; upstreamCode?: string } = {},
+  context: { page?: string; toolType?: string; tier?: string; variantId?: string; upstreamStatus?: number; upstreamCode?: string; publicCode?: string } = {},
 ) {
   // Catalog identifiers are public contract data. Questions, snapshots, reading
   // IDs, request headers and environment values are intentionally never logged.
@@ -153,7 +161,32 @@ function sharedCheckoutRejection(
     : status === 503
       ? 'checkout_intent_unavailable'
       : 'invalid_checkout_intent';
-  return json({ error }, status, origin);
+  return json({ error, ...(context.publicCode ? { code: context.publicCode } : {}) }, status, origin);
+}
+
+function personalDirectQuoteChanged(
+  origin: string,
+  quote: { variantId: string; sku: string; price: number; priceCents: number; currency: string; country: string },
+  tier: string,
+) {
+  // This event deliberately contains catalog/market data only. The customer's
+  // question, context, cards, reading ID and snapshot are never logged.
+  console.warn(JSON.stringify({
+    event: 'personal_direct_quote_changed',
+    status: 409,
+    code: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.quoteChanged,
+    presentationVariant: PERSONAL_DIRECT_PRESENTATION_VARIANT,
+    tier,
+    variantId: quote.variantId,
+    currency: quote.currency,
+    country: quote.country,
+  }));
+  return json({
+    error: 'checkout_price_changed',
+    code: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.quoteChanged,
+    confirmationRequired: true,
+    checkoutQuote: quote,
+  }, 409, origin);
 }
 
 function clean(value: unknown, maximum: number) {
@@ -251,6 +284,8 @@ export async function POST(request: Request) {
   }, request.headers);
 
   const requestedKind = clean(body.kind, 32).toLowerCase();
+  const requestedPersonalDirect = requestedKind === 'shared_tool'
+    && clean(body.page, 120) === PERSONAL_DIRECT_PAGE;
   const bigThree = requestedKind === 'big_three';
   const birthChart = requestedKind === 'birth_chart';
   const loveTarot = requestedKind === 'love_tarot';
@@ -261,12 +296,26 @@ export async function POST(request: Request) {
   const moonLunar = requestedKind === 'moon_lunar';
   const numerologyCompatibility = requestedKind === 'numerology_compatibility';
   const storefrontTier = normalizeStorefrontTier(body.tier);
-  const question = clean(body.question, 400);
+  const question = clean(body.question, requestedPersonalDirect ? 600 : 400);
   const readingId = clean(body.readingId, 80);
   const funnelVersion = clean(body.funnelVersion, 128);
   if (!storefrontTier
     || question.length < 6
     || !/^[a-z0-9-]{8,80}$/i.test(readingId)) {
+    if (requestedPersonalDirect) {
+      const publicCode = !storefrontTier
+        ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.tierUnsupported
+        : question.length < 6
+          ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.questionInvalid
+          : PERSONAL_DIRECT_PUBLIC_ERROR_CODES.requestInvalid;
+      return sharedCheckoutRejection(422, publicCode, origin, {
+        page: PERSONAL_DIRECT_PAGE,
+        toolType: PERSONAL_DIRECT_TYPE,
+        tier: clean(body.tier, 20),
+        variantId: clean(body.expectedVariantId, 24),
+        publicCode,
+      });
+    }
     return json({ error: 'invalid_checkout_intent' }, 422, origin);
   }
   const tier = paidTierForStorefrontTier(storefrontTier);
@@ -519,6 +568,19 @@ export async function POST(request: Request) {
     const pageValue = clean(body.page, 120);
     const toolType = clean(body.toolType, 80);
     const expectedVariantValue = clean(body.expectedVariantId, 24);
+    const submittedSharedSnapshot = record(body.snapshot);
+    const submittedPresentationVariant = clean(submittedSharedSnapshot.presentationVariant, 80);
+    const personalDirectClaimed = pageValue === PERSONAL_DIRECT_PAGE
+      || /^personal-direct-/i.test(submittedPresentationVariant);
+    if (personalDirectClaimed && pageValue !== PERSONAL_DIRECT_PAGE) {
+      return sharedCheckoutRejection(422, PERSONAL_DIRECT_PUBLIC_ERROR_CODES.canonicalPageInvalid, origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+        publicCode: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.canonicalPageInvalid,
+      });
+    }
     if (funnelVersion !== SHARED_TOOL_FUNNEL_VERSION
       || !/^\/pages\/[a-z0-9-]{3,80}$/.test(pageValue)
       || !toolType
@@ -528,18 +590,22 @@ export async function POST(request: Request) {
         toolType,
         tier: storefrontTier,
         variantId: expectedVariantValue,
+        ...(personalDirectClaimed ? { publicCode: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.requestInvalid } : {}),
       });
     }
     const contract = sharedToolVariantContract(pageValue, toolType, storefrontTier, expectedVariantValue);
     if (!contract) {
-      return sharedCheckoutRejection(422, 'SHARED_PAGE_TYPE_TIER_VARIANT_MISMATCH', origin, {
+      const reason = personalDirectClaimed
+        ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.productContractMismatch
+        : 'SHARED_PAGE_TYPE_TIER_VARIANT_MISMATCH';
+      return sharedCheckoutRejection(422, reason, origin, {
         page: pageValue,
         toolType,
         tier: storefrontTier,
         variantId: expectedVariantValue,
+        ...(personalDirectClaimed ? { publicCode: reason } : {}),
       });
     }
-    const submittedSharedSnapshot = record(body.snapshot);
     let sharedSnapshot = submittedSharedSnapshot;
     if (pageValue === SEVEN_CARD_HORSESHOE_PAGE) {
       const questionPolicy = sevenCardHorseshoeCheckoutQuestionPolicy(question);
@@ -620,9 +686,48 @@ export async function POST(request: Request) {
       }
       sharedSnapshot = { ...sharedSnapshot, transportFallback };
     }
+    const exactPersonalDirectPage = pageValue === PERSONAL_DIRECT_PAGE;
+    const personalDirectValidation = validatePersonalDirectSnapshot({
+      page: pageValue,
+      toolType,
+      presentationVariant: submittedPresentationVariant,
+      snapshot: sharedSnapshot,
+    });
+    if (exactPersonalDirectPage) {
+      const personalPolicy = personalDirectQuestionPolicy(question, clean(sharedSnapshot.context, 1_500));
+      if (!personalPolicy.ok) {
+        const publicCode = personalPolicy.safetyCategory
+          ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.safetyBlocked
+          : PERSONAL_DIRECT_PUBLIC_ERROR_CODES.questionInvalid;
+        return sharedCheckoutRejection(422, publicCode, origin, {
+          page: pageValue,
+          toolType,
+          tier: storefrontTier,
+          variantId: expectedVariantValue,
+          publicCode,
+        });
+      }
+      if (!personalDirectValidation.applies || !personalDirectValidation.ok) {
+        return sharedCheckoutRejection(422, PERSONAL_DIRECT_PUBLIC_ERROR_CODES.evidenceMismatch, origin, {
+          page: pageValue,
+          toolType,
+          tier: storefrontTier,
+          variantId: expectedVariantValue,
+          publicCode: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.evidenceMismatch,
+        });
+      }
+    } else if (personalDirectValidation.applies && !personalDirectValidation.ok) {
+      return sharedCheckoutRejection(422, PERSONAL_DIRECT_PUBLIC_ERROR_CODES.evidenceMismatch, origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+        publicCode: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.evidenceMismatch,
+      });
+    }
     const snapshotVersion = clean(sharedSnapshot.version, 40);
     const snapshotType = clean(sharedSnapshot.type, 80);
-    const snapshotQuestion = clean(sharedSnapshot.question, 400);
+    const snapshotQuestion = clean(sharedSnapshot.question, exactPersonalDirectPage ? 600 : 400);
     const snapshotContext = clean(sharedSnapshot.context, 4000);
     const snapshotSignals = clean(sharedSnapshot.signals, 1500);
     const snapshotCards = clean(sharedSnapshot.cards, 1500);
@@ -668,7 +773,9 @@ export async function POST(request: Request) {
       || !snapshotScope
       || !snapshotConfidence
       || !snapshotTool
-      || (!snapshotCuriosityQuestion && !(sevenCardValidation.applies && sevenCardValidation.ok))) {
+      || (!snapshotCuriosityQuestion
+        && !(sevenCardValidation.applies && sevenCardValidation.ok)
+        && !(personalDirectValidation.applies && personalDirectValidation.ok))) {
       return sharedCheckoutRejection(422, 'SHARED_SNAPSHOT_CONTRACT_MISMATCH', origin, {
         page: pageValue,
         toolType,
@@ -742,7 +849,7 @@ export async function POST(request: Request) {
         variantId: expectedVariantValue,
       });
     }
-    if (exactSevenCardPage) {
+    if (exactSevenCardPage || exactPersonalDirectPage) {
       const quoteLookup = await verifyShopifyReadingVariantQuote({
         variantId: sharedProduct.variantId,
         expectedSku: sharedProduct.sku,
@@ -766,6 +873,31 @@ export async function POST(request: Request) {
           upstreamCode: failure.upstreamCode || '',
         });
       }
+      if (exactPersonalDirectPage) {
+        const displayedQuote = record(body.displayedQuote);
+        const displayedVariantId = clean(displayedQuote.variantId, 24);
+        const displayedSku = clean(displayedQuote.sku, 80).toUpperCase();
+        const displayedPriceCents = Number(displayedQuote.priceCents);
+        const displayedCurrency = clean(displayedQuote.currency, 3).toUpperCase();
+        const displayedCountry = clean(displayedQuote.country, 2).toUpperCase();
+        if (displayedVariantId !== quoteLookup.quote.variantId || displayedSku !== quoteLookup.quote.sku
+          || !Number.isInteger(displayedPriceCents) || displayedPriceCents <= 0
+          || !/^[A-Z]{3}$/.test(displayedCurrency)
+          || !/^[A-Z]{2}$/.test(displayedCountry)) {
+          return sharedCheckoutRejection(422, PERSONAL_DIRECT_PUBLIC_ERROR_CODES.displayedQuoteInvalid, origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+            publicCode: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.displayedQuoteInvalid,
+          });
+        }
+        if (displayedPriceCents !== quoteLookup.quote.priceCents
+          || displayedCurrency !== quoteLookup.quote.currency
+          || displayedCountry !== quoteLookup.quote.country) {
+          return personalDirectQuoteChanged(origin, quoteLookup.quote, storefrontTier);
+        }
+      }
       sharedCheckoutQuote = {
         intentId: id,
         variantId: quoteLookup.quote.variantId,
@@ -778,7 +910,9 @@ export async function POST(request: Request) {
     page = pageValue;
     readingType = toolType;
     const sharedCategory = clean(body.category, 20).toLowerCase();
-    category = sharedCategory === 'love' || sharedCategory === 'career' || sharedCategory === 'money' || sharedCategory === 'personal'
+    category = exactPersonalDirectPage
+      ? 'personal'
+      : sharedCategory === 'love' || sharedCategory === 'career' || sharedCategory === 'money' || sharedCategory === 'personal'
       ? sharedCategory
       : 'general';
     deck = /astro|chart|horoscope|zodiac|moon|rising|lilith|node|saturn|venus/i.test(toolType)
