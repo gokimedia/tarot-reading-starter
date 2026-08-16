@@ -378,12 +378,17 @@ test('free reading accepts v50-v57, preserves missing legacy requests, and rejec
     const body = readingBody(undefined, `unsupported_funnel_${index}`);
     body.funnelVersion = funnelVersion;
     const budget = rollingBudget();
-    const response = await handleFreeReading(readingRequest(body), workerEnv(jsonKv(), budget));
+    const kv = jsonKv();
+    const response = await handleFreeReading(readingRequest(body), workerEnv(kv, budget));
     const payload = await response.json();
     assert.equal(response.status, 422, funnelVersion);
+    assert.equal(payload.error, 'This reading result uses an unsupported funnel version. Please refresh the page and try again.');
     assert.equal(payload.reason, 'UNSUPPORTED_FUNNEL_VERSION');
     assert.deepEqual(payload.missing, ['funnelVersion']);
+    assert.equal(payload.token, undefined);
+    assert.equal(payload.preview, undefined);
     assert.equal(budget.claims, 0, 'unsupported versions must fail before quota is reserved');
+    assert.equal(kv.values.size, 0, 'unsupported versions must fail before any snapshot or session is persisted');
   }
 });
 

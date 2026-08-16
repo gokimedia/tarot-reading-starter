@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
+import readingsWorker, {
   conciseDeterministicFreeTeaser,
   freePreviewPayload,
   freeTeaserAudit,
@@ -459,11 +459,182 @@ test('missing-version v2 Free Tarot sessions migrate only with complete owner-bo
       assert.equal(payload.verified, true);
       assert.equal(payload.session.question, body.question);
       assert.equal(payload.session.cards, body.cards);
+      const persisted = JSON.parse(kv.values.get(lastApprovedKey));
+      assert.equal(persisted.legacyMissingFunnelVersionVerified, true);
+      const repeated = await handleFreeSession(sessionRequest(), env);
+      const repeatedPayload = await repeated.json();
+      assert.equal(repeatedPayload.found, true, JSON.stringify(repeatedPayload));
+      assert.equal(repeatedPayload.verified, true);
+      assert.equal(repeatedPayload.session.question, body.question);
     } else {
       assert.deepEqual(payload, { found: false, kind: 'last-approved', verified: false, reason: 'not_found' });
       assert.equal(kv.values.has(lastApprovedKey), false);
     }
   }
+});
+
+test('missing funnel versions cannot restore directly outside the complete legacy migration path', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const body = readingBody('What complete pattern should I understand before a legacy current lookup?', 'legacy_missing_direct_current');
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const snapshotKey = `preview:${created.payload.token}`;
+  const current = JSON.parse(kv.values.get(currentKey));
+  const snapshot = JSON.parse(kv.values.get(snapshotKey));
+  delete current.fields.funnelVersion;
+  delete snapshot.fields.funnelVersion;
+  kv.values.set(currentKey, JSON.stringify(current));
+  kv.values.set(snapshotKey, JSON.stringify(snapshot));
+
+  const response = await handleFreeSession(sessionRequest(VISITOR_ID, 'current'), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    found: false,
+    kind: 'current',
+    verified: false,
+    reason: 'missing_funnel_version',
+  });
+  assert.equal(kv.values.has(currentKey), false);
+});
+
+test('a complete unmarked missing-version last-approved pointer enters the narrow migration on its first lookup', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const body = readingBody('What complete pattern should I understand before first legacy restore?', 'legacy_missing_first_restore');
+  delete body.funnelVersion;
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+
+  const response = await handleFreeSession(sessionRequest(), env);
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.found, true, JSON.stringify(payload));
+  assert.equal(payload.verified, true);
+  assert.equal(payload.session.question, body.question);
+  assert.equal(payload.session.funnelVersion, '');
+  const lastApprovedKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const persisted = JSON.parse(kv.values.get(lastApprovedKey));
+  assert.equal(persisted.legacyMissingFunnelVersionVerified, true);
+});
+
+test('current and last-approved restore reject explicit future or unknown funnels in either persisted authority', async () => {
+  const cases = [
+    { kind: 'current', source: 'record', version: 'premium-choice-2026-08-v58' },
+    { kind: 'current', source: 'snapshot', version: 'premium-choice-2026-08-unknown' },
+    { kind: 'last-approved', source: 'record', version: 'premium-choice-2026-08-unknown' },
+    { kind: 'last-approved', source: 'snapshot', version: 'premium-choice-2026-08-v58' },
+  ];
+  for (const [index, fixture] of cases.entries()) {
+    const kv = jsonKv();
+    const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+    const body = readingBody(`What should I understand before persisted session check ${index + 1}?`, `persisted_funnel_reject_${index + 1}`);
+    const created = await createPreview(env, body);
+    assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+    const pointerPrefix = fixture.kind === 'current' ? 'preview-current:' : 'preview-last-approved:';
+    const pointerKey = [...kv.values.keys()].find((key) => key.startsWith(pointerPrefix));
+    const snapshotKey = `preview:${created.payload.token}`;
+    if (fixture.source === 'record') {
+      const record = JSON.parse(kv.values.get(pointerKey));
+      record.fields.funnelVersion = fixture.version;
+      kv.values.set(pointerKey, JSON.stringify(record));
+    } else {
+      const snapshot = JSON.parse(kv.values.get(snapshotKey));
+      snapshot.fields.funnelVersion = fixture.version;
+      kv.values.set(snapshotKey, JSON.stringify(snapshot));
+    }
+
+    const response = await handleFreeSession(sessionRequest(VISITOR_ID, fixture.kind), env);
+    assert.equal(response.status, 200, JSON.stringify(fixture));
+    assert.deepEqual(await response.json(), {
+      found: false,
+      kind: fixture.kind,
+      verified: false,
+      reason: 'unsupported_funnel_version',
+    }, JSON.stringify(fixture));
+    assert.equal(kv.values.has(pointerKey), false, JSON.stringify(fixture));
+  }
+});
+
+test('an unsupported persisted last-approved pointer cannot fall through to otherwise valid token recovery', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const body = readingBody('What should I understand before a compound session recovery check?', 'persisted_funnel_recovery_block');
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const pointerKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const record = JSON.parse(kv.values.get(pointerKey));
+  record.fields.funnelVersion = 'premium-choice-2026-08-v58';
+  kv.values.set(pointerKey, JSON.stringify(record));
+
+  const response = await handleFreeSession(sessionRequest(VISITOR_ID, 'last-approved', REQUEST_HEADERS, {
+    token: created.payload.token,
+    readingId: body.readingId,
+    question: body.question,
+  }), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    found: false,
+    kind: 'last-approved',
+    verified: false,
+    reason: 'unsupported_funnel_version',
+  });
+  assert.equal(kv.values.has(pointerKey), false);
+});
+
+test('checkout snapshot rejects an explicit unknown funnel before quota or persistence while preserving missing legacy intake', async () => {
+  const unsupportedKv = jsonKv();
+  const unsupportedBudget = rollingBudget({ limit: 1 });
+  const unsupportedBody = readingBody('What should I understand before an unsupported checkout snapshot?', 'checkout_snapshot_unknown');
+  unsupportedBody.funnelVersion = 'premium-choice-2026-08-v58';
+  const unsupported = await readingsWorker.fetch(new Request('https://reading.deckaura.com/checkout-snapshot', {
+    method: 'POST',
+    headers: REQUEST_HEADERS,
+    body: JSON.stringify(unsupportedBody),
+  }), workerEnv(unsupportedKv, unsupportedBudget));
+  assert.equal(unsupported.status, 422);
+  assert.deepEqual(await unsupported.json(), {
+    error: 'This reading result uses an unsupported funnel version. Please refresh the page and try again.',
+    reason: 'UNSUPPORTED_FUNNEL_VERSION',
+    missing: ['funnelVersion'],
+  });
+  assert.equal(unsupportedBudget.claims, 0);
+  assert.equal(unsupportedKv.values.size, 0);
+
+  const relabeledKv = jsonKv();
+  const relabeledBudget = rollingBudget({ limit: 1 });
+  const relabeledBody = readingBody('What should I understand before a relabeled checkout snapshot?', 'checkout_snapshot_relabeled_unknown');
+  relabeledBody.tool = '/pages/career-tarot-reading';
+  relabeledBody.type = 'Career Tarot';
+  relabeledBody.funnelVersion = 'premium-choice-2026-08-unknown';
+  const relabeled = await readingsWorker.fetch(new Request('https://reading.deckaura.com/checkout-snapshot', {
+    method: 'POST',
+    headers: REQUEST_HEADERS,
+    body: JSON.stringify(relabeledBody),
+  }), workerEnv(relabeledKv, relabeledBudget));
+  assert.equal(relabeled.status, 422);
+  assert.deepEqual(await relabeled.json(), {
+    error: 'This reading result uses an unsupported funnel version. Please refresh the page and try again.',
+    reason: 'UNSUPPORTED_FUNNEL_VERSION',
+    missing: ['funnelVersion'],
+  });
+  assert.equal(relabeledBudget.claims, 0);
+  assert.equal(relabeledKv.values.size, 0);
+
+  const legacyKv = jsonKv();
+  const legacyBody = readingBody('What should I understand before a legacy checkout snapshot?', 'checkout_snapshot_missing');
+  delete legacyBody.funnelVersion;
+  const legacy = await readingsWorker.fetch(new Request('https://reading.deckaura.com/checkout-snapshot', {
+    method: 'POST',
+    headers: REQUEST_HEADERS,
+    body: JSON.stringify(legacyBody),
+  }), workerEnv(legacyKv, rollingBudget({ limit: 1 })));
+  const legacyPayload = await legacy.json();
+  assert.equal(legacy.status, 200, JSON.stringify(legacyPayload));
+  assert.equal(legacyPayload.ok, true);
+  assert.equal(legacyPayload.purchaseIntentOnly, true);
+  assert.match(legacyPayload.token, /^[a-f0-9]{32}$/);
 });
 
 test('paid-new-spread creates and replays one server-authoritative v57 snapshot for the exact paid question', async () => {
@@ -525,6 +696,71 @@ test('paid-new-spread creates and replays one server-authoritative v57 snapshot 
     hydratePreviewSnapshot({ ...hydrated, question: 'What different question should replace the paid one?' }, env),
     (error) => error?.code === 'PREVIEW_QUESTION_MISMATCH',
   );
+});
+
+test('paid-new-spread never replays persisted unknown funnels and payment hydration rejects their old snapshot', async () => {
+  for (const fields of [
+    { tool: '/pages/free-tarot-reading', funnelVersion: 'premium-choice-2026-08-v58' },
+    { tool: '/pages/career-tarot-reading', funnelVersion: 'premium-choice-2026-08-unknown' },
+    { funnelVersion: 'premium-choice-2026-08-v58' },
+  ]) {
+    await assert.rejects(
+      hydratePreviewSnapshot(fields, workerEnv(jsonKv(), rollingBudget({ limit: 1 }))),
+      (error) => error?.code === 'UNSUPPORTED_FUNNEL_VERSION' && error?.missing?.includes('funnelVersion'),
+      'an explicit premium-choice unknown funnel must fail before token-less payment hydration',
+    );
+  }
+
+  for (const [index, source] of ['record', 'snapshot'].entries()) {
+    const kv = jsonKv();
+    const env = workerEnv(kv, rollingBudget({ limit: 4 }));
+    const question = `What should I understand before paid recovery case ${index + 1}?`;
+    const request = () => handleFreeSession(sessionRequest(VISITOR_ID, 'paid-new-spread', REQUEST_HEADERS, {
+      question,
+      requestedLocale: 'en-US',
+    }), env);
+    const firstResponse = await request();
+    const first = await firstResponse.json();
+    assert.equal(firstResponse.status, 200, JSON.stringify(first));
+    const pointerKey = [...kv.values.keys()].find((key) => key.startsWith('preview-paid-new-spread:'));
+    const snapshotKey = `preview:${first.session.token}`;
+    if (source === 'record') {
+      const record = JSON.parse(kv.values.get(pointerKey));
+      record.fields.funnelVersion = 'premium-choice-2026-08-v58';
+      kv.values.set(pointerKey, JSON.stringify(record));
+    } else {
+      const snapshot = JSON.parse(kv.values.get(snapshotKey));
+      snapshot.fields.funnelVersion = 'premium-choice-2026-08-unknown';
+      kv.values.set(snapshotKey, JSON.stringify(snapshot));
+      await assert.rejects(
+        hydratePreviewSnapshot({
+          question,
+          freeToken: first.session.token,
+          readingId: first.session.readingId,
+          type: first.session.type,
+          cards: first.session.cards,
+          spread: first.session.spread,
+          context: first.session.context,
+          signals: first.session.signals,
+          scope: first.session.scope,
+          confidence: first.session.confidence,
+          tool: first.session.tool,
+          funnelVersion: first.session.funnelVersion,
+          snapshotVersion: first.session.snapshotVersion,
+        }, env),
+        (error) => error?.code === 'UNSUPPORTED_FUNNEL_VERSION' && error?.missing?.includes('funnelVersion'),
+      );
+    }
+
+    const secondResponse = await request();
+    const second = await secondResponse.json();
+    assert.equal(secondResponse.status, 200, JSON.stringify(second));
+    assert.equal(second.found, true);
+    assert.equal(second.verified, true);
+    assert.equal(second.replayed, false);
+    assert.notEqual(second.session.token, first.session.token);
+    assert.equal(second.session.funnelVersion, FREE_TAROT_FUNNEL_VERSION);
+  }
 });
 
 test('privacy-safe logging redacts token, conversation, and signature authorities at every object depth', () => {
