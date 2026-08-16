@@ -6,6 +6,7 @@ import {
   canonicalMoonFunnelMetadata,
   canonicalSharedToolFunnelEvent,
   canonicalSharedToolFunnelMetadata,
+  handleFunnelEvents,
   isAllowedFunnelPage,
 } from '../lib/legacy-worker.mjs';
 
@@ -53,6 +54,55 @@ test('shared telemetry fails closed on unknown event, wrong page/type or tier/va
   assert.equal(canonicalSharedToolFunnelEvent({ ...valid, page: '/pages/birth-chart-calculator' }, valid.eventName, metadata), false);
   assert.equal(canonicalSharedToolFunnelEvent({ ...valid, shopifyVariantId: '53782499066129' }, valid.eventName, metadata), false);
   assert.equal(canonicalSharedToolFunnelMetadata({ ...valid.metadata, email: 'not-allowed@example.test' }, valid.eventName).ok, false);
+});
+
+test('Yes/No direct-v1 accepts the strict shared-tool telemetry contract without reopening the legacy contract', async () => {
+  const flowId = '12345678-1234-4234-9234-123456789abc';
+  const recorded = [];
+  const event = {
+    eventId: '12345678-1234-4234-9234-123456789abc',
+    eventName: 'paid_offer_view',
+    page: '/pages/yes-or-no-tarot',
+    readingId: flowId,
+    readingMode: 'shared_tool',
+    funnelVersion: 'enterprise-shared-tools-2026-08-v1',
+    selectedTier: '',
+    shopifyVariantId: '',
+    metadata: {
+      flow_id: flowId,
+      locale: 'en-us',
+      device: 'mobile',
+      traffic_type: 'internal',
+      tool_type: 'Yes or No Tarot',
+      offer_variant: 'enterprise_shared_v1',
+      source: 'direct_result',
+    },
+    occurredAt,
+  };
+  const request = new Request('https://reading.deckaura.com/funnel-events', {
+    method: 'POST',
+    headers: {
+      Origin: 'https://deckaura.com',
+      'Content-Type': 'application/json; charset=utf-8',
+      'CF-Connecting-IP': '203.0.113.52',
+      'User-Agent': 'Deckaura shared telemetry contract test',
+    },
+    body: JSON.stringify({ visitorId: 'direct-telemetry-visitor-20260817', events: [event] }),
+  });
+  const response = await handleFunnelEvents(request, {
+    ENTITLEMENT_PEPPER: 'direct-telemetry-test-pepper',
+    FUNNEL_STORE: {
+      recordEvents: async (_visitorHash, events) => {
+        recorded.push(...events);
+        return { accepted: events.length };
+      },
+    },
+  });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].page, '/pages/yes-or-no-tarot');
+  assert.equal(recorded[0].readingMode, 'shared_tool');
+  assert.equal(recorded[0].metadata.tool_type, 'Yes or No Tarot');
 });
 
 test('moon page telemetry is allowlisted under its own strict mode/version contract', () => {

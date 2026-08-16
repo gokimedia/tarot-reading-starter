@@ -44,6 +44,7 @@ import {
 } from '../lib/direct-tarot-tools.mjs';
 import {
   freePreviewSnapshotTtlSeconds,
+  generateDirectTarotCompactInsight,
   handleFreeReading,
   validateReadingFields,
 } from '../lib/legacy-worker.mjs';
@@ -387,6 +388,49 @@ test('deterministic direct fallbacks pass the exact word, language, no-echo, cer
   const base = { kind: 'love', locale: 'en', cards: [{ card: 'The Star' }, { card: 'Justice' }, { card: 'The Sun' }], question: 'Should I contact this person again today?' };
   assert.equal(auditDirectTarotCompactInsight('The Star shows she feels love. Justice proves she will return. The Sun guarantees your future together completely and permanently.', base).ok, false);
   assert.equal(auditDirectTarotCompactInsight('The Star reflects Should I contact this person again today. Justice adds context to the choice. The Sun suggests a grounded step you control.', base).ok, false);
+});
+
+test('server-owned deterministic fallback survives incidental question-word overlap without weakening model audits', async () => {
+  const question = 'Can I choose the next reversible step I control?';
+  const snapshot = yesSnapshot('The Star', { question });
+  const contract = {
+    kind: 'yes_no',
+    locale: 'en',
+    answer: 'YES',
+    question,
+    cards: [{ position: 'The Answer', card: 'The Star', displayName: 'The Star', aliases: ['The Star'] }],
+  };
+  const deterministic = deterministicDirectTarotCompactInsight(contract);
+  const untrustedAudit = auditDirectTarotCompactInsight(deterministic, contract);
+  assert.equal(untrustedAudit.ok, false);
+  assert.equal(untrustedAudit.reason, 'compact_insight_echoed_question');
+
+  const kv = jsonKv();
+  const quota = previewBudget();
+  const response = await handleFreeReading(freeRequest(snapshot), workerEnv(kv, quota));
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.compactInsight, deterministic);
+  assert.equal(payload.preview.compactInsight, deterministic);
+  assert.equal(payload.compactInsightAuditStatus, 'passed_fallback');
+  assert.match(payload.token, /^[a-f0-9]{32}$/);
+  assert.equal(quota.claims, 1);
+  assert.equal(quota.commits, 1);
+  assert.equal(quota.releases, 0);
+});
+
+test('an invalid server fallback throws before a preview token can be treated as successful', async () => {
+  await assert.rejects(
+    generateDirectTarotCompactInsight({
+      tool: YES_NO_DIRECT_PAGE,
+      type: YES_NO_DIRECT_TYPE,
+      presentationVariant: YES_NO_DIRECT_PRESENTATION_VARIANT,
+      question: YES_QUESTION,
+      readingId: READING_ID,
+      locale: 'en-US',
+    }, {}),
+    (error) => error && error.status === 503 && error.code === 'DIRECT_TAROT_COMPACT_FALLBACK_INVALID',
+  );
 });
 
 test('direct preview authority lasts exactly 24 hours and reconstructs only canonical immutable evidence', () => {
