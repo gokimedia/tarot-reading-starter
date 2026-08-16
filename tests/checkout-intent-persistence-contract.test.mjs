@@ -19,3 +19,19 @@ test('yes_no keeps intent_kind and snapshot_hash null while dedicated intents st
   assert.match(route, /return json\(\{ error: 'checkout_intent_unavailable' \}, 503, origin\)/);
   assert.match(migration, /intent_kind is null and snapshot_hash is null/i);
 });
+
+test('shared-tool card identity constraint admits only direct Yes/No card ids and preserves every legacy branch', async () => {
+  const priorMigration = await readFile(new URL('supabase/migrations/20260811023000_shared_tool_checkout_intents.sql', root), 'utf8');
+  const migration = await readFile(new URL('supabase/migrations/20260816225841_allow_yes_no_direct_shared_tool_card_id.sql', root), 'utf8');
+  const route = await readFile(new URL('app/api/readings/intent/route.ts', root), 'utf8');
+  const normalizedPrior = priorMigration.replace(/\s+/g, ' ').trim();
+  const normalizedMigration = migration.replace(/\s+/g, ' ').trim();
+  const unchangedBranchMarker = "or (intent_kind = 'birth_chart' and card_id = 0 and card_name = 'Natal chart')";
+  const unchangedPriorBranches = normalizedPrior.slice(normalizedPrior.indexOf(unchangedBranchMarker));
+
+  assert.notEqual(unchangedPriorBranches, '', 'could not locate the protected legacy constraint branches');
+  assert.match(normalizedMigration, /intent_kind = 'shared_tool' and \( \(page = '\/pages\/yes-or-no-tarot' and card_id between 1 and 78\) or \(page is distinct from '\/pages\/yes-or-no-tarot' and card_id = 0\) \)/i);
+  assert.doesNotMatch(normalizedMigration, /\(intent_kind = 'shared_tool' and card_id = 0\)/i);
+  assert.ok(normalizedMigration.endsWith(unchangedPriorBranches), 'a non-shared-tool card_id constraint branch changed');
+  assert.match(route, /cardId = directTarotValidation\.kind === 'yes_no'\s*\? Number\(directEvidenceCard\.id\)\s*: 0;/);
+});

@@ -229,6 +229,16 @@ test('direct route allows only bounded preview transport failures, fails policy 
       return value == null ? [] : [{ value }];
     }
     if (query.includes('insert into deckaura.checkout_intents')) {
+      const persistedPage = String(values[2]);
+      const persistedCardId = Number(values[11]);
+      const persistedIntentKind = String(values[18]);
+      const cardIdentityAccepted = persistedIntentKind !== 'shared_tool'
+        || (persistedPage === YES_NO_DIRECT_PAGE
+          ? Number.isInteger(persistedCardId) && persistedCardId >= 1 && persistedCardId <= 78
+          : persistedCardId === 0);
+      if (!cardIdentityAccepted) {
+        throw new Error('new row violates check constraint checkout_intents_card_id');
+      }
       inserts.push({ values, snapshot: values.find((value) => value?.__testJson)?.__testJson });
       return [];
     }
@@ -255,6 +265,11 @@ test('direct route allows only bounded preview transport failures, fails policy 
     assert.equal(inserts.at(-1).snapshot.answer, 'YES');
   }
   assert.equal(inserts.length, 4);
+  assert.equal(inserts[0].values[2], YES_NO_DIRECT_PAGE);
+  assert.equal(inserts[0].values[18], 'shared_tool');
+  assert.equal(inserts[0].values[11], inserts[0].snapshot.card.id);
+  assert.equal(Number.isInteger(inserts[0].values[11]), true);
+  assert.equal(inserts[0].values[11] >= 1 && inserts[0].values[11] <= 78, true);
 
   const token = 'b'.repeat(32);
   const visitorAuthority = await sevenCardHorseshoeVisitorAuthority(VISITOR_ID, process.env.ENTITLEMENT_PEPPER);
