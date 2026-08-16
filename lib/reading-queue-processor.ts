@@ -17,6 +17,11 @@ import {
   hasConfirmedReadingFulfillment,
   readingIntentPropertiesMatch,
 } from '@/lib/reading-delivery-guards.mjs';
+import {
+  freeTarotPaidPackageAuthority,
+  paidReadingDeliveryJobInput,
+  shopifyFinancialStatusAllowsReadingFulfillment,
+} from '@/lib/free-tarot-payment-contract.mjs';
 import { validateNumerologyCompatibilityOrder } from '@/lib/numerology-compatibility-order.mjs';
 import { validateNumerologyLifePathOrder } from '@/lib/numerology-life-path-order.mjs';
 import {
@@ -1504,6 +1509,9 @@ function paidTier(sku: string): 'standard' | 'medium' | 'premium' {
 function paidPackageAuthority(item: JsonObject) {
   const variantId = text(item.variant_id, 64);
   const sku = text(item.sku, 80).toUpperCase();
+  const freeTarotAuthority = freeTarotPaidPackageAuthority({ variantId, sku });
+  if (freeTarotAuthority?.ok === false) throw new QueueOperationError(freeTarotAuthority.reason);
+  if (freeTarotAuthority?.ok === true) return freeTarotAuthority;
   const tier = paidTier(sku);
   const catalog = readingPackageByVariant(variantId);
   const sharedVariant = SHARED_TOOL_VARIANT_IDS.includes(variantId);
@@ -1957,6 +1965,9 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
   if (!orderId || (row.order_id && row.order_id !== orderId)) {
     throw new QueueOperationError('SHOPIFY_ORDER_ID_MISMATCH');
   }
+  if (!shopifyFinancialStatusAllowsReadingFulfillment(payload.financial_status)) {
+    throw new QueueOperationError('SHOPIFY_PAYMENT_NOT_CAPTURED');
+  }
   const compatibilityNumerology = validateNumerologyCompatibilityOrder(payload, items) as JsonObject | null;
   const lifePathNumerology = validateNumerologyLifePathOrder(payload, items) as JsonObject | null;
   if (compatibilityNumerology && lifePathNumerology) throw new QueueOperationError('NUMEROLOGY_REPORT_TYPE_AMBIGUOUS');
@@ -2052,13 +2063,7 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
     metadata: { source: 'verified_shopify_webhook', answers_used: attribution.answersUsed },
     occurredAt: new Date(payloadCreatedAt(payload)).toISOString(),
   }]).catch((error) => safeQueueLog('purchase_attribution_record_failed', error, 'shopify_orders_paid'));
-  const job = await deliveryRetry.enqueueDelivery({
-    orderId,
-    jobType: 'paid_reading',
-    dueAt,
-    idempotencyKey: `paid-reading:${orderId}`,
-    maxRetries: 3,
-  });
+  const job = await deliveryRetry.enqueueDelivery(paidReadingDeliveryJobInput(orderId, dueAt));
   if (!job) throw new QueueOperationError('DELIVERY_ENQUEUE_FAILED');
   return { queued: true };
 }
@@ -2250,6 +2255,11 @@ async function processWebhookClaim(row: WebhookQueueRow, env: WorkerEnvironment,
   state.claimed += 1;
   if (!row.lease_token) throw new QueueOperationError('WEBHOOK_LEASE_TOKEN_MISSING');
   try {
+    const topic = text(row.topic, 128).toLowerCase().replace(/_/g, '/');
+    if (topic === 'orders/paid'
+      && !shopifyFinancialStatusAllowsReadingFulfillment(row.payload?.financial_status)) {
+      throw new QueueOperationError('SHOPIFY_PAYMENT_NOT_CAPTURED');
+    }
     const replay = await replayShopifyWebhook(row, env);
     if (replay.ignored) state.ignored += 1;
     else {

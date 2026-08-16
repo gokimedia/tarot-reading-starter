@@ -11,6 +11,7 @@ import {
   freeTeaserAuditAllowsDegradedServe,
   freeWriterPlan,
   generateFreeTeaserHtml,
+  handleFreeReading,
   publicFreePreviewDenial,
   readingQuestionQuality,
 } from '../lib/legacy-worker.mjs';
@@ -22,6 +23,24 @@ const RESERVED_PREVIEW_AXIS_QUESTIONS = Object.freeze({
   de: 'Welches Muster sollte ich verstehen, bevor ich den Beruf wechsle?',
   pt: 'Que padrão devo compreender antes de mudar de carreira?',
 });
+
+function exactLengthQuestion(seed, length) {
+  const repeated = seed.repeat(Math.ceil(length / seed.length) + 1).slice(0, length - 1);
+  return `${repeated.replace(/\s$/u, 'x')}?`;
+}
+
+function reservedPastPresentFutureFields(question, lang = 'en', locale = lang) {
+  return {
+    question,
+    type: 'Three Card Tarot',
+    tool: '/pages/free-tarot-reading',
+    spread: 'Three Card',
+    signals: 'Past: Two of Wands Upright; Present: Nine of Wands Upright; Future: Eight of Wands Reversed',
+    cards: 'Two of Wands, Nine of Wands, Eight of Wands',
+    lang,
+    locale,
+  };
+}
 
 test('free-reading question quality rejects bare names and meaningless subjects', () => {
   for (const question of ['Jennifer', 'Ali?', 'selami selanbas', 'klmnopqr', 'helloooo']) {
@@ -83,11 +102,112 @@ test('Past Present Future preview reserves the verdict and ends with a concrete 
     timing: true,
     nextStep: true,
   });
-  assert.doesNotMatch(structured.html, /Two of Wands|answer's direction|deciding condition|next step/i);
+  assert.match(structured.html, /Future position holds Two of Wands reversed, but its interpretation stays sealed/i);
+  assert.doesNotMatch(structured.html, /answer's direction|deciding condition|next step/i);
   assert.match(structured.lockLabel, /Future card's meaning/i);
   const feelings = { ...fields, question: 'What does Alex feel about me?' };
   assert.doesNotMatch(freeCuriosityQuestion(feelings, 'en'), /point open|leave open|deeper thread|unresolved/i);
   assert.match(freeCuriosityQuestion(feelings, 'en'), /observable change|steadier communication|reciprocal effort|clearer boundaries/i);
+});
+
+test('reserved Past Present Future preview keeps both career and relationship context outside the exact-question quote', async () => {
+  const fixtures = [
+    {
+      question: 'How will changing careers affect my relationship with Alex this year?',
+      lang: 'en',
+      career: /\bcareer\b/i,
+      relationship: /\brelationship\b/i,
+    },
+    {
+      question: 'Should I leave my current job if it creates more distance from my partner?',
+      lang: 'en',
+      career: /\bcareer\b/i,
+      relationship: /\brelationship\b/i,
+    },
+    {
+      question: 'Kariyer değişikliğim Alex ile ilişkimi bu yıl nasıl etkiler?',
+      lang: 'tr',
+      career: /\bkariyer\b/iu,
+      relationship: /\bilişki\b/iu,
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const fields = reservedPastPresentFutureFields(fixture.question, fixture.lang, fixture.lang);
+    const output = conciseDeterministicFreeTeaser(fields, fixture.lang);
+    const generatedBody = output.replace(fixture.question, '');
+    const audit = freeTeaserAudit(output, fields, 58);
+
+    assert.equal(audit.ok, true, `${fixture.lang}: ${audit.reason}: ${output}`);
+    assert.ok(audit.wordCount >= 180 && audit.wordCount <= 210, `${fixture.lang}: ${audit.wordCount} words`);
+    assert.ok(output.includes(fixture.question), `${fixture.lang}: exact question was not preserved`);
+    assert.match(generatedBody, fixture.career, `${fixture.lang}: generated body lost career context`);
+    assert.match(generatedBody, fixture.relationship, `${fixture.lang}: generated body lost relationship context`);
+    assert.deepEqual(freePreviewPayload('mixed-domain-token', output, fields).preview.reserved, {
+      futureInterpretation: true,
+      verdict: true,
+      decidingCondition: true,
+      timing: true,
+      nextStep: true,
+    });
+
+    const runtimeHtml = await generateFreeTeaserHtml(fields, {});
+    const runtimeBody = runtimeHtml.replace(fixture.question, '');
+    const runtimeAudit = freeTeaserAudit(runtimeHtml, fields, 58);
+    assert.equal(runtimeAudit.ok, true, `${fixture.lang}/runtime: ${runtimeAudit.reason}: ${runtimeHtml}`);
+    assert.match(runtimeBody, fixture.career, `${fixture.lang}/runtime: generated body lost career context`);
+    assert.match(runtimeBody, fixture.relationship, `${fixture.lang}/runtime: generated body lost relationship context`);
+  }
+
+  for (const question of [
+    'How can I work on my relationship with Alex?',
+    'I love my job; what pattern should I understand before changing it?',
+  ]) {
+    const fields = reservedPastPresentFutureFields(question, 'en', 'en');
+    const output = conciseDeterministicFreeTeaser(fields, 'en');
+    assert.equal(freeTeaserAudit(output, fields, 58).ok, true, output);
+    assert.doesNotMatch(output, /career pressure and the relationship strain/i, question);
+  }
+
+  const routeQuestion = fixtures[1].question;
+  const routeFields = reservedPastPresentFutureFields(routeQuestion, 'en', 'en-US');
+  const cache = new Map();
+  const response = await handleFreeReading(new Request('https://reading.deckaura.com/free-reading', {
+    method: 'POST',
+    headers: {
+      Origin: 'https://deckaura.com',
+      'Content-Type': 'application/json; charset=utf-8',
+      'CF-Connecting-IP': '203.0.113.51',
+      'User-Agent': 'Deckaura mixed-domain contract test',
+    },
+    body: JSON.stringify({
+      ...routeFields,
+      visitorId: 'mixed_domain_runtime_01',
+      readingId: 'mixed_domain_runtime_01',
+      requestedLocale: 'en-US',
+      scope: '3-card Three Card draw for one focused question',
+      confidence: 'Symbolic tarot direction, not a factual prediction',
+    }),
+  }), {
+    ENTITLEMENT_PEPPER: 'test-only-entitlement-pepper',
+    FREE_READING_BUDGETS: {
+      claim: async () => ({ allowed: true, cap: 2, remaining: 1, nextAt: Date.now() + 60_000 }),
+      settle: async () => ({ allowed: true }),
+    },
+    READINGS_CACHE: {
+      get: async (key) => cache.get(key) || null,
+      put: async (key, value) => cache.set(key, value),
+      delete: async (key) => cache.delete(key),
+    },
+  });
+  const responsePayload = await response.json();
+  const responseBody = responsePayload.teaser.replace(routeQuestion, '');
+  assert.equal(response.status, 200, JSON.stringify(responsePayload));
+  assert.equal(responsePayload.offerAllowed, true);
+  assert.equal(responsePayload.servedSource, 'deterministic_reserved_fast_path');
+  assert.match(responseBody, /\bcareer\b/i);
+  assert.match(responseBody, /\brelationship\b/i);
+  assert.equal(freeTeaserAudit(responsePayload.teaser, routeFields, 58).ok, true, responsePayload.teaser);
 });
 
 test('reserved fallback accepts safe card vocabulary and stays inside its word contract', () => {
@@ -181,6 +301,177 @@ test('every tarot card, position, orientation, and supported locale has an audit
   }
 
   assert.equal(checked, TAROT_CARD_NAMES.length * positions.length * orientations.length * locales.length);
+});
+
+test('reserved previews preserve accepted question boundaries without exceeding the feasible word ceiling', () => {
+  const englishSeed = 'Do I go or stay while I compare the real workload support growth stability and risk ';
+  const lengths = [8, 16, 24, 40, 64, 96, 128, 160, 200, 240, 280, 320, 360, 400];
+  for (const length of lengths) {
+    const question = exactLengthQuestion(englishSeed, length);
+    assert.equal(question.length, length);
+    assert.equal(readingQuestionQuality(question, 'en', { requireIntent: true }).ok, true, `${length}-character question should remain accepted`);
+    const ppf = reservedPastPresentFutureFields(question, 'en', 'en-US');
+    const ppfOutput = conciseDeterministicFreeTeaser(ppf, 'en');
+    const ppfAudit = freeTeaserAudit(ppfOutput, ppf, 58);
+    assert.equal(ppfAudit.ok, true, `PPF/${length}: ${ppfAudit.reason}: ${ppfOutput}`);
+    assert.equal(ppfAudit.lengthContract, 'standard', `PPF/${length}`);
+    assert.ok(ppfAudit.wordCount >= 180 && ppfAudit.wordCount <= 210, `PPF/${length}: ${ppfAudit.wordCount}`);
+    assert.ok(ppfOutput.includes(question), `PPF/${length}: exact question was not preserved`);
+
+    const yesNo = {
+      ...ppf,
+      spread: 'Yes or No Tarot',
+      signals: 'Card 1: The Star Upright - YES; Card 2: The Moon Reversed - MAYBE; Card 3: The Sun Upright - YES; Overall Lean: YES',
+      cards: 'The Star, The Moon, The Sun',
+    };
+    const yesNoOutput = conciseDeterministicFreeTeaser(yesNo, 'en');
+    const yesNoAudit = freeTeaserAudit(yesNoOutput, yesNo, 95);
+    assert.equal(yesNoAudit.ok, true, `YesNo/${length}: ${yesNoAudit.reason}: ${yesNoOutput}`);
+    assert.ok(yesNoAudit.lengthContract === 'standard' || yesNoAudit.lengthContract === 'exact_question_irreducible');
+    if (yesNoAudit.lengthContract === 'standard') assert.ok(yesNoAudit.wordCount >= 95 && yesNoAudit.wordCount <= 145, `YesNo/${length}: ${yesNoAudit.wordCount}`);
+    assert.ok(yesNoOutput.includes(question), `YesNo/${length}: exact question was not preserved`);
+  }
+});
+
+test('400-character supported-locale questions keep exact text and the standard reserved contract', () => {
+  const seeds = {
+    en: 'Should I compare the real workload support growth and risk before changing my career ',
+    tr: 'Kariyerimi değiştirmeden önce gerçek iş yükünü desteği gelişimi ve riski karşılaştırmalı mıyım ',
+    es: '¿Debo comparar la carga real el apoyo el crecimiento y el riesgo antes de cambiar de carrera ',
+    de: 'Soll ich vor dem Berufswechsel Arbeitslast Unterstützung Wachstum und Risiko vergleichen ',
+    pt: 'Devo comparar a carga real o apoio o crescimento e o risco antes de mudar de carreira ',
+  };
+  for (const [lang, seed] of Object.entries(seeds)) {
+    const question = exactLengthQuestion(seed, 400);
+    const fields = reservedPastPresentFutureFields(question, lang, lang === 'en' ? 'en-US' : lang);
+    assert.equal(readingQuestionQuality(question, lang, { requireIntent: true }).ok, true, lang);
+    const output = conciseDeterministicFreeTeaser(fields, lang);
+    const audit = freeTeaserAudit(output, fields, 58);
+    assert.equal(audit.ok, true, `${lang}: ${audit.reason}: ${output}`);
+    assert.equal(audit.lengthContract, 'standard', lang);
+    assert.ok(audit.wordCount >= 180 && audit.wordCount <= 210, `${lang}: ${audit.wordCount}`);
+    assert.ok(output.includes(question), `${lang}: exact question was not preserved`);
+  }
+});
+
+test('an irreducibly long exact question can pass only as the canonical deterministic reserved preview', () => {
+  const question = exactLengthQuestion('I do ', 400);
+  assert.equal(readingQuestionQuality(question, 'en', { requireIntent: true }).ok, true);
+  for (const fields of [
+    reservedPastPresentFutureFields(question, 'en', 'en-US'),
+    {
+      ...reservedPastPresentFutureFields(question, 'en', 'en-US'),
+      spread: 'Yes or No Tarot',
+      signals: 'Card 1: The Star Upright - YES; Card 2: The Moon Reversed - MAYBE; Card 3: The Sun Upright - YES; Overall Lean: YES',
+      cards: 'The Star, The Moon, The Sun',
+    },
+  ]) {
+    const output = conciseDeterministicFreeTeaser(fields, 'en');
+    const audit = freeTeaserAudit(output, fields, 58);
+    assert.equal(audit.ok, true, `${audit.reason}: ${output}`);
+    assert.equal(audit.lengthContract, 'exact_question_irreducible');
+    assert.ok(audit.wordCount > (fields.spread === 'Yes or No Tarot' ? 145 : 210));
+    assert.ok(output.includes(question));
+    const appended = freeTeaserAudit(`${output} Extra optional words must not inherit the exception.`, fields, 58);
+    assert.equal(appended.ok, false);
+    assert.match(appended.reason, /preview ceiling/i);
+  }
+});
+
+test('unsupported Korean question uses the English storefront reserved fast path without a model call', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    throw new Error('unsupported-language storefront fallback must stay deterministic');
+  };
+  const fields = {
+    ...reservedPastPresentFutureFields('이직하기 전에 어떤 패턴을 이해해야 하나요?', 'ko', 'en-US'),
+    requestedLocale: 'en-US',
+    readingId: 'unsupported_ko_storefront_en',
+  };
+  const direct = conciseDeterministicFreeTeaser(fields, 'ko');
+  assert.equal(freeTeaserAudit(direct, fields, 58).ok, true, direct);
+  const html = await generateFreeTeaserHtml(fields, {});
+  const runtimeAudit = freeTeaserAudit(html, fields, 58);
+  const payload = freePreviewPayload('ko-storefront-token', html, fields);
+  const serializedAudit = freeTeaserAudit(payload.teaser, fields, 58);
+  assert.equal(runtimeAudit.ok, true, `${runtimeAudit.reason}: ${html}`);
+  assert.equal(runtimeAudit.mentionedEvidence, 3);
+  assert.equal(serializedAudit.ok, true, `${serializedAudit.reason}: ${payload.teaser}`);
+  assert.equal(serializedAudit.mentionedEvidence, 3);
+  assert.equal(modelCalls, 0);
+  assert.equal(fields.freePreviewVisibleLocale, 'en');
+  assert.equal(fields.freePreviewServedSource, 'deterministic_reserved_fast_path');
+  assert.equal(payload.lang, 'en');
+  assert.equal(payload.resolvedLanguage, 'en');
+  assert.equal(payload.offerAllowed, true);
+  assert.deepEqual(payload.preview.reserved, {
+    futureInterpretation: true,
+    verdict: true,
+    decidingCondition: true,
+    timing: true,
+    nextStep: true,
+  });
+  assert.match(html, /Two of Wands upright.*Nine of Wands upright.*Eight of Wands reversed/is);
+  assert.match(payload.teaser, /Two of Wands upright.*Nine of Wands upright.*Eight of Wands reversed/is);
+  assert.match(payload.preview.html, /Two of Wands upright.*Nine of Wands upright.*Eight of Wands reversed/is);
+  assert.doesNotMatch(payload.preview.html, /answer's direction|deciding condition|next step/i);
+  assert.match(html, /이직하기 전에 어떤 패턴을 이해해야 하나요\?/u);
+
+  const cache = new Map();
+  const env = {
+    ENTITLEMENT_PEPPER: 'test-only-entitlement-pepper',
+    FREE_READING_BUDGETS: {
+      claim: async () => ({ allowed: true, cap: 2, remaining: 1, nextAt: Date.now() + 60_000 }),
+      settle: async () => ({ allowed: true }),
+    },
+    READINGS_CACHE: {
+      get: async (key) => cache.get(key) || null,
+      put: async (key, value) => cache.set(key, value),
+      delete: async (key) => cache.delete(key),
+    },
+  };
+  const request = new Request('https://reading.deckaura.com/free-reading', {
+    method: 'POST',
+    headers: {
+      Origin: 'https://deckaura.com',
+      'Content-Type': 'application/json; charset=utf-8',
+      'CF-Connecting-IP': '203.0.113.42',
+      'User-Agent': 'Deckaura contract test',
+    },
+    body: JSON.stringify({
+      visitorId: 'unsupported_ko_runtime_01',
+      readingId: 'unsupported_ko_runtime_01',
+      question: '이직하기 전에 어떤 패턴을 이해해야 하나요?',
+      requestedLocale: 'en-US',
+      locale: 'en-US',
+      country: 'KR',
+      currency: 'USD',
+      market: 'global',
+      type: 'Three Card Tarot',
+      tool: '/pages/free-tarot-reading',
+      spread: 'Three Card',
+      context: 'Past: Two of Wands upright. Present: Nine of Wands upright. Future: Eight of Wands reversed.',
+      signals: 'Past: Two of Wands Upright; Present: Nine of Wands Upright; Future: Eight of Wands Reversed',
+      cards: 'Two of Wands, Nine of Wands, Eight of Wands',
+      scope: '3-card Three Card draw for one focused question',
+      confidence: 'Symbolic tarot direction, not a factual prediction',
+    }),
+  });
+  const response = await handleFreeReading(request, env);
+  const responsePayload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(responsePayload));
+  assert.equal(modelCalls, 0, 'reserved handler path must not call language detection or a reading model');
+  assert.equal(responsePayload.resolvedLanguage, 'en');
+  assert.equal(responsePayload.servedSource, 'deterministic_reserved_fast_path');
+  const responseAudit = freeTeaserAudit(responsePayload.teaser, { ...fields, freePreviewVisibleLocale: 'en' }, 58);
+  assert.equal(responseAudit.ok, true, `${responseAudit.reason}: ${responsePayload.teaser}`);
+  assert.equal(responseAudit.mentionedEvidence, 3);
+  assert.match(responsePayload.preview.html, /Two of Wands upright.*Nine of Wands upright.*Eight of Wands reversed/is);
 });
 
 test('question language governs reserved runtime labels when the storefront locale is English', async () => {

@@ -13,6 +13,7 @@ import {
   assertReconciliationPageFetched,
   validatedOrdersConnection,
 } from '@/lib/shopify-reconciliation-guards.mjs';
+import { freeTarotReconciledVariantId } from '@/lib/free-tarot-payment-contract.mjs';
 import {
   LOVE_TAROT_FUNNEL_VERSION,
   isSupportedYesNoFunnelVersion,
@@ -141,14 +142,16 @@ function orderPayload(node: JsonObject) {
     const signedCheckoutContext = attributeValue(attributes, 'checkout context');
     const signedCheckoutSignature = attributeValue(attributes, 'checkout signature');
     const funnelVersion = attributeValue(attributes, 'funnel version');
+    const toolPage = attributeValue(attributes, 'tool');
     // ProductVariant requires read_products. For the signed clarifier checkout,
     // the order-owned SKU selects a candidate and the downstream HMAC-bound
     // checkout context must independently prove the exact tier and variant.
-    const reconciledVariantId = funnelVersion === SIGNED_CHECKOUT_FUNNEL_VERSION
+    const freeTarotVariantId = freeTarotReconciledVariantId({ funnelVersion, page: toolPage, sku });
+    const reconciledVariantId = freeTarotVariantId || (funnelVersion === SIGNED_CHECKOUT_FUNNEL_VERSION
       && /^[0-9a-f-]{36}$/i.test(signedCheckoutContext)
       && /^[a-f0-9]{64}$/i.test(signedCheckoutSignature)
       ? SIGNED_TAROT_VARIANT_BY_SKU[sku] || ''
-      : signedIntentVariantId(attributes, funnelVersion, sku);
+      : signedIntentVariantId(attributes, funnelVersion, sku));
     return {
       id: legacyId(line.id),
       variant_id: reconciledVariantId,
