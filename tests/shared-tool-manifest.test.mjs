@@ -19,9 +19,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('generated shared-tool contract covers 60 live pages and 75 unique variants', () => {
-  assert.equal(SHARED_TOOL_PAGES.length, 60);
-  assert.equal(new Set(SHARED_TOOL_PAGES).size, 60);
+test('generated shared-tool contract covers 61 live pages and 75 unique variants', () => {
+  assert.equal(SHARED_TOOL_PAGES.length, 61);
+  assert.equal(new Set(SHARED_TOOL_PAGES).size, 61);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-reading'), false);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-tarot-reading'), true);
   assert.equal(SHARED_TOOL_VARIANT_IDS.length, 75);
@@ -82,6 +82,18 @@ test('generated shared-tool contract covers 60 live pages and 75 unique variants
   });
   assert.equal(personalInDepth.variantId, '53782500671761');
   assert.equal(sharedToolContract('/pages/personal-tarot-reading', 'Tarot Personality', 'deeper'), null);
+
+  for (const [page, toolType, variants] of [
+    ['/pages/yes-or-no-tarot', 'Yes or No Tarot', ['53675061838097', '53677128155409', '53705415098641']],
+    ['/pages/love-tarot-reading', 'Love Tarot', ['53782500409617', '53782500442385', '53782500475153']],
+    ['/pages/career-tarot-reading', 'Career Tarot', ['53675061838097', '53677128155409', '53705415098641']],
+    ['/pages/tarot-birth-card-calculator', 'Tarot Birth Card', ['53782498509073', '53782498541841', '53782498574609']],
+  ]) {
+    assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS[page], ['essential', 'deeper', 'indepth']);
+    assert.equal(sharedToolContract(page, toolType, 'essential').variantId, variants[0]);
+    assert.equal(sharedToolContract(page, toolType, 'deeper').variantId, variants[1]);
+    assert.equal(sharedToolContract(page, toolType, 'indepth').variantId, variants[2]);
+  }
 });
 
 test('Twin Flame page, type, tier and variant are an exact fail-closed contract', () => {

@@ -29,6 +29,18 @@ import {
   validateSevenCardHorseshoeCompactSnapshot,
 } from '@/lib/seven-card-horseshoe-compact.mjs';
 import {
+  BIRTH_CARD_DIRECT_PAGE,
+  CAREER_DIRECT_PAGE,
+  LOVE_DIRECT_PAGE,
+  YES_NO_DIRECT_PAGE,
+  canonicalizeDirectTarotSnapshot,
+  directTarotCheckoutSnapshotFromPreview,
+  directTarotQuestionPolicy,
+  directTarotToolKind,
+  isDirectTarotCompactPreview,
+  validateDirectTarotToolSnapshot,
+} from '@/lib/direct-tarot-tools.mjs';
+import {
   ANGEL_NUMBER_FUNNEL_VERSION,
   ANGEL_NUMBER_PAGE,
   PERSONAL_777_FUNNEL_VERSION,
@@ -113,6 +125,10 @@ export const maxDuration = 10;
 export const dynamic = 'force-dynamic';
 
 const CHECKOUT_INTENT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const DIRECT_TAROT_CHECKOUT_INTENT_TTL_MS = 24 * 60 * 60 * 1000;
+const DIRECT_TAROT_DISPLAYED_QUOTE_INVALID = 'DIRECT_TAROT_DISPLAYED_QUOTE_INVALID';
+const DIRECT_TAROT_QUOTE_CHANGED = 'DIRECT_TAROT_QUOTE_CHANGED';
+const DIRECT_TAROT_TRANSPORT_FAILURES = new Set(['timeout', 'http_408', 'http_429', 'http_5xx']);
 
 const allowedOrigins = new Set([
   'https://deckaura.com',
@@ -184,6 +200,32 @@ function personalDirectQuoteChanged(
   return json({
     error: 'checkout_price_changed',
     code: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.quoteChanged,
+    confirmationRequired: true,
+    checkoutQuote: quote,
+  }, 409, origin);
+}
+
+function directTarotQuoteChanged(
+  origin: string,
+  quote: { variantId: string; sku: string; price: number; priceCents: number; currency: string; country: string },
+  page: string,
+  presentationVariant: string,
+  tier: string,
+) {
+  console.warn(JSON.stringify({
+    event: 'direct_tarot_quote_changed',
+    status: 409,
+    code: DIRECT_TAROT_QUOTE_CHANGED,
+    page,
+    presentationVariant,
+    tier,
+    variantId: quote.variantId,
+    currency: quote.currency,
+    country: quote.country,
+  }));
+  return json({
+    error: 'checkout_price_changed',
+    code: DIRECT_TAROT_QUOTE_CHANGED,
     confirmationRequired: true,
     checkoutQuote: quote,
   }, 409, origin);
@@ -287,6 +329,14 @@ export async function POST(request: Request) {
   const requestedKind = clean(body.kind, 32).toLowerCase();
   const requestedPersonalDirect = requestedKind === 'shared_tool'
     && clean(body.page, 120) === PERSONAL_DIRECT_PAGE;
+  const requestedDirectPage = requestedKind === 'shared_tool' ? clean(body.page, 120) : '';
+  const requestedDirectTarot = [
+    YES_NO_DIRECT_PAGE,
+    LOVE_DIRECT_PAGE,
+    CAREER_DIRECT_PAGE,
+    BIRTH_CARD_DIRECT_PAGE,
+  ].includes(requestedDirectPage);
+  const requestedBirthCardDirect = requestedDirectPage === BIRTH_CARD_DIRECT_PAGE;
   const bigThree = requestedKind === 'big_three';
   const birthChart = requestedKind === 'birth_chart';
   const loveTarot = requestedKind === 'love_tarot';
@@ -297,11 +347,11 @@ export async function POST(request: Request) {
   const moonLunar = requestedKind === 'moon_lunar';
   const numerologyCompatibility = requestedKind === 'numerology_compatibility';
   const storefrontTier = normalizeStorefrontTier(body.tier);
-  const question = clean(body.question, requestedPersonalDirect ? 600 : 400);
+  const question = clean(body.question, requestedPersonalDirect ? 600 : requestedBirthCardDirect ? 360 : 400);
   const readingId = clean(body.readingId, 80);
   const funnelVersion = clean(body.funnelVersion, 128);
   if (!storefrontTier
-    || question.length < 6
+    || (!requestedBirthCardDirect && question.length < 6)
     || !/^[a-z0-9-]{8,80}$/i.test(readingId)) {
     if (requestedPersonalDirect) {
       const publicCode = !storefrontTier
@@ -315,6 +365,15 @@ export async function POST(request: Request) {
         tier: clean(body.tier, 20),
         variantId: clean(body.expectedVariantId, 24),
         publicCode,
+      });
+    }
+    if (requestedDirectTarot) {
+      return sharedCheckoutRejection(422, 'DIRECT_TAROT_REQUEST_INVALID', origin, {
+        page: requestedDirectPage,
+        toolType: clean(body.toolType, 80),
+        tier: clean(body.tier, 20),
+        variantId: clean(body.expectedVariantId, 24),
+        publicCode: 'DIRECT_TAROT_REQUEST_INVALID',
       });
     }
     return json({ error: 'invalid_checkout_intent' }, 422, origin);
@@ -571,6 +630,14 @@ export async function POST(request: Request) {
     const expectedVariantValue = clean(body.expectedVariantId, 24);
     const submittedSharedSnapshot = record(body.snapshot);
     const submittedPresentationVariant = clean(submittedSharedSnapshot.presentationVariant, 80);
+    const exactDirectTarotPage = [
+      YES_NO_DIRECT_PAGE,
+      LOVE_DIRECT_PAGE,
+      CAREER_DIRECT_PAGE,
+      BIRTH_CARD_DIRECT_PAGE,
+    ].includes(pageValue);
+    const directTarotClaimed = exactDirectTarotPage
+      || /^(?:yes-no-direct|love-three-card-compact|career-three-card-compact|birth-card-direct)-/i.test(submittedPresentationVariant);
     const personalDirectClaimed = pageValue === PERSONAL_DIRECT_PAGE
       || /^personal-direct-/i.test(submittedPresentationVariant);
     if (personalDirectClaimed && pageValue !== PERSONAL_DIRECT_PAGE) {
@@ -580,6 +647,15 @@ export async function POST(request: Request) {
         tier: storefrontTier,
         variantId: expectedVariantValue,
         publicCode: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.canonicalPageInvalid,
+      });
+    }
+    if (directTarotClaimed && !exactDirectTarotPage) {
+      return sharedCheckoutRejection(422, 'DIRECT_TAROT_CANONICAL_PAGE_INVALID', origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+        publicCode: 'DIRECT_TAROT_CANONICAL_PAGE_INVALID',
       });
     }
     if (funnelVersion !== SHARED_TOOL_FUNNEL_VERSION
@@ -687,6 +763,180 @@ export async function POST(request: Request) {
       }
       sharedSnapshot = { ...sharedSnapshot, transportFallback };
     }
+    if (exactDirectTarotPage) {
+      const rawDirectQuestion = clean(body.question, 10_000);
+      const rawDirectContext = clean(submittedSharedSnapshot.context, 10_000);
+      const directQuestionLimit = pageValue === YES_NO_DIRECT_PAGE
+        ? 240
+        : pageValue === BIRTH_CARD_DIRECT_PAGE
+          ? 360
+          : 400;
+      if (rawDirectQuestion.length > directQuestionLimit
+        || rawDirectContext.length > (pageValue === LOVE_DIRECT_PAGE || pageValue === CAREER_DIRECT_PAGE ? 500 : 0)) {
+        return sharedCheckoutRejection(422, 'DIRECT_TAROT_QUESTION_INVALID', origin, {
+          page: pageValue,
+          toolType,
+          tier: storefrontTier,
+          variantId: expectedVariantValue,
+          publicCode: 'DIRECT_TAROT_QUESTION_INVALID',
+        });
+      }
+      const directPolicy = directTarotQuestionPolicy(pageValue, question, rawDirectContext);
+      if (!directPolicy.ok) {
+        const publicCode = directPolicy.safetyCategory
+          ? 'DIRECT_TAROT_SAFETY_BLOCKED'
+          : 'DIRECT_TAROT_QUESTION_INVALID';
+        return sharedCheckoutRejection(422, publicCode, origin, {
+          page: pageValue,
+          toolType,
+          tier: storefrontTier,
+          variantId: expectedVariantValue,
+          publicCode,
+        });
+      }
+      if (pageValue === BIRTH_CARD_DIRECT_PAGE) {
+        if (body.transportFallback === true
+          || submittedSharedSnapshot.transportFallback === true
+          || clean(body.transportFailure || submittedSharedSnapshot.transportFailure, 24)
+          || clean(body.freeToken || body.previewToken || submittedSharedSnapshot.freeToken, 64)) {
+          return sharedCheckoutRejection(422, 'DIRECT_TAROT_PREVIEW_NOT_ALLOWED', origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+            publicCode: 'DIRECT_TAROT_PREVIEW_NOT_ALLOWED',
+          });
+        }
+        const canonicalBirthSnapshot = canonicalizeDirectTarotSnapshot(submittedSharedSnapshot);
+        if (!canonicalBirthSnapshot) {
+          return sharedCheckoutRejection(422, 'DIRECT_TAROT_EVIDENCE_MISMATCH', origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+            publicCode: 'DIRECT_TAROT_EVIDENCE_MISMATCH',
+          });
+        }
+        sharedSnapshot = canonicalBirthSnapshot;
+      } else {
+        const transportFallback = body.transportFallback === true || submittedSharedSnapshot.transportFallback === true;
+        if (transportFallback) {
+          const transportFailure = clean(body.transportFailure || submittedSharedSnapshot.transportFailure, 24).toLowerCase();
+          if (!DIRECT_TAROT_TRANSPORT_FAILURES.has(transportFailure)) {
+            return sharedCheckoutRejection(422, 'DIRECT_TAROT_TRANSPORT_FALLBACK_INVALID', origin, {
+              page: pageValue,
+              toolType,
+              tier: storefrontTier,
+              variantId: expectedVariantValue,
+              publicCode: 'DIRECT_TAROT_TRANSPORT_FALLBACK_INVALID',
+            });
+          }
+          const canonicalFallbackSnapshot = canonicalizeDirectTarotSnapshot(submittedSharedSnapshot);
+          if (!canonicalFallbackSnapshot) {
+            return sharedCheckoutRejection(422, 'DIRECT_TAROT_EVIDENCE_MISMATCH', origin, {
+              page: pageValue,
+              toolType,
+              tier: storefrontTier,
+              variantId: expectedVariantValue,
+              publicCode: 'DIRECT_TAROT_EVIDENCE_MISMATCH',
+            });
+          }
+          sharedSnapshot = { ...canonicalFallbackSnapshot, transportFallback: true, transportFailure };
+        }
+        const previewToken = clean(body.freeToken || body.previewToken || submittedSharedSnapshot.freeToken, 64).toLowerCase();
+        if (!transportFallback && !/^[a-f0-9]{32}$/.test(previewToken)) {
+          return sharedCheckoutRejection(422, 'DIRECT_TAROT_PREVIEW_TOKEN_INVALID', origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+            publicCode: 'DIRECT_TAROT_PREVIEW_TOKEN_INVALID',
+          });
+        }
+        if (!transportFallback) {
+          const visitorAuthority = await sevenCardHorseshoeVisitorAuthority(
+            clean(body.visitorId, 96),
+            process.env.ENTITLEMENT_PEPPER
+              || process.env.FREE_ENTITLEMENT_SALT
+              || process.env.SHOPIFY_WEBHOOK_SECRET,
+          );
+          if (!visitorAuthority.ok) {
+            return sharedCheckoutRejection(422, 'DIRECT_TAROT_VISITOR_AUTHORITY_INVALID', origin, {
+              page: pageValue,
+              toolType,
+              tier: storefrontTier,
+              variantId: expectedVariantValue,
+              publicCode: 'DIRECT_TAROT_VISITOR_AUTHORITY_INVALID',
+            });
+          }
+          let visitorPreview: unknown;
+          let currentVisitorSession: unknown;
+          try {
+            const cache = workerEnvironment().READINGS_CACHE;
+            [visitorPreview, currentVisitorSession] = await Promise.all([
+              cache.get(`preview:${previewToken}`, 'json'),
+              cache.get(visitorAuthority.sessionKey, 'json'),
+            ]);
+          } catch {
+            return sharedCheckoutRejection(503, 'DIRECT_TAROT_PREVIEW_LOOKUP_FAILED', origin, {
+              page: pageValue,
+              toolType,
+              tier: storefrontTier,
+              variantId: expectedVariantValue,
+              publicCode: 'DIRECT_TAROT_PREVIEW_LOOKUP_FAILED',
+            });
+          }
+          const authority = directTarotCheckoutSnapshotFromPreview(visitorPreview);
+          const currentSession = record(currentVisitorSession);
+          const currentSessionFields = record(currentSession.fields);
+          const currentSessionExpiresAt = Number(currentSession.expiresAt);
+          const authorityLocale = record(authority.localeContext);
+          const authorityLocaleValue = clean(authorityLocale.locale, 24);
+          const authorityCountry = clean(authorityLocale.country, 2).toUpperCase();
+          const authorityCurrency = clean(authorityLocale.currency, 3).toUpperCase();
+          const authorityMarket = clean(authorityLocale.market, 64).toLowerCase();
+          const submittedLocale = clean(body.locale || body.language || body.lang, 24);
+          const submittedCountry = clean(body.country, 2).toUpperCase();
+          const submittedCurrency = clean(body.currency, 3).toUpperCase();
+          const submittedMarket = clean(body.market, 64).toLowerCase();
+          if (!authority.ok
+            || !authority.snapshot
+            || clean(record(visitorPreview).ownerVisitorHash, 96) !== visitorAuthority.visitorName
+            || clean(currentSession.token, 64).toLowerCase() !== previewToken
+            || currentSession.approvalStatus !== 'approved'
+            || currentSession.offerBlocked === true
+            || currentSession.safety === true
+            || !Number.isFinite(currentSessionExpiresAt)
+            || currentSessionExpiresAt <= Date.now()
+            || clean(currentSessionFields.presentationVariant, 80) !== clean(authority.snapshot.presentationVariant, 80)
+            || clean(currentSessionFields.readingId, 80) !== clean(authority.snapshot.readingId, 80)
+            || clean(authority.snapshot.presentationVariant, 80) !== submittedPresentationVariant
+            || clean(authority.snapshot.readingId, 80) !== readingId
+            || !authorityLocaleValue
+            || !/^[A-Z]{2}$/.test(authorityCountry)
+            || !/^[A-Z]{3}$/.test(authorityCurrency)
+            || (submittedLocale && customerLocaleContext({ locale: submittedLocale }).locale !== customerLocaleContext({ locale: authorityLocaleValue }).locale)
+            || (submittedCountry && submittedCountry !== authorityCountry)
+            || (submittedCurrency && submittedCurrency !== authorityCurrency)
+            || (submittedMarket && submittedMarket !== authorityMarket)) {
+            return sharedCheckoutRejection(422, 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID', origin, {
+              page: pageValue,
+              toolType,
+              tier: storefrontTier,
+              variantId: expectedVariantValue,
+              publicCode: 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID',
+            });
+          }
+          sharedSnapshot = authority.snapshot;
+          intentLocaleContext = customerLocaleContext({
+            locale: authorityLocaleValue,
+            country: authorityCountry,
+            currency: authorityCurrency,
+            market: authorityMarket,
+          }, request.headers);
+        }
+      }
+    }
     const exactPersonalDirectPage = pageValue === PERSONAL_DIRECT_PAGE;
     const personalDirectValidation = validatePersonalDirectSnapshot({
       page: pageValue,
@@ -726,9 +976,25 @@ export async function POST(request: Request) {
         publicCode: PERSONAL_DIRECT_PUBLIC_ERROR_CODES.evidenceMismatch,
       });
     }
+    const directTarotValidation = validateDirectTarotToolSnapshot({
+      page: pageValue,
+      toolType,
+      presentationVariant: clean(sharedSnapshot.presentationVariant, 80),
+      snapshot: sharedSnapshot,
+    });
+    if ((exactDirectTarotPage && (!directTarotValidation.applies || !directTarotValidation.ok))
+      || (directTarotValidation.applies && !directTarotValidation.ok)) {
+      return sharedCheckoutRejection(422, 'DIRECT_TAROT_EVIDENCE_MISMATCH', origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+        publicCode: 'DIRECT_TAROT_EVIDENCE_MISMATCH',
+      });
+    }
     const snapshotVersion = clean(sharedSnapshot.version, 40);
     const snapshotType = clean(sharedSnapshot.type, 80);
-    const snapshotQuestion = clean(sharedSnapshot.question, exactPersonalDirectPage ? 600 : 400);
+    const snapshotQuestion = clean(sharedSnapshot.question, exactPersonalDirectPage ? 600 : pageValue === BIRTH_CARD_DIRECT_PAGE ? 360 : 400);
     const snapshotContext = clean(sharedSnapshot.context, 4000);
     const snapshotSignals = clean(sharedSnapshot.signals, 1500);
     const snapshotCards = clean(sharedSnapshot.cards, 1500);
@@ -776,7 +1042,8 @@ export async function POST(request: Request) {
       || !snapshotTool
       || (!snapshotCuriosityQuestion
         && !(sevenCardValidation.applies && sevenCardValidation.ok)
-        && !(personalDirectValidation.applies && personalDirectValidation.ok))) {
+        && !(personalDirectValidation.applies && personalDirectValidation.ok)
+        && !(directTarotValidation.applies && directTarotValidation.ok))) {
       return sharedCheckoutRejection(422, 'SHARED_SNAPSHOT_CONTRACT_MISMATCH', origin, {
         page: pageValue,
         toolType,
@@ -850,12 +1117,12 @@ export async function POST(request: Request) {
         variantId: expectedVariantValue,
       });
     }
-    if (exactSevenCardPage || exactPersonalDirectPage) {
+    if (exactSevenCardPage || exactPersonalDirectPage || directTarotValidation.applies) {
       const quoteLookup = await verifyShopifyReadingVariantQuote({
         variantId: sharedProduct.variantId,
         expectedSku: sharedProduct.sku,
-        countryCode: localeContext.country || 'US',
-        expectedCurrency: localeContext.currency || 'USD',
+        countryCode: intentLocaleContext.country || 'US',
+        expectedCurrency: intentLocaleContext.currency || 'USD',
         env: process.env,
       });
       if (!('quote' in quoteLookup) || !quoteLookup.quote) {
@@ -899,6 +1166,31 @@ export async function POST(request: Request) {
           return personalDirectQuoteChanged(origin, quoteLookup.quote, storefrontTier);
         }
       }
+      if (directTarotValidation.applies) {
+        const displayedQuote = record(body.displayedQuote);
+        const displayedVariantId = clean(displayedQuote.variantId, 24);
+        const displayedSku = clean(displayedQuote.sku, 80).toUpperCase();
+        const displayedPriceCents = Number(displayedQuote.priceCents);
+        const displayedCurrency = clean(displayedQuote.currency, 3).toUpperCase();
+        const displayedCountry = clean(displayedQuote.country, 2).toUpperCase();
+        if (displayedVariantId !== quoteLookup.quote.variantId || displayedSku !== quoteLookup.quote.sku
+          || !Number.isInteger(displayedPriceCents) || displayedPriceCents <= 0
+          || !/^[A-Z]{3}$/.test(displayedCurrency)
+          || !/^[A-Z]{2}$/.test(displayedCountry)) {
+          return sharedCheckoutRejection(422, DIRECT_TAROT_DISPLAYED_QUOTE_INVALID, origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+            publicCode: DIRECT_TAROT_DISPLAYED_QUOTE_INVALID,
+          });
+        }
+        if (displayedPriceCents !== quoteLookup.quote.priceCents
+          || displayedCurrency !== quoteLookup.quote.currency
+          || displayedCountry !== quoteLookup.quote.country) {
+          return directTarotQuoteChanged(origin, quoteLookup.quote, pageValue, snapshotPresentationVariant, storefrontTier);
+        }
+      }
       sharedCheckoutQuote = {
         intentId: id,
         variantId: quoteLookup.quote.variantId,
@@ -907,13 +1199,13 @@ export async function POST(request: Request) {
         currency: quoteLookup.quote.currency,
         country: quoteLookup.quote.country,
       };
-      if (exactPersonalDirectPage) {
+      if (exactPersonalDirectPage || directTarotValidation.applies) {
         // A missing storefront country/currency intentionally falls back to the
         // US/USD quote above. Bind that effective Markets context into the same
         // signed snapshot returned to checkout; otherwise an accepted intent
         // would fail post-purchase reconciliation against its own quote.
         intentLocaleContext = Object.freeze({
-          ...localeContext,
+          ...intentLocaleContext,
           country: quoteLookup.quote.country,
           currency: quoteLookup.quote.currency,
         });
@@ -924,6 +1216,12 @@ export async function POST(request: Request) {
     const sharedCategory = clean(body.category, 20).toLowerCase();
     category = exactPersonalDirectPage
       ? 'personal'
+      : pageValue === LOVE_DIRECT_PAGE
+        ? 'love'
+        : pageValue === CAREER_DIRECT_PAGE
+          ? 'career'
+          : pageValue === BIRTH_CARD_DIRECT_PAGE
+            ? 'personal'
       : sharedCategory === 'love' || sharedCategory === 'career' || sharedCategory === 'money' || sharedCategory === 'personal'
       ? sharedCategory
       : 'general';
@@ -932,9 +1230,16 @@ export async function POST(request: Request) {
       : /numerolog|angel|life path|biorhythm/i.test(toolType)
         ? 'numerology'
         : 'classic_tarot';
-    answer = 'CONDITIONAL';
-    cardName = toolType;
-    cardId = 0;
+    answer = directTarotValidation.kind === 'yes_no'
+      ? clean(record(directTarotValidation.evidence).answer, 20)
+      : 'CONDITIONAL';
+    const directEvidenceCard = record(record(directTarotValidation.evidence).card);
+    cardName = directTarotValidation.kind === 'yes_no'
+      ? clean(directEvidenceCard.name, 80)
+      : toolType;
+    cardId = directTarotValidation.kind === 'yes_no'
+      ? Number(directEvidenceCard.id)
+      : 0;
     intentKind = 'shared_tool';
     snapshot = {
       version: snapshotVersion,
@@ -953,6 +1258,25 @@ export async function POST(request: Request) {
       readingId,
       ...(sharedCheckoutQuote ? { checkoutQuote: sharedCheckoutQuote } : {}),
       ...(exactSevenCardPage ? { transportFallback: sharedSnapshot.transportFallback === true } : {}),
+      ...(directTarotValidation.applies && directTarotValidation.kind !== 'birth' ? {
+        transportFallback: sharedSnapshot.transportFallback === true,
+        ...(sharedSnapshot.transportFallback === true ? { transportFailure: clean(sharedSnapshot.transportFailure, 24) } : {}),
+      } : {}),
+      ...(directTarotValidation.kind === 'yes_no' ? {
+        answer: clean(sharedSnapshot.answer, 20),
+        deckVersion: clean(sharedSnapshot.deckVersion, 80),
+        card: record(sharedSnapshot.card),
+      } : {}),
+      ...(directTarotValidation.kind === 'love' || directTarotValidation.kind === 'career' ? {
+        cardEvidence: Array.isArray(sharedSnapshot.cardEvidence) ? sharedSnapshot.cardEvidence : [],
+      } : {}),
+      ...(directTarotValidation.kind === 'birth' ? {
+        birthDate: clean(sharedSnapshot.birthDate, 10),
+        calculationMethod: clean(sharedSnapshot.calculationMethod, 80),
+        calculationTrace: clean(sharedSnapshot.calculationTrace, 300),
+        birthCardSequence: Array.isArray(sharedSnapshot.birthCardSequence) ? sharedSnapshot.birthCardSequence : [],
+        birthCards: Array.isArray(sharedSnapshot.birthCards) ? sharedSnapshot.birthCards : [],
+      } : {}),
     };
   } else {
     const categoryValue = clean(body.category, 20).toLowerCase();
@@ -999,7 +1323,11 @@ export async function POST(request: Request) {
   // Shopify checkouts are frequently resumed from an email or another device.
   // Keep the signed, one-use record long enough for that normal flow while the
   // worker still prevents reuse by binding it to the first paid order.
-  const expiresAt = new Date(Date.now() + CHECKOUT_INTENT_TTL_MS);
+  const expiresAt = new Date(Date.now() + (
+    intentKind === 'shared_tool' && [YES_NO_DIRECT_PAGE, LOVE_DIRECT_PAGE, CAREER_DIRECT_PAGE, BIRTH_CARD_DIRECT_PAGE].includes(page)
+      ? DIRECT_TAROT_CHECKOUT_INTENT_TTL_MS
+      : CHECKOUT_INTENT_TTL_MS
+  ));
   // Legacy Yes/No rows intentionally use the original 16-field signature and
   // the database contract requires both extended columns to remain null.
   const snapshotHash = checkoutIntentSnapshotHash(intentKind, snapshot);
