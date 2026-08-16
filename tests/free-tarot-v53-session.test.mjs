@@ -142,6 +142,54 @@ async function createPreview(env, body) {
   return { response, payload: await response.json() };
 }
 
+for (const fixture of [
+  {
+    label: 'English em dash',
+    lang: 'en',
+    locale: 'en-US',
+    question: 'Should I protect the current plan — or choose a smaller next step?',
+  },
+  {
+    label: 'Spanish en dash',
+    lang: 'es',
+    locale: 'es-ES',
+    question: '¿Conviene mantener el plan actual – o elegir un próximo paso más pequeño?',
+  },
+]) {
+  test(`reserved preview preserves accepted ${fixture.label} punctuation through response, snapshot, and quota commit`, async () => {
+    const kv = jsonKv();
+    const budget = rollingBudget({ limit: 3 });
+    const env = workerEnv(kv, budget);
+    const body = {
+      ...readingBody(
+        fixture.question,
+        `exact_question_punctuation_${fixture.lang}`,
+        `exact_question_punctuation_visitor_${fixture.lang}`,
+      ),
+      lang: fixture.lang,
+      locale: fixture.locale,
+      requestedLocale: fixture.locale,
+    };
+
+    const result = await createPreview(env, body);
+
+    assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+    assert.equal(result.payload.question, fixture.question);
+    assert.equal(result.payload.servedSource, 'deterministic_reserved_fast_path');
+    assert.equal(result.payload.auditStatus, 'passed');
+    assert.ok(result.payload.teaser.includes(fixture.question), 'visible teaser changed the exact question');
+    assert.ok(result.payload.preview.html.includes(fixture.question), 'structured preview changed the exact question');
+    assert.match(result.payload.token, /^[a-f0-9]{32}$/i);
+
+    const snapshot = JSON.parse(kv.values.get(`preview:${result.payload.token}`));
+    assert.equal(snapshot.question, fixture.question);
+    assert.ok(snapshot.teaserText.includes(fixture.question), 'durable snapshot changed the exact question');
+    assert.equal(budget.claims, 1);
+    assert.equal(budget.commits, 1);
+    assert.equal(budget.releases, 0);
+  });
+}
+
 test('v56 keeps the third approved reading as the verified paid continuation when the rolling 3/24h quota rejects a new question', async () => {
   const kv = jsonKv();
   const budget = rollingBudget({ limit: 3 });
