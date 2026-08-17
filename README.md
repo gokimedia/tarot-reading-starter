@@ -86,6 +86,56 @@ integration-provided `SHOPIFY_STORE_DOMAIN`), `SHOPIFY_CLIENT_ID`,
 `READING_SERVICE_ORIGIN`, `READING_DELAY_MIN`, `READING_DELAY_MAX`, and
 `FREE_AI_DAILY_BUDGET_USD`.
 
+Paid-order replay and deterministic access capabilities require a dedicated,
+stable `INTERNAL_ORDER_REPLAY_SECRET`. The Shopify webhook-secret fallback is
+legacy compatibility only and must not be the rollout configuration. Do not
+rotate the replay secret while pre-receipt paid work is open. A valid existing
+v2 receipt always preserves its signed `accessToken`, so receipt key rotation
+or a later replay-secret rotation cannot silently replace an already-issued
+customer capability.
+
+Paid-reading authority receipts additionally require
+`PAID_READING_AUTHORITY_CUTOFF` (an explicit UTC instant),
+`PAID_READING_AUTHORITY_RECEIPT_KEY_ID`, and
+`PAID_READING_AUTHORITY_RECEIPT_SECRET` (at least 32 characters). Key rotation
+is current-plus-previous: deploy the new current pair together with
+`PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_KEY_ID` and
+`PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_SECRET`. Previous keys are verify-only;
+retries atomically re-sign receipts and their draft/cache markers with the
+current key. Keep the previous pair available for the full maximum age of any
+receipt that has not yet converged (currently 365 days), or complete an audited
+re-sign migration before removing it. Partial pairs, duplicate key IDs, and
+unknown keys fail closed.
+
+Paid-question review notification is currently an at-least-once side effect:
+duplicate webhook/replay invocations can rarely send the same receipt-bound
+copy twice if the mail provider accepts both requests before the durable sent
+marker wins its CAS. Treat this as an operational deduplication item; it cannot
+change the HMAC-bound question, cards, package, order, or access capability.
+
+Rollout order is operationally significant. First converge the theme so every
+current paid-reading emitter carries server-verifiable authority, then confirm
+there is no open pre-receipt paid work. Apply the additive SQL migration and run
+the real-Postgres function/table concurrency truth table. Configure the receipt
+keyring on the exact candidate and choose a future UTC cutoff `T`. Promote the
+receipt-aware candidate at least 255 seconds before `T`; its mixed-version
+guards must remain active while all prior invocations drain. At `T`, the same
+already-promoted worker begins strict post-cutoff enforcement. Never derive
+grandfathering from browser line properties.
+
+`npm run test:postgres-cas` is only a disposable-engine preflight: it creates
+and removes an isolated schema and exercises the CAS algorithm there. It does
+not replace the rollout gate against the actually migrated
+`deckaura.kv_store` adapter and `deckaura.claim_free_reading_budgets` function.
+That production truth table must use uniquely prefixed rows and guaranteed
+cleanup.
+
+After `T` has passed and v2 receipts or paid-order projections exist, do not
+roll back to a pre-receipt worker. Roll forward, or move the alias only to the
+previous exact receipt-v2-aware artifact; keep the additive database migration
+in place. A pre-receipt worker cannot safely interpret or preserve the new
+durable authority state.
+
 For a Dev Dashboard app, the backend exchanges `SHOPIFY_CLIENT_ID` and
 `SHOPIFY_CLIENT_SECRET` for a short-lived Admin API access token, caches it in
 the function instance, refreshes it before expiry, and retries one time after a

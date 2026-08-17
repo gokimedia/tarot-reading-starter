@@ -7,7 +7,16 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import readingsWorker, { hydratePaidReadingItemFields } from '../lib/legacy-worker.mjs';
+import readingsWorker, {
+  FreeEntitlementLimiter,
+  appendTrustedPaidReadingRecord,
+  hydratePaidReadingItemFields,
+  publishTrustedPaidReadingRecord,
+  trustedCachedPaidReading,
+  verifiedPaidReadingDraftAuthority,
+  verifiedPaidReadingDraftForOrderId,
+} from '../lib/legacy-worker.mjs';
+import { paidReadingAuthorityDigest } from '../lib/paid-reading-authority-receipt.mjs';
 
 import {
   FREE_TAROT_FUNNEL_VERSION,
@@ -41,6 +50,12 @@ function loadQueueProcessor() {
     queueProcessorPromise = import(`../lib/reading-queue-processor.ts?paid-authority=${Date.now()}`);
   }
   return queueProcessorPromise;
+}
+
+let reconciliationPromise;
+function loadReconciliation() {
+  if (!reconciliationPromise) reconciliationPromise = import(`../lib/shopify-order-reconciliation.ts?receipt-v2=${Date.now()}`);
+  return reconciliationPromise;
 }
 
 function lineProperty(name, value) {
@@ -102,6 +117,13 @@ function receiptKeyForOrder(orderId) {
   return `paid-authority-receipt:${digest}`;
 }
 
+function paidReceiptKeyEnv(secret, keyId = 'test-receipt-key-v2') {
+  return {
+    PAID_READING_AUTHORITY_RECEIPT_KEY_ID: keyId,
+    PAID_READING_AUTHORITY_RECEIPT_SECRET: createHash('sha256').update(`receipt-test:${secret}`, 'utf8').digest('hex'),
+  };
+}
+
 function checkoutContextCanonicalForTest(record) {
   const cards = record.clarifiers
     .map((card) => `${Number(card.id)}:${card.isReversed === true ? 'r' : 'u'}:${String(card.position).trim()}`)
@@ -149,6 +171,8 @@ function retryAuthorityFixture(kind) {
       lineProperty('_Country', 'US'),
       lineProperty('_Currency', 'USD'),
       lineProperty('_Market', 'us'),
+      lineProperty('_Funnel Version', FREE_TAROT_FUNNEL_VERSION),
+      lineProperty('_Tool', FREE_TAROT_PAGE),
     ],
   });
   const payload = {
@@ -406,6 +430,15 @@ test('production reconciliation, authority, queue, and generator use the tested 
   assert.match(queue, /const freeTarotAuthority = freeTarotPaidPackageAuthority\(\{ variantId, sku \}\)/);
   assert.match(queue, /throw new QueueOperationError\('SHOPIFY_PAYMENT_NOT_CAPTURED'\)/);
   assert.match(queue, /operations\.enqueueDelivery[\s\S]{0,200}paidReadingDeliveryJobInput\(orderId, dueAt\)/);
+  const sourceGuardStart = queue.indexOf('const sourceAuthority = checkout || preview');
+  const sourceGuardEnd = queue.indexOf('return publish(verified, sourceGuards)', sourceGuardStart);
+  const sourceGuardContract = queue.slice(sourceGuardStart, sourceGuardEnd);
+  assert.ok(sourceGuardStart >= 0 && sourceGuardEnd > sourceGuardStart);
+  assert.match(sourceGuardContract, /sourceGuards\.length !== 2/);
+  assert.match(sourceGuardContract, /new Set\(sourceGuards\.map/);
+  assert.match(sourceGuardContract, /PAID_READING_AUTHORITY_SOURCE_GUARD_INVALID/);
+  assert.doesNotMatch(sourceGuardContract, /paidReadingAuthoritySourceGuards\.get\(sourceAuthority\) \|\| \[\]/,
+    'checkout/preview receipt publication must never downgrade missing source guards to an empty CAS');
   const claimStart = queue.indexOf('async function processWebhookClaim');
   const paymentGate = queue.indexOf("throw new QueueOperationError('SHOPIFY_PAYMENT_NOT_CAPTURED')", claimStart);
   const paidDispatch = queue.indexOf('await processUndeliveredPaidOrder(row, env)', claimStart);
@@ -418,6 +451,173 @@ test('production reconciliation, authority, queue, and generator use the tested 
   assert.match(worker, /shopifyFinancialStatusAllowsReadingFulfillment\(order\.financial_status\)/);
   assert.match(worker, /return new Response\("Payment not captured", \{ status: 409 \}\)/);
   assert.doesNotMatch(worker, /\["paid",\s*"partially_paid",\s*"authorized"\]\.includes\(order\.financial_status\)/);
+});
+
+test('legacy free-token webhook unlock is strictly pre-cutoff and cannot write current markerless cache', async () => {
+  const secret = 'legacy-free-token-cutoff-secret';
+  const token = 'b'.repeat(32);
+  const makeOrder = (id, createdAt) => ({
+    id,
+    name: `#${id}`,
+    created_at: createdAt,
+    financial_status: 'paid',
+    currency: 'USD',
+    line_items: [paidLine({
+      id: `line-${id}`,
+      properties: [
+        lineProperty('_free_token', token),
+        lineProperty('Your question', 'What grounded next step should I take?'),
+      ],
+    })],
+  });
+  const send = async (order, storage) => {
+    const raw = JSON.stringify(order);
+    const hmac = createHmac('sha256', secret).update(raw, 'utf8').digest('base64');
+    return readingsWorker.fetch(new Request('https://reading.deckaura.com/webhook/orders-paid', {
+      method: 'POST',
+      headers: { 'X-Shopify-Hmac-Sha256': hmac, 'Content-Type': 'application/json' },
+      body: raw,
+    }), {
+      READINGS_CACHE: storage.cache,
+      SHOPIFY_WEBHOOK_SECRET: secret,
+      PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+    });
+  };
+
+  const current = makeOrder('current-free-token-order', '2026-08-17T09:00:00.000Z');
+  const currentStorage = atomicReceiptCache([[`free:${token}`, JSON.stringify({ full: '<p>Unsigned free result.</p>' })]]);
+  const currentResponse = await send(current, currentStorage);
+  assert.equal(currentResponse.status, 200);
+  assert.equal(await currentResponse.text(), 'accepted_for_review');
+  assert.equal(JSON.parse(currentStorage.values.get(`free:${token}`)).paid, undefined);
+  assert.equal(currentStorage.values.has(`reading:${current.id}`), false);
+
+  const historical = makeOrder('historical-free-token-order', '2026-08-17T07:00:00.000Z');
+  const historicalStorage = atomicReceiptCache([[`free:${token}`, JSON.stringify({ full: '<p>Historical free result.</p>' })]]);
+  const historicalResponse = await send(historical, historicalStorage);
+  assert.equal(historicalResponse.status, 200);
+  assert.equal(await historicalResponse.text(), 'ok');
+  assert.equal(JSON.parse(historicalStorage.values.get(`free:${token}`)).paid, true);
+  assert.match(JSON.parse(historicalStorage.values.get(`reading:${historical.id}`)).html, /Historical free result/);
+});
+
+test('raw Shopify order references cannot read, mutate, or generate a paid reading', async () => {
+  let cacheCalls = 0;
+  let limiterCalls = 0;
+  const env = {
+    READINGS_CACHE: {
+      async get() { cacheCalls += 1; throw new Error('raw reference must not read cache'); },
+      async put() { cacheCalls += 1; throw new Error('raw reference must not write cache'); },
+    },
+    FREE_ENTITLEMENTS: {
+      getByName() { limiterCalls += 1; throw new Error('raw reference must not claim generation'); },
+    },
+  };
+  const generated = await readingsWorker.fetch(new Request('https://reading.deckaura.com/generate', {
+    method: 'POST',
+    headers: { Origin: 'https://deckaura.com', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderId: '9876543210' }),
+  }), env);
+  assert.equal(generated.status, 200);
+  assert.deepEqual(await generated.json(), {
+    ready: false,
+    secureDelivery: true,
+    message: 'Your secure reading link is in your email.',
+  });
+
+  for (const [method, path, body] of [
+    ['GET', '/r/9876543210', null],
+    ['GET', '/r?id=9876543210', null],
+    ['POST', '/r/9876543210/next', { question: 'What grounded next step should I take?', requestId: 'raw-order-reference-001' }],
+    ['POST', '/r/9876543210/question', { question: 'What grounded next step should I take?' }],
+  ]) {
+    const response = await readingsWorker.fetch(new Request(`https://reading.deckaura.com${path}`, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    }), env);
+    assert.ok([403, 404].includes(response.status), `${method} ${path}`);
+  }
+  assert.equal(cacheCalls, 0);
+  assert.equal(limiterCalls, 0);
+
+  let unmappedReads = 0;
+  const unmappedEnv = {
+    READINGS_CACHE: {
+      async get(key) {
+        unmappedReads += 1;
+        assert.match(String(key), /^paid-access:/);
+        return null;
+      },
+    },
+  };
+  const unmappedToken = 'f'.repeat(32);
+  const unmappedPage = await readingsWorker.fetch(new Request(`https://reading.deckaura.com/r/${unmappedToken}`), unmappedEnv);
+  const unmappedNext = await readingsWorker.fetch(new Request(`https://reading.deckaura.com/r/${unmappedToken}/next`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'What grounded next step should I take?', requestId: 'unmapped-token-request-01' }),
+  }), unmappedEnv);
+  assert.equal(unmappedPage.status, 404);
+  assert.equal(unmappedNext.status, 403);
+  assert.equal(unmappedReads, 2);
+
+  const injected = await readingsWorker.fetch(new Request('https://reading.deckaura.com/inject.js'), env);
+  const injectedSource = await injected.text();
+  assert.doesNotMatch(injectedSource, /\/generate/);
+  assert.doesNotMatch(injectedSource, /\/r\/[^'"\s]*/);
+});
+
+test('an opaque paid-access capability still opens a strict pre-cutoff cached reading', async () => {
+  const orderId = '1234567890';
+  const accessToken = 'a'.repeat(32);
+  const privateHtml = '<p>Capability-bound historical reading.</p>';
+  const createdAt = '2026-08-17T07:00:00.000Z';
+  const storage = atomicReceiptCache([
+    [`paid-access:${accessToken}`, orderId],
+    [`paid-draft:${orderId}`, JSON.stringify({
+      schemaVersion: 2,
+      orderId,
+      accessToken,
+      originalQuestion: 'What grounded path should I take?',
+      question: 'What grounded path should I take?',
+      status: 'auto_locked',
+      editCount: 0,
+      missingQuestion: false,
+      createdAt: Date.parse(createdAt),
+      reviewUntil: Date.parse(createdAt),
+      confirmedAt: Date.parse(createdAt),
+    })],
+    [`reading:${orderId}`, JSON.stringify({
+      html: privateHtml,
+      readings: [{ html: privateHtml }],
+      total: 1,
+      deliverAt: 0,
+    })],
+  ]);
+  const env = {
+    READINGS_CACHE: storage.cache,
+    SHOPIFY_STORE_DOMAIN: 'example.myshopify.com',
+    SHOPIFY_ADMIN_TOKEN: 'test-admin-token',
+    PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), new RegExp(`/orders/${orderId}\\.json`));
+    return new Response(JSON.stringify({ order: {
+      id: orderId,
+      created_at: createdAt,
+      financial_status: 'paid',
+      line_items: [],
+    } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const response = await readingsWorker.fetch(new Request(`https://reading.deckaura.com/r/${accessToken}`), env);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Capability-bound historical reading/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('paid queue authority is per reading line and cannot be opted out through browser funnel properties', async () => {
@@ -773,6 +973,7 @@ test('checkout-context verification freezes the complete safe preview evidence b
     ENTITLEMENT_PEPPER: secret,
     INTERNAL_ORDER_REPLAY_SECRET: secret,
     SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
     PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
   };
   const verified = await verifyPaidReadingAuthorities(payload, env);
@@ -861,6 +1062,7 @@ test('preview verification publishes its exact snapshot and pointer handoff befo
     READINGS_CACHE: storage.cache,
     INTERNAL_ORDER_REPLAY_SECRET: secret,
     SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
     PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
   };
   await assert.rejects(
@@ -918,6 +1120,7 @@ test('an authority source that expires while the atomic handoff waits cannot pub
     READINGS_CACHE: cache,
     INTERNAL_ORDER_REPLAY_SECRET: 'expiring-source-receipt-secret',
     SHOPIFY_WEBHOOK_SECRET: 'expiring-source-receipt-secret',
+    ...paidReceiptKeyEnv('expiring-source-receipt-secret'),
     PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
   };
   Date.now = () => now;
@@ -945,6 +1148,13 @@ test('an authority source that expires while the atomic handoff waits cannot pub
   const casStart = workerEnv.indexOf('async compareAndSetMany(entries: KvCompareAndSetEntry[])');
   const casEnd = workerEnv.indexOf('class PostgresLimiterNamespace', casStart);
   const casSource = workerEnv.slice(casStart, casEnd);
+  const advisoryLock = casSource.indexOf('pg_advisory_xact_lock');
+  const mutationLoop = casSource.indexOf('for (const entry of normalized)', advisoryLock + 1);
+  assert.ok(advisoryLock >= 0 && mutationLoop > advisoryLock,
+    'all sorted CAS keys must acquire an advisory transaction lock before comparisons or writes');
+  assert.match(casSource, /hashtextextended\(\$\{'deckaura\.kv_store\.cas:' \+ entry\.key\}, 918273645\)/);
+  assert.match(casSource, /entry\.expectedValue == null[\s\S]{0,500}select key[\s\S]{0,300}for update/,
+    'null/null must be a checked absence guard after the per-key advisory lock');
   assert.match(casSource, /and \(expires_at is null or expires_at > clock_timestamp\(\)\)/);
   assert.equal(
     [...casSource.matchAll(/\(\$\{expiresAt\}::timestamptz is null or \$\{expiresAt\}::timestamptz > clock_timestamp\(\)\)/g)].length,
@@ -966,6 +1176,7 @@ test('an intent consumed before receipt publication can recover after expiry onl
     READINGS_CACHE: storage.cache,
     INTERNAL_ORDER_REPLAY_SECRET: secret,
     SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
     PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
   };
   const beforeExpiry = Date.parse('2026-08-17T09:31:00.000Z');
@@ -1067,6 +1278,7 @@ test('successor receipt cutover preserves only an exact-order legacy customer re
     READINGS_CACHE: storage.cache,
     INTERNAL_ORDER_REPLAY_SECRET: secret,
     SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
     PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
   };
 
@@ -1086,17 +1298,18 @@ test('successor receipt cutover preserves only an exact-order legacy customer re
   assert.equal(cutoverDraft.verifiedFields.question, fixture.verified.preview.verifiedFields.question);
   assert.equal(cutoverDraft.verifiedFields.cards, fixture.verified.preview.verifiedFields.cards);
   assert.notEqual(cutoverDraft.verifiedFields.cards, legacyDraft.verifiedFields.cards);
-  assert.equal(cutoverDraft.authorityReceiptVersion, 'paid-reading-authority-receipt-v1');
+  assert.equal(cutoverDraft.authorityReceiptVersion, 'paid-reading-authority-receipt-v2');
 
   await replayPaidWebhookThroughLegacy(fixture.row, env);
   cutoverDraft = JSON.parse(storage.values.get(draftKey));
   assert.equal(cutoverDraft.question, editedQuestion);
   assert.equal(cutoverDraft.status, 'confirmed');
   assert.equal(cutoverDraft.editCount, 1);
+  const verifiedCutoverDraft = await verifiedPaidReadingDraftAuthority(fixture.payload, cutoverDraft, env);
   const hydrated = await hydratePaidReadingItemFields({
     freeToken: fixture.verified.preview.token,
     question: 'Browser retry copy must not replace receipt evidence.',
-  }, cutoverDraft, 0, env);
+  }, verifiedCutoverDraft, 0, env);
   assert.equal(hydrated.freeToken, '');
   assert.equal(hydrated.question, editedQuestion,
     'the exact-order server-reviewed question must be the question used for paid generation');
@@ -1184,6 +1397,7 @@ test('successor receipt cutover preserves an imported pending review window with
     READINGS_CACHE: storage.cache,
     INTERNAL_ORDER_REPLAY_SECRET: 'pending-legacy-cutover-secret',
     SHOPIFY_WEBHOOK_SECRET: 'pending-legacy-cutover-secret',
+    ...paidReceiptKeyEnv('pending-legacy-cutover-secret'),
     PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
   };
   const persistedOrders = [];
@@ -1239,7 +1453,120 @@ test('successor receipt cutover preserves an imported pending review window with
   const freshDraft = JSON.parse(freshStorage.values.get(`paid-draft:${freshFixture.orderId}`));
   assert.equal(freshPersistedOrders.length, 1);
   assert.equal(freshDraft.status, 'auto_locked', 'a new successor receipt must not inherit the legacy review hold');
+  assert.equal(freshDraft.reviewUntil, freshDraft.createdAt);
+  assert.equal(freshDraft.confirmedAt, freshDraft.createdAt);
+  assert.equal(freshDraft.reviewEmailSentAt, undefined);
   assert.equal(freshDraft.legacyReviewStatePreserved, undefined);
+
+  const missingFixture = retryAuthorityFixture('context');
+  const missingLine = {
+    ...missingFixture.line,
+    properties: missingFixture.line.properties.filter((property) => (
+      String(property.name).trim().toLowerCase() !== 'your question'
+    )),
+  };
+  const missingPayload = { ...missingFixture.payload, line_items: [missingLine] };
+  const missingRow = { ...missingFixture.row, payload: missingPayload };
+  const missingVerified = {
+    ...missingFixture.verified,
+    items: [missingLine],
+    checkout: {
+      ...missingFixture.verified.checkout,
+      verifiedFields: { ...missingFixture.verified.checkout.verifiedFields, question: '' },
+    },
+  };
+  const missingStorage = atomicReceiptCache();
+  await processUndeliveredPaidOrder(missingRow, {
+    ...env,
+    READINGS_CACHE: missingStorage.cache,
+  }, {
+    verifyAuthorities: async () => missingVerified,
+    replay: replayPaidWebhookThroughLegacy,
+    validateMembership: async () => {},
+    enqueueOperations: {
+      persistPaidOrder: async () => {},
+      recordEvents: async () => ({ accepted: 1, duplicate: 0, limited: false }),
+      enqueueDelivery: async () => ({ order_id: missingFixture.orderId, status: 'queued' }),
+    },
+  });
+  const missingDraft = JSON.parse(missingStorage.values.get(`paid-draft:${missingFixture.orderId}`));
+  assert.equal(missingDraft.status, 'pending');
+  assert.equal(missingDraft.missingQuestion, true);
+  assert.ok(missingDraft.reviewUntil > missingDraft.createdAt);
+});
+
+test('queue draft CAS reloads a concurrent secure question confirmation instead of overwriting it', async () => {
+  const { processUndeliveredPaidOrder, verifiedOrReceiptedPaidReadingAuthorities } = await loadQueueProcessor();
+  const fixture = retryAuthorityFixture('preview');
+  const accessToken = '7'.repeat(32);
+  const createdAt = Date.parse(fixture.payload.created_at);
+  const draftKey = `paid-draft:${fixture.orderId}`;
+  const originalQuestion = fixture.verified.preview.verifiedFields.question;
+  const editedQuestion = 'What grounded guidance should this exact saved preview emphasize for my next step?';
+  const legacyPending = {
+    schemaVersion: 2,
+    orderId: fixture.orderId,
+    accessToken,
+    originalQuestion,
+    question: originalQuestion,
+    status: 'pending',
+    editCount: 0,
+    missingQuestion: false,
+    createdAt,
+    reviewUntil: createdAt + 40 * 60_000,
+  };
+  const storage = atomicReceiptCache([
+    [draftKey, JSON.stringify(legacyPending)],
+    [`paid-access:${accessToken}`, fixture.orderId],
+  ]);
+  const secret = 'queue-review-cas-secret';
+  const env = {
+    READINGS_CACHE: storage.cache,
+    INTERNAL_ORDER_REPLAY_SECRET: secret,
+    SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
+    PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+  };
+  await verifiedOrReceiptedPaidReadingAuthorities(fixture.row, env, async () => fixture.verified);
+
+  const baseCas = storage.cache.compareAndSetMany.bind(storage.cache);
+  let injected = false;
+  storage.cache.compareAndSetMany = async (entries) => {
+    if (!injected && entries.length === 1 && entries[0].key === draftKey) {
+      injected = true;
+      const current = JSON.parse(storage.values.get(draftKey));
+      storage.values.set(draftKey, JSON.stringify({
+        ...current,
+        question: editedQuestion,
+        status: 'confirmed',
+        editCount: 1,
+        confirmedAt: createdAt + 5 * 60_000,
+        editedAt: createdAt + 5 * 60_000,
+      }));
+      return false;
+    }
+    return baseCas(entries);
+  };
+  const persistedOrders = [];
+  await processUndeliveredPaidOrder({ ...fixture.row, attempts: 2 }, env, {
+    verifyAuthorities: async () => { throw new Error('receipt retry must not reverify'); },
+    replay: async () => ({ ignored: false }),
+    validateMembership: async () => {},
+    enqueueOperations: {
+      persistPaidOrder: async (...args) => { persistedOrders.push(args); },
+      recordEvents: async () => ({ accepted: 1, duplicate: 0, limited: false }),
+      enqueueDelivery: async () => ({ order_id: fixture.orderId, status: 'queued' }),
+    },
+  });
+  assert.equal(injected, true);
+  assert.equal(persistedOrders.length, 1);
+  const finalDraft = JSON.parse(storage.values.get(draftKey));
+  assert.equal(finalDraft.question, editedQuestion);
+  assert.equal(finalDraft.status, 'confirmed');
+  assert.equal(finalDraft.editCount, 1);
+  assert.equal(finalDraft.verifiedFields.cards, fixture.verified.preview.verifiedFields.cards);
+  assert.equal(persistedOrders[0][2].question, editedQuestion);
+  assert.equal(persistedOrders[0][2].status, 'confirmed');
 });
 
 for (const kind of ['intent', 'context', 'preview']) {
@@ -1261,6 +1588,7 @@ for (const kind of ['intent', 'context', 'preview']) {
       READINGS_CACHE: storage.cache,
       INTERNAL_ORDER_REPLAY_SECRET: secret,
       SHOPIFY_WEBHOOK_SECRET: secret,
+      ...paidReceiptKeyEnv(secret),
       PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
     };
     let verifierCalls = 0;
@@ -1297,7 +1625,7 @@ for (const kind of ['intent', 'context', 'preview']) {
         return result;
       },
       validateMembership: async () => {},
-      enqueue: async (_row, runtimeEnv, restored) => {
+      enqueue: async (queuedRow, runtimeEnv, restored) => {
         assert.equal(restored[kind === 'context' ? 'checkout' : kind].verifiedFields.receiptAuthority, kind);
         // These are the production idempotency identities used by the paid
         // order/delivery paths. A retry may revisit the boundary but cannot
@@ -1312,15 +1640,17 @@ for (const kind of ['intent', 'context', 'preview']) {
         }
         const draft = JSON.parse(storage.values.get(`paid-draft:${fixture.orderId}`));
         const readsBeforeHydration = mutablePreviewReads;
+        const verifiedDraft = await verifiedPaidReadingDraftAuthority(queuedRow.payload, draft, runtimeEnv);
         const hydrated = await hydratePaidReadingItemFields({
           freeToken: token,
           question: 'Browser copy must not replace receipt evidence.',
-        }, draft, 0, runtimeEnv);
+        }, verifiedDraft, 0, runtimeEnv);
         assert.equal(mutablePreviewReads, readsBeforeHydration,
           'receipt-bound hydration must not re-read an expired preview token');
         assert.equal(hydrated.freeToken, '');
         assert.equal(hydrated.receiptAuthority, kind);
-        assert.equal(hydrated.persistedServerField, `preserved-${kind}`);
+        assert.equal(hydrated.persistedServerField, undefined,
+          'an old worker cannot add receipt-trusted evidence by editing draft.verifiedFields');
         assert.equal(hydrated.cards, fixture.verified[kind === 'context' ? 'checkout' : kind].verifiedFields.cards);
         return { queued: true };
       },
@@ -1339,10 +1669,16 @@ for (const kind of ['intent', 'context', 'preview']) {
     assert.equal(receipt.lineKey, `id:${fixture.line.id}`);
     assert.equal(receipt.variantId, String(fixture.line.variant_id));
     assert.equal(receipt.sku, fixture.line.sku);
+    assert.match(receipt.accessToken, /^[a-f0-9]{32}$/);
+    assert.equal(storage.values.get(`paid-access:${receipt.accessToken}`), fixture.orderId);
     assert.match(receipt.lineDigest, /^[a-f0-9]{64}$/);
     assert.match(receipt.signature, /^[a-f0-9]{64}$/);
     assert.equal(storage.casWrites[0].length, 3, 'receipt, draft, and access must publish in one CAS');
-    assert.ok(storage.casWrites[0].every((entry) => entry.options?.expirationTtl === 365 * 24 * 60 * 60));
+    const receiptWrite = storage.casWrites[0].find((entry) => entry.key === receiptKey);
+    assert.equal(receiptWrite.options?.expiration, Math.floor(receipt.expiresAt / 1_000));
+    assert.ok(storage.casWrites[0]
+      .filter((entry) => entry.key.startsWith('paid-draft:') || entry.key.startsWith('paid-access:'))
+      .every((entry) => entry.options?.expirationTtl === 365 * 24 * 60 * 60));
 
     storage.values.delete(sourceKey);
     storage.values.delete(`preview:${token}`);
@@ -1355,16 +1691,583 @@ for (const kind of ['intent', 'context', 'preview']) {
     assert.equal(generationIdentities.size, 1);
     assert.equal(storage.values.get(receiptKey), receiptBytes, 'the durable HMAC receipt is immutable across retry');
     const finalDraft = JSON.parse(storage.values.get(`paid-draft:${fixture.orderId}`));
-    assert.equal(finalDraft.authorityReceiptVersion, 'paid-reading-authority-receipt-v1');
+    assert.equal(finalDraft.authorityReceiptVersion, 'paid-reading-authority-receipt-v2');
     assert.equal(finalDraft.authorityReceiptSignature, receipt.signature);
     assert.equal(finalDraft.authorityReceiptKind, receiptKind);
     assert.equal(finalDraft.authorityReceiptLineDigest, receipt.lineDigest);
-    assert.equal(finalDraft.verifiedFields.persistedServerField, `preserved-${kind}`);
+    assert.equal(finalDraft.verifiedFields.persistedServerField, undefined);
     const accessEntries = [...storage.values.entries()].filter(([key]) => key.startsWith('paid-access:'));
     assert.equal(accessEntries.length, 1);
     assert.equal(accessEntries[0][1], fixture.orderId);
   });
 }
+
+test('successor rebinds old-worker draft and reading overwrites after enqueue before generation', async () => {
+  const { processUndeliveredPaidOrder } = await loadQueueProcessor();
+  const fixture = retryAuthorityFixture('preview');
+  const storage = atomicReceiptCache();
+  const secret = 'mixed-worker-rebind-secret';
+  const env = {
+    READINGS_CACHE: storage.cache,
+    INTERNAL_ORDER_REPLAY_SECRET: secret,
+    SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
+    PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+    SHOPIFY_STORE_DOMAIN: 'example.myshopify.com',
+    SHOPIFY_ADMIN_TOKEN: 'test-admin-token',
+  };
+  const attackerQuestion = 'Storefront supplied question that has no server authority.';
+  const attackerCards = 'Storefront supplied cards that have no server authority.';
+  let replayCalls = 0;
+  let enqueueCalls = 0;
+
+  await processUndeliveredPaidOrder(fixture.row, env, {
+    verifyAuthorities: async () => fixture.verified,
+    replay: async (row, runtimeEnv) => {
+      replayCalls += 1;
+      return replayPaidWebhookThroughLegacy(row, runtimeEnv);
+    },
+    validateMembership: async () => {},
+    enqueue: async () => {
+      enqueueCalls += 1;
+      const rebound = JSON.parse(storage.values.get(`paid-draft:${fixture.orderId}`));
+      assert.equal(rebound.authorityReceiptVersion, 'paid-reading-authority-receipt-v2');
+      assert.match(rebound.authorityReceiptSignature, /^[a-f0-9]{64}$/);
+      assert.equal(rebound.verifiedFields.question, fixture.verified.preview.verifiedFields.question);
+      assert.equal(rebound.verifiedFields.cards, fixture.verified.preview.verifiedFields.cards);
+      assert.notEqual(rebound.verifiedFields.question, attackerQuestion);
+      assert.notEqual(rebound.verifiedFields.cards, attackerCards);
+      return { queued: true };
+    },
+  });
+
+  assert.equal(replayCalls, 1);
+  assert.equal(enqueueCalls, 1);
+
+  const draftKey = `paid-draft:${fixture.orderId}`;
+  const receiptBoundDraft = JSON.parse(storage.values.get(draftKey));
+  const receipt = JSON.parse(storage.values.get(receiptKeyForOrder(fixture.orderId)));
+  const staleAccessToken = receiptBoundDraft.accessToken === 'f'.repeat(32) ? 'e'.repeat(32) : 'f'.repeat(32);
+  const staleLegacyDraft = {
+    schemaVersion: 2,
+    orderId: fixture.orderId,
+    accessToken: staleAccessToken,
+    originalQuestion: attackerQuestion,
+    question: attackerQuestion,
+    status: 'auto_locked',
+    editCount: 0,
+    missingQuestion: false,
+    createdAt: receiptBoundDraft.createdAt,
+    reviewUntil: receiptBoundDraft.reviewUntil,
+    confirmedAt: receiptBoundDraft.createdAt,
+    verifiedFields: {
+      question: attackerQuestion,
+      cards: attackerCards,
+      freeToken: fixture.verified.preview.token,
+    },
+  };
+  // The old invocation outlives the successor lease and writes after the new
+  // webhook replay/enqueue has already completed. It also mints a different
+  // markerless access token; the successor must restore the token HMAC-bound
+  // inside the receipt rather than adopting this late mutable capability.
+  await storage.cache.put(draftKey, JSON.stringify(staleLegacyDraft), { expirationTtl: 365 * 24 * 60 * 60 });
+  await storage.cache.put(`paid-access:${staleAccessToken}`, fixture.orderId, { expirationTtl: 365 * 24 * 60 * 60 });
+  await storage.cache.put(`reading:${fixture.orderId}`, JSON.stringify({
+    html: '<p>Attacker-controlled stale reading.</p>',
+    readings: [{ html: '<p>Attacker-controlled stale reading.</p>', question: attackerQuestion, cards: attackerCards }],
+    total: 1,
+  }), { expirationTtl: 365 * 24 * 60 * 60 });
+
+  const reboundDraft = await verifiedPaidReadingDraftAuthority(fixture.payload, staleLegacyDraft, env);
+  assert.equal(reboundDraft.accessToken, receipt.accessToken);
+  assert.notEqual(reboundDraft.accessToken, staleAccessToken);
+  assert.equal(storage.values.get(`paid-access:${receipt.accessToken}`), fixture.orderId);
+  const hydrated = await hydratePaidReadingItemFields({
+    question: attackerQuestion,
+    cards: attackerCards,
+    freeToken: fixture.verified.preview.token,
+  }, reboundDraft, 0, env);
+  assert.equal(hydrated.question, fixture.verified.preview.verifiedFields.question);
+  assert.equal(hydrated.cards, fixture.verified.preview.verifiedFields.cards);
+  assert.notEqual(hydrated.question, attackerQuestion);
+  assert.notEqual(hydrated.cards, attackerCards);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const requestUrl = String(url);
+    const body = requestUrl.includes('/orders.json?') ? { orders: [fixture.payload] } : { order: fixture.payload };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    storage.values.set(draftKey, JSON.stringify(staleLegacyDraft));
+    const deliveryDraft = await verifiedPaidReadingDraftForOrderId(fixture.orderId, env);
+    assert.equal(deliveryDraft.question, fixture.verified.preview.verifiedFields.question);
+    assert.equal(deliveryDraft.verifiedFields.cards, fixture.verified.preview.verifiedFields.cards);
+    const staleCapability = await readingsWorker.fetch(
+      new Request(`https://reading.deckaura.com/r/${staleAccessToken}`),
+      env,
+    );
+    assert.equal(staleCapability.status, 404,
+      'a late markerless paid-access mapping must not borrow the receipt-bound order authority');
+    assert.equal(await trustedCachedPaidReading(fixture.orderId, env), null,
+      'a markerless old-worker cache must be deleted rather than served');
+    assert.equal(storage.values.has(`reading:${fixture.orderId}`), false);
+    const published = await publishTrustedPaidReadingRecord(fixture.orderId, {
+      html: '<p>Receipt-owned generated reading.</p>',
+      readings: [{
+        html: '<p>Receipt-owned generated reading.</p>',
+        question: hydrated.question,
+        cards: hydrated.cards,
+      }],
+      total: 1,
+    }, env);
+    assert.match(published.authorityReceiptSignature, /^[a-f0-9]{64}$/);
+    const trusted = await trustedCachedPaidReading(fixture.orderId, env);
+    assert.match(trusted.html, /Receipt-owned generated reading/);
+    assert.doesNotMatch(JSON.stringify(trusted), /Attacker-controlled|Storefront supplied/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  const queueSource = await readFile(new URL('lib/reading-queue-processor.ts', root), 'utf8');
+  const deliveryProjection = queueSource.slice(
+    queueSource.indexOf('async function updatePaidOrderBeforeDelivery'),
+    queueSource.indexOf('async function updatePaidOrderAfterDelivery'),
+  );
+  assert.match(deliveryProjection, /verifiedPaidReadingDraftForOrderId/);
+  assert.doesNotMatch(deliveryProjection, /READINGS_CACHE\.get\(`paid-draft:/);
+});
+
+test('receipt-bound credit updates append exactly once instead of returning the unchanged cache', async () => {
+  const { verifiedOrReceiptedPaidReadingAuthorities } = await loadQueueProcessor();
+  const fixture = retryAuthorityFixture('preview');
+  const storage = atomicReceiptCache();
+  const secret = 'receipt-bound-credit-update-secret';
+  const env = {
+    READINGS_CACHE: storage.cache,
+    INTERNAL_ORDER_REPLAY_SECRET: secret,
+    SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
+    PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+    SHOPIFY_STORE_DOMAIN: 'example.myshopify.com',
+    SHOPIFY_ADMIN_TOKEN: 'test-admin-token',
+  };
+  await verifiedOrReceiptedPaidReadingAuthorities(fixture.row, env, async () => fixture.verified);
+  const receipt = JSON.parse(storage.values.get(receiptKeyForOrder(fixture.orderId)));
+  const cacheKey = `reading:${fixture.orderId}`;
+  storage.values.set(cacheKey, JSON.stringify({
+    html: '<p>Base receipt-bound reading.</p>',
+    readings: [{ html: '<p>Base receipt-bound reading.</p>', requestId: 'base-reading' }],
+    total: 2,
+    authorityReceiptVersion: receipt.receiptVersion,
+    authorityReceiptKeyId: receipt.keyId,
+    authorityReceiptSignature: receipt.signature,
+    authorityReceiptOrderDigest: receipt.orderDigest,
+    authorityReceiptLineDigest: receipt.lineDigest,
+  }));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => new Response(JSON.stringify(
+    String(url).includes('/orders.json?') ? { orders: [fixture.payload] } : { order: fixture.payload },
+  ), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const requestId = 'paid-credit-request-0001';
+  try {
+    const first = await appendTrustedPaidReadingRecord(fixture.orderId, {
+      html: '<p>New paid credit reading.</p>',
+      question: 'What grounded step should I take next?',
+      requestId,
+    }, requestId, 2, env);
+    assert.equal(first.appended, true);
+    assert.equal(first.record.readings.length, 2);
+    assert.equal(first.record.readings.filter((reading) => reading.requestId === requestId).length, 1);
+
+    const retry = await appendTrustedPaidReadingRecord(fixture.orderId, {
+      html: '<p>This duplicate must not be stored.</p>',
+      requestId,
+    }, requestId, 2, env);
+    assert.equal(retry.appended, false);
+    assert.equal(retry.replayed, true);
+    assert.equal(retry.record.readings.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const workerSource = await readFile(new URL('lib/legacy-worker.mjs', root), 'utf8');
+  const spendSlice = workerSource.slice(workerSource.indexOf('async function spendCredit('), workerSource.indexOf('__name(spendCredit'));
+  assert.match(spendSlice, /appendTrustedPaidReadingRecord/);
+  assert.doesNotMatch(spendSlice, /publishTrustedPaidReadingRecord/);
+});
+
+test('receipt retry accepts reconciliation transport reconstruction but rejects protected projection drift', async () => {
+  const { verifiedOrReceiptedPaidReadingAuthorities } = await loadQueueProcessor();
+  const { shopifyReconciledOrderPayload } = await loadReconciliation();
+  const fixture = retryAuthorityFixture('preview');
+  const reconciledOrderId = '9000000000001';
+  const reconciledLineId = '8000000000002';
+  const originalLine = {
+    ...fixture.line,
+    id: reconciledLineId,
+    title: 'Server-side original Shopify line title',
+    vendor: 'DeckAura',
+    fulfillment_service: 'manual',
+    tax_lines: [{ title: 'VAT', price: '0.00' }],
+  };
+  const originalPayload = {
+    ...fixture.payload,
+    id: reconciledOrderId,
+    browser_ip: '203.0.113.9',
+    line_items: [originalLine],
+  };
+  const originalRow = {
+    ...fixture.row,
+    order_id: reconciledOrderId,
+    payload: originalPayload,
+    payload_sha256: createHash('sha256').update(JSON.stringify(originalPayload), 'utf8').digest('hex'),
+  };
+  const originalVerified = {
+    ...fixture.verified,
+    items: [originalLine],
+    preview: { ...fixture.verified.preview, lineKey: `id:${reconciledLineId}` },
+  };
+  const storage = atomicReceiptCache();
+  const env = {
+    READINGS_CACHE: storage.cache,
+    INTERNAL_ORDER_REPLAY_SECRET: 'transport-independent-receipt-secret',
+    SHOPIFY_WEBHOOK_SECRET: 'transport-independent-receipt-secret',
+    ...paidReceiptKeyEnv('transport-independent-receipt-secret'),
+    PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+  };
+  await verifiedOrReceiptedPaidReadingAuthorities(originalRow, env, async () => originalVerified);
+
+  // Admin reconciliation intentionally reconstructs a reduced order/line
+  // payload and therefore changes the raw webhook hash and raw object shape.
+  const rebuiltPayload = shopifyReconciledOrderPayload({
+    id: `gid://shopify/Order/${reconciledOrderId}`,
+    name: fixture.payload.name,
+    createdAt: fixture.payload.created_at,
+    updatedAt: fixture.payload.created_at,
+    currencyCode: 'USD',
+    email: '',
+    customerAcceptsMarketing: false,
+    customer: null,
+    billingAddress: null,
+    lineItems: {
+      nodes: [{
+        id: `gid://shopify/LineItem/${reconciledLineId}`,
+        sku: fixture.line.sku,
+        quantity: 1,
+        originalUnitPriceSet: { shopMoney: { amount: '5.990' } },
+        customAttributes: fixture.line.properties.map(({ name, value }) => ({ key: name, value })),
+      }],
+    },
+  });
+  const rebuiltLine = rebuiltPayload.line_items[0];
+  const rebuiltRow = {
+    ...fixture.row,
+    order_id: reconciledOrderId,
+    webhook_id: 'admin-reconciliation-rebuilt',
+    payload: rebuiltPayload,
+    payload_sha256: createHash('sha256').update(JSON.stringify(rebuiltPayload), 'utf8').digest('hex'),
+    attempts: 2,
+  };
+  let fallbackCalls = 0;
+  const restored = await verifiedOrReceiptedPaidReadingAuthorities(rebuiltRow, env, async () => {
+    fallbackCalls += 1;
+    throw new Error('receipt retry must not revalidate an expired mutable source');
+  });
+  assert.equal(fallbackCalls, 0);
+  assert.equal(restored.preview.token, fixture.verified.preview.token);
+
+  for (const [label, linePatch] of [
+    ['variant', { variant_id: FREE_TAROT_PACKAGES.medium.variantId }],
+    ['sku', { sku: FREE_TAROT_PACKAGES.medium.sku }],
+    ['quantity', { quantity: 2 }],
+    ['price', { price: '6.99' }],
+    ['authority-property', {
+      properties: rebuiltLine.properties.map((property) => (
+        String(property.name).toLowerCase().replace(/^_/, '') === 'free_token'
+          ? { ...property, value: 'f'.repeat(32) }
+          : property
+      )),
+    }],
+    ['question-property', {
+      properties: rebuiltLine.properties.map((property) => (
+        String(property.name).toLowerCase() === 'your question'
+          ? { ...property, value: 'A different protected paid question.' }
+          : property
+      )),
+    }],
+  ]) {
+    const changedLine = { ...rebuiltLine, ...linePatch };
+    const changedPayload = { ...rebuiltPayload, line_items: [changedLine] };
+    await assert.rejects(
+      verifiedOrReceiptedPaidReadingAuthorities({
+        ...rebuiltRow,
+        webhook_id: `admin-reconciliation-tampered-${label}`,
+        payload: changedPayload,
+        payload_sha256: createHash('sha256').update(JSON.stringify(changedPayload), 'utf8').digest('hex'),
+      }, env, async () => {
+        throw new Error('tampered retry must not fall back to mutable authority');
+      }),
+      authorityError('PAID_READING_AUTHORITY_RECEIPT_INVALID'),
+      label,
+    );
+  }
+
+  for (const [label, payloadPatch] of [
+    ['created-at', { created_at: '2026-08-17T09:31:00.000Z' }],
+    ['currency', { currency: 'EUR' }],
+  ]) {
+    const changedPayload = { ...rebuiltPayload, ...payloadPatch };
+    await assert.rejects(
+      verifiedOrReceiptedPaidReadingAuthorities({
+        ...rebuiltRow,
+        webhook_id: `admin-reconciliation-tampered-${label}`,
+        payload: changedPayload,
+        payload_sha256: createHash('sha256').update(JSON.stringify(changedPayload), 'utf8').digest('hex'),
+      }, env, async () => {
+        throw new Error('tampered retry must not fall back to mutable authority');
+      }),
+      authorityError('PAID_READING_AUTHORITY_RECEIPT_INVALID'),
+      label,
+    );
+  }
+});
+
+test('receipt key rotation converges previous-key receipts onto current and supports a second rotation', async () => {
+  const { verifiedOrReceiptedPaidReadingAuthorities } = await loadQueueProcessor();
+  const fixture = retryAuthorityFixture('preview');
+  const storage = atomicReceiptCache();
+  const replaySecret = 'receipt-rotation-replay-secret';
+  const key1 = paidReceiptKeyEnv('rotation-secret-one', 'receipt-key-1');
+  const key2 = paidReceiptKeyEnv('rotation-secret-two', 'receipt-key-2');
+  const key3 = paidReceiptKeyEnv('rotation-secret-three', 'receipt-key-3');
+  const runtime = (current, previous = null) => ({
+    READINGS_CACHE: storage.cache,
+    INTERNAL_ORDER_REPLAY_SECRET: replaySecret,
+    SHOPIFY_WEBHOOK_SECRET: replaySecret,
+    PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+    ...current,
+    ...(previous ? {
+      PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_KEY_ID: previous.PAID_READING_AUTHORITY_RECEIPT_KEY_ID,
+      PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_SECRET: previous.PAID_READING_AUTHORITY_RECEIPT_SECRET,
+    } : {}),
+  });
+
+  await verifiedOrReceiptedPaidReadingAuthorities(fixture.row, runtime(key1), async () => fixture.verified);
+  const receiptKey = receiptKeyForOrder(fixture.orderId);
+  const firstBytes = storage.values.get(receiptKey);
+  const first = JSON.parse(firstBytes);
+  assert.equal(first.receiptVersion, 'paid-reading-authority-receipt-v2');
+  assert.equal(first.keyId, 'receipt-key-1');
+  assert.match(first.accessToken, /^[a-f0-9]{32}$/);
+  assert.ok(Number.isSafeInteger(first.issuedAt) && first.expiresAt > first.issuedAt);
+  const readingKey = `reading:${fixture.orderId}`;
+  storage.values.set(readingKey, JSON.stringify({
+    html: '<p>Key-independent generated reading.</p>',
+    readings: [{ html: '<p>Key-independent generated reading.</p>' }],
+    total: 1,
+    authorityReceiptVersion: first.receiptVersion,
+    authorityReceiptKeyId: first.keyId,
+    authorityReceiptSignature: first.signature,
+    authorityReceiptOrderDigest: first.orderDigest,
+    authorityReceiptLineDigest: first.lineDigest,
+  }));
+
+  await verifiedOrReceiptedPaidReadingAuthorities({ ...fixture.row, attempts: 2 }, runtime(key2, key1), async () => {
+    throw new Error('the previous-key receipt must restore without mutable authority');
+  });
+  const secondBytes = storage.values.get(receiptKey);
+  const second = JSON.parse(secondBytes);
+  assert.equal(second.keyId, 'receipt-key-2');
+  assert.notEqual(second.signature, first.signature);
+  assert.equal(second.issuedAt, first.issuedAt);
+  assert.equal(second.expiresAt, first.expiresAt);
+  assert.equal(second.accessToken, first.accessToken);
+  assert.equal(paidReadingAuthorityDigest(second), paidReadingAuthorityDigest(first));
+  assert.equal(JSON.parse(storage.values.get(`paid-draft:${fixture.orderId}`)).authorityReceiptKeyId, 'receipt-key-2');
+  assert.equal(JSON.parse(storage.values.get(readingKey)).authorityReceiptKeyId, 'receipt-key-2');
+  assert.match(JSON.parse(storage.values.get(readingKey)).html, /Key-independent generated reading/);
+
+  await verifiedOrReceiptedPaidReadingAuthorities({ ...fixture.row, attempts: 3 }, runtime(key3, key2), async () => {
+    throw new Error('the converged key-2 receipt must support the next rotation');
+  });
+  const third = JSON.parse(storage.values.get(receiptKey));
+  assert.equal(third.keyId, 'receipt-key-3');
+  assert.equal(third.issuedAt, first.issuedAt);
+  assert.equal(third.expiresAt, first.expiresAt);
+  assert.equal(third.accessToken, first.accessToken);
+  assert.equal(paidReadingAuthorityDigest(third), paidReadingAuthorityDigest(first));
+  assert.equal(JSON.parse(storage.values.get(`paid-draft:${fixture.orderId}`)).authorityReceiptKeyId, 'receipt-key-3');
+  assert.equal(JSON.parse(storage.values.get(readingKey)).authorityReceiptKeyId, 'receipt-key-3');
+  assert.equal(storage.values.get(`paid-access:${first.accessToken}`), fixture.orderId);
+
+  const noPreviousStorage = atomicReceiptCache([...new Map([
+    ...storage.values,
+    [receiptKey, firstBytes],
+  ])]);
+  await assert.rejects(
+    verifiedOrReceiptedPaidReadingAuthorities(fixture.row, {
+      ...runtime(key2),
+      READINGS_CACHE: noPreviousStorage.cache,
+    }, async () => fixture.verified),
+    authorityError('PAID_READING_AUTHORITY_RECEIPT_INVALID'),
+  );
+
+  const tamperedStorage = atomicReceiptCache([...storage.values]);
+  const tampered = JSON.parse(tamperedStorage.values.get(receiptKey));
+  tampered.keyId = 'unknown-receipt-key';
+  tamperedStorage.values.set(receiptKey, JSON.stringify(tampered));
+  await assert.rejects(
+    verifiedOrReceiptedPaidReadingAuthorities(fixture.row, {
+      ...runtime(key3, key2),
+      READINGS_CACHE: tamperedStorage.cache,
+    }, async () => fixture.verified),
+    authorityError('PAID_READING_AUTHORITY_RECEIPT_INVALID'),
+  );
+
+  await assert.rejects(
+    verifiedOrReceiptedPaidReadingAuthorities(retryAuthorityFixture('context').row, {
+      READINGS_CACHE: atomicReceiptCache().cache,
+      INTERNAL_ORDER_REPLAY_SECRET: replaySecret,
+      SHOPIFY_WEBHOOK_SECRET: replaySecret,
+      PAID_READING_AUTHORITY_RECEIPT_KEY_ID: 'partial-key',
+      PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+    }, async () => retryAuthorityFixture('context').verified),
+    authorityError('PAID_READING_AUTHORITY_RECEIPT_SECRET_MISSING'),
+  );
+  const partialPreviousFixture = retryAuthorityFixture('intent');
+  await assert.rejects(
+    verifiedOrReceiptedPaidReadingAuthorities(partialPreviousFixture.row, {
+      READINGS_CACHE: atomicReceiptCache().cache,
+      INTERNAL_ORDER_REPLAY_SECRET: replaySecret,
+      SHOPIFY_WEBHOOK_SECRET: replaySecret,
+      ...key3,
+      PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_KEY_ID: 'partial-previous-key',
+      PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+    }, async () => partialPreviousFixture.verified),
+    authorityError('PAID_READING_AUTHORITY_RECEIPT_KEYRING_INVALID'),
+  );
+});
+
+test('paid generation limiter supersedes legacy completion and repairs only one canonical receipt owner', async () => {
+  const values = new Map();
+  const storage = {
+    async get(key) { return values.get(key); },
+    async put(key, value) { values.set(key, value); },
+    async delete(keys) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key);
+    },
+    async setAlarm() {},
+  };
+  const limiter = new FreeEntitlementLimiter({ storage }, {});
+  const invoke = async (body) => {
+    const response = await limiter.fetch(new Request('https://free-entitlement.internal/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+    return { status: response.status, body: await response.json() };
+  };
+  const legacyClaim = 'legacy-complete-claim-0001';
+  assert.equal((await invoke({ action: 'claim-paid-generation', claimId: legacyClaim })).body.allowed, true);
+  assert.equal((await invoke({ action: 'commit-paid-generation', claimId: legacyClaim })).body.allowed, true);
+
+  const authorityDigest = 'a'.repeat(64);
+  const successorClaim = 'successor-repair-claim-001';
+  const successor = await invoke({
+    action: 'claim-paid-generation',
+    claimId: successorClaim,
+    authorityDigest,
+    repair: true,
+  });
+  assert.equal(successor.body.allowed, true, 'receipt authority must supersede a legacy completed marker');
+  assert.equal((await invoke({ action: 'commit-paid-generation', claimId: successorClaim })).body.allowed, true);
+  assert.equal(values.get('paidGenerationAuthorityDigest'), authorityDigest);
+
+  const cachedRetry = await invoke({
+    action: 'claim-paid-generation',
+    claimId: 'successor-idempotent-0002',
+    authorityDigest,
+    repair: false,
+  });
+  assert.equal(cachedRetry.body.allowed, false);
+  assert.equal(cachedRetry.body.reason, 'generation_complete');
+
+  const repairClaim = 'successor-cache-repair-003';
+  assert.equal((await invoke({
+    action: 'claim-paid-generation',
+    claimId: repairClaim,
+    authorityDigest,
+    repair: true,
+  })).body.allowed, true);
+  const competing = await invoke({
+    action: 'claim-paid-generation',
+    claimId: 'successor-competing-0004',
+    authorityDigest,
+    repair: true,
+  });
+  assert.equal(competing.body.allowed, false);
+  assert.equal(competing.body.reason, 'generation_in_progress');
+
+  const workerEnvSource = await readFile(new URL('lib/worker-env.ts', root), 'utf8');
+  const adapterSlice = workerEnvSource.slice(
+    workerEnvSource.indexOf("if (['claim-paid-generation'"),
+    workerEnvSource.indexOf("} else if (['claim-usage'"),
+  );
+  assert.match(adapterSlice, /paidGenerationAuthorityDigest/);
+  assert.match(adapterSlice, /paidGenerationClaimDigest/);
+  assert.match(adapterSlice, /body\.repair === true/);
+});
+
+test('legacy generation accepts a primary signed intent with supplemental numerology on the same line', async () => {
+  const { verifiedOrReceiptedPaidReadingAuthorities } = await loadQueueProcessor();
+  const fixture = retryAuthorityFixture('intent');
+  const line = {
+    ...fixture.line,
+    properties: [
+      ...fixture.line.properties,
+      lineProperty('Reading Type', 'Numerology Life Path'),
+      lineProperty('_Numerology Product', 'life_path'),
+    ],
+  };
+  const payload = { ...fixture.payload, line_items: [line] };
+  const row = {
+    ...fixture.row,
+    payload,
+    payload_sha256: createHash('sha256').update(JSON.stringify(payload), 'utf8').digest('hex'),
+  };
+  const verified = {
+    ...fixture.verified,
+    items: [line],
+    numerology: {
+      kind: 'life_path',
+      variantId: String(line.variant_id),
+      sku: String(line.sku),
+      verifiedFields: {
+        numerologyEvidence: 'receipt-owned-life-path-evidence',
+      },
+    },
+  };
+  const storage = atomicReceiptCache();
+  const secret = 'numerology-intent-receipt-secret';
+  const env = {
+    READINGS_CACHE: storage.cache,
+    INTERNAL_ORDER_REPLAY_SECRET: secret,
+    SHOPIFY_WEBHOOK_SECRET: secret,
+    ...paidReceiptKeyEnv(secret),
+    PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
+  };
+
+  await verifiedOrReceiptedPaidReadingAuthorities(row, env, async () => verified);
+  const draft = JSON.parse(storage.values.get(`paid-draft:${fixture.orderId}`));
+  const trustedDraft = await verifiedPaidReadingDraftAuthority(payload, draft, env);
+  const hydrated = await hydratePaidReadingItemFields({}, trustedDraft, 0, env);
+  assert.equal(hydrated.receiptAuthority, 'intent');
+  assert.equal(hydrated.numerologyEvidence, 'receipt-owned-life-path-evidence');
+  assert.equal(hydrated.cards, fixture.verified.intent.verifiedFields.cards);
+});
 
 test('paid authority receipts reject cross-order, line, type, and verified-field tampering without mutable fallback', async () => {
   const { verifiedOrReceiptedPaidReadingAuthorities } = await loadQueueProcessor();
@@ -1374,6 +2277,7 @@ test('paid authority receipts reject cross-order, line, type, and verified-field
     READINGS_CACHE: storage.cache,
     INTERNAL_ORDER_REPLAY_SECRET: 'receipt-negative-secret',
     SHOPIFY_WEBHOOK_SECRET: 'receipt-negative-secret',
+    ...paidReceiptKeyEnv('receipt-negative-secret'),
     PAID_READING_AUTHORITY_CUTOFF: '2026-08-17T08:00:00.000Z',
   };
   await verifiedOrReceiptedPaidReadingAuthorities(fixture.row, env, async () => fixture.verified);

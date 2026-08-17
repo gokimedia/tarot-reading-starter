@@ -14,6 +14,7 @@ import readingsWorker, {
   hydratePreviewSnapshot,
   readingDeliveryDelayMinutes,
   sweepMemberships,
+  verifiedPaidReadingDraftForOrderId,
 } from '@/lib/legacy-worker.mjs';
 import {
   hasAuthoritativeDeliveredOrderEvidence,
@@ -25,6 +26,16 @@ import {
   paidReadingDeliveryJobInput,
   shopifyFinancialStatusAllowsReadingFulfillment,
 } from '@/lib/free-tarot-payment-contract.mjs';
+import {
+  PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS,
+  PAID_READING_AUTHORITY_RECEIPT_VERSION,
+  canonicalPaidReadingReceiptJson,
+  createPaidReadingAuthorityReceipt,
+  paidReadingAuthorityReceiptKey,
+  paidReadingAuthorityTransportContext,
+  paidReadingDraftMatchesReceipt,
+  verifyPaidReadingAuthorityReceipt,
+} from '@/lib/paid-reading-authority-receipt.mjs';
 import { validateNumerologyCompatibilityOrder } from '@/lib/numerology-compatibility-order.mjs';
 import { validateNumerologyLifePathOrder } from '@/lib/numerology-life-path-order.mjs';
 import {
@@ -180,8 +191,10 @@ type PaidDraft = {
   verifiedFields?: JsonObject;
   numerology?: JsonObject;
   authorityReceiptVersion?: string;
+  authorityReceiptKeyId?: string;
   authorityReceiptSignature?: string;
   authorityReceiptKind?: string;
+  authorityReceiptOrderDigest?: string;
   authorityReceiptLineDigest?: string;
   legacyReviewStatePreserved?: boolean;
 };
@@ -471,13 +484,18 @@ type VerifiedPaidReadingAuthorities = {
 type StoredPaidReadingAuthorities = Omit<VerifiedPaidReadingAuthorities, 'items' | 'legacyGrandfathered'>;
 
 type PaidReadingAuthorityReceiptBody = {
-  receiptVersion: 'paid-reading-authority-receipt-v1';
+  receiptVersion: 'paid-reading-authority-receipt-v2';
+  keyId: string;
+  issuedAt: number;
+  expiresAt: number;
   orderId: string;
-  payloadSha256: string;
+  sourcePayloadSha256: string;
+  orderDigest: string;
   lineKey: string;
   lineDigest: string;
   variantId: string;
   sku: string;
+  accessToken: string;
   authorityKind: 'checkout' | 'intent' | 'preview' | 'numerology';
   authorities: StoredPaidReadingAuthorities;
 };
@@ -498,10 +516,8 @@ type PaidReadingAuthorityPublisher = (
   sourceGuards: PaidReadingAuthoritySourceGuard[],
 ) => Promise<VerifiedPaidReadingAuthorities>;
 
-const PAID_READING_AUTHORITY_RECEIPT_VERSION = 'paid-reading-authority-receipt-v1';
-const MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES = 512 * 1024;
-const PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS = 60 * 60 * 24 * 365;
 const paidReadingAuthoritySourceGuards = new WeakMap<object, PaidReadingAuthoritySourceGuard[]>();
+const paidReadingAuthorityReceipts = new WeakMap<object, PaidReadingAuthorityReceipt>();
 
 function packageTierForLineItem(item: JsonObject): TarotPackageTier | null {
   const variantId = text(item.variant_id, 64);
@@ -2051,7 +2067,9 @@ async function receiptBoundPaidDraftReviewState(
   const accessToken = String(existing.accessToken || '').toLowerCase();
   if (existing.orderId !== orderId
     || existing.authorityReceiptVersion !== PAID_READING_AUTHORITY_RECEIPT_VERSION
+    || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(String(existing.authorityReceiptKeyId || ''))
     || !/^[a-f0-9]{64}$/i.test(String(existing.authorityReceiptSignature || ''))
+    || !/^[a-f0-9]{64}$/i.test(String(existing.authorityReceiptOrderDigest || ''))
     || !/^[a-f0-9]{64}$/i.test(String(existing.authorityReceiptLineDigest || ''))
     || !['checkout', 'intent', 'preview', 'numerology'].includes(String(existing.authorityReceiptKind || ''))
     || !validAccessToken(accessToken)
@@ -2111,8 +2129,13 @@ async function replayShopifyWebhook(row: WebhookQueueRow, env: WorkerEnvironment
   return { ignored: false };
 }
 
-async function paidDraftForOrder(orderId: string, env: WorkerEnvironment) {
-  return await env.READINGS_CACHE.get(`paid-draft:${orderId}`, 'json') as PaidDraft | null;
+async function paidDraftRecordForOrder(orderId: string, env: WorkerEnvironment) {
+  const value = await env.READINGS_CACHE.get(`paid-draft:${orderId}`);
+  if (value == null) return { bytes: '', draft: null as PaidDraft | null };
+  if (typeof value !== 'string') throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  const draft = parsedStoredObject(value) as PaidDraft | null;
+  if (!draft) throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  return { bytes: value, draft };
 }
 
 async function hasPreviouslyDeliveredOrderAuthority(row: WebhookQueueRow) {
@@ -2182,9 +2205,12 @@ async function queueDraftForOrder(
   checkout: VerifiedCheckoutContext | null = null,
   intent: VerifiedReadingIntent | null = null,
   preview: VerifiedPreviewAuthority | null = null,
+  receipt: PaidReadingAuthorityReceipt | null = null,
+  attempt = 0,
 ) {
   const orderId = text(payload.id, 96);
-  const existing = await paidDraftForOrder(orderId, env);
+  const existingRecord = await paidDraftRecordForOrder(orderId, env);
+  const existing = existingRecord.draft;
   const verifiedVariantId = intent?.variantId || checkout?.variantId || preview?.variantId || text(numerology?.variantId, 64);
   const first = verifiedVariantId
     ? items.find((item) => text(item.variant_id, 64) === verifiedVariantId) || items[0] || {}
@@ -2193,7 +2219,6 @@ async function queueDraftForOrder(
   const createdAt = payloadCreatedAt(payload);
   const checkoutQuestion = itemProperty(first, ['question', 'your question']);
   const mergedVerifiedFields = {
-    ...(existing?.verifiedFields || {}),
     ...(checkout?.verifiedFields || {}),
     ...((numerology?.verifiedFields && typeof numerology.verifiedFields === 'object')
       ? numerology.verifiedFields as JsonObject
@@ -2204,12 +2229,22 @@ async function queueDraftForOrder(
     ...(intent?.verifiedFields || {}),
   };
   if (existing && validAccessToken(existing.accessToken)) {
-    const verifiedFields = Object.keys(mergedVerifiedFields).length ? mergedVerifiedFields : existing.verifiedFields;
+    if (!receipt) throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+    const receiptBound = paidReadingDraftMatchesReceipt(existing, receipt);
+    const hasReceiptMarkers = Boolean(existing.authorityReceiptVersion || existing.authorityReceiptKeyId
+      || existing.authorityReceiptSignature || existing.authorityReceiptKind
+      || existing.authorityReceiptOrderDigest || existing.authorityReceiptLineDigest);
+    if (hasReceiptMarkers && !receiptBound) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+    }
+    const verifiedFields = paidReadingAuthorityVerifiedFields(receipt.authorities);
     const questionLimit = paidQuestionLengthLimit(verifiedFields);
     const verifiedQuestion = text(verifiedFields?.question, questionLimit);
     const fallbackQuestion = 'General guidance for the path ahead';
-    const existingRealQuestion = text(existing.question || existing.originalQuestion, questionLimit);
-    const receiptReviewState = await receiptBoundPaidDraftReviewState(orderId, existing, env, questionLimit);
+    const existingRealQuestion = receiptBound ? text(existing.question || existing.originalQuestion, questionLimit) : '';
+    const receiptReviewState = receiptBound
+      ? await receiptBoundPaidDraftReviewState(orderId, existing, env, questionLimit)
+      : null;
     const knownQuestion = receiptReviewState?.question || verifiedQuestion || checkoutQuestion
       || (existing.status === 'confirmed' || (existingRealQuestion && existingRealQuestion !== fallbackQuestion) ? existingRealQuestion : '');
     // A property-less direct purchase carries no question at all. Locking it
@@ -2230,10 +2265,23 @@ async function queueDraftForOrder(
         shopifySku: packageAuthority.sku,
         verifiedFields,
         numerology: numerology || existing.numerology,
+        authorityReceiptVersion: receipt.receiptVersion,
+        authorityReceiptKeyId: receipt.keyId,
+        authorityReceiptSignature: receipt.signature,
+        authorityReceiptKind: receipt.authorityKind,
+        authorityReceiptOrderDigest: receipt.orderDigest,
+        authorityReceiptLineDigest: receipt.lineDigest,
       };
-      await env.READINGS_CACHE.put(`paid-draft:${orderId}`, JSON.stringify({ ...pendingDraft, orderId }), {
-        expirationTtl: 60 * 60 * 24 * 365,
-      });
+      const persisted = await env.READINGS_CACHE.compareAndSetMany([{
+        key: `paid-draft:${orderId}`,
+        expectedValue: existingRecord.bytes,
+        value: JSON.stringify({ ...pendingDraft, orderId }),
+        options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
+      }]);
+      if (!persisted) {
+        if (attempt < 3) return queueDraftForOrder(payload, items, env, numerology, checkout, intent, preview, receipt, attempt + 1);
+        throw new QueueOperationError('PAID_DRAFT_WRITE_CONFLICT');
+      }
       return { draft: pendingDraft };
     }
     const draft: PaidDraft = {
@@ -2256,56 +2304,30 @@ async function queueDraftForOrder(
       shopifySku: packageAuthority.sku,
       verifiedFields,
       numerology: numerology || existing.numerology,
+      authorityReceiptVersion: receipt.receiptVersion,
+      authorityReceiptKeyId: receipt.keyId,
+      authorityReceiptSignature: receipt.signature,
+      authorityReceiptKind: receipt.authorityKind,
+      authorityReceiptOrderDigest: receipt.orderDigest,
+      authorityReceiptLineDigest: receipt.lineDigest,
     };
-    await env.READINGS_CACHE.put(`paid-draft:${orderId}`, JSON.stringify({ ...draft, orderId }), {
-      expirationTtl: 60 * 60 * 24 * 365,
-    });
+    const persisted = await env.READINGS_CACHE.compareAndSetMany([{
+      key: `paid-draft:${orderId}`,
+      expectedValue: existingRecord.bytes,
+      value: JSON.stringify({ ...draft, orderId }),
+      options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
+    }]);
+    if (!persisted) {
+      if (attempt < 3) return queueDraftForOrder(payload, items, env, numerology, checkout, intent, preview, receipt, attempt + 1);
+      throw new QueueOperationError('PAID_DRAFT_WRITE_CONFLICT');
+    }
     return { draft };
   }
 
-  // A legacy free-result unlock returns early after attaching the already
-  // generated reading. Give that order a stable secure reference so it can use
-  // the same durable fulfillment queue without exposing the numeric order ID.
-  const reading = await env.READINGS_CACHE.get(`reading:${orderId}`, 'json') as JsonObject | null;
-  if (!reading || (!reading.html && !Array.isArray(reading.readings))) {
-    throw new QueueOperationError('PAID_DRAFT_NOT_READY');
-  }
-  const question = itemProperty(first, ['question', 'your question']) || 'General guidance for the path ahead';
-  const secret = text(
-    process.env.ENTITLEMENT_PEPPER
-      || process.env.INTERNAL_ORDER_REPLAY_SECRET
-      || process.env.SHOPIFY_WEBHOOK_SECRET,
-    512,
-  );
-  if (!secret) throw new QueueOperationError('PAID_ACCESS_SECRET_MISSING');
-  const accessToken = createHmac('sha256', secret)
-    .update(`paid-access:${orderId}`, 'utf8')
-    .digest('hex')
-    .slice(0, 32);
-  const draft: PaidDraft = {
-    accessToken,
-    originalQuestion: question,
-    question,
-    name: itemProperty(first, ['name', 'your name']),
-    status: 'auto_locked',
-    editCount: 0,
-    reviewUntil: createdAt,
-    confirmedAt: createdAt,
-    tier: packageAuthority.tier,
-    shopifyVariantId: packageAuthority.variantId,
-    shopifySku: packageAuthority.sku,
-    verifiedFields: Object.keys(mergedVerifiedFields).length ? mergedVerifiedFields : undefined,
-    numerology: numerology || undefined,
-  };
-  await Promise.all([
-    env.READINGS_CACHE.put(`paid-draft:${orderId}`, JSON.stringify({ ...draft, orderId }), {
-      expirationTtl: 60 * 60 * 24 * 365,
-    }),
-    env.READINGS_CACHE.put(`paid-access:${accessToken}`, orderId, {
-      expirationTtl: 60 * 60 * 24 * 365,
-    }),
-  ]);
-  return { draft };
+  // Every current fulfillment enters with a receipt that atomically created
+  // draft + access. Reconstructing either from a raw legacy reading cache would
+  // turn unverified browser fields back into authority.
+  throw new QueueOperationError('PAID_DRAFT_NOT_READY');
 }
 
 async function validateMembershipActivation(payload: JsonObject, env: WorkerEnvironment) {
@@ -2607,13 +2629,25 @@ export async function verifyPaidReadingAuthorities(
   };
   if (!publish) return verified;
   const sourceAuthority = checkout || preview;
-  const sourceGuards = sourceAuthority ? paidReadingAuthoritySourceGuards.get(sourceAuthority) || [] : [];
+  if (!sourceAuthority) return publish(verified, []);
+  const sourceGuards = paidReadingAuthoritySourceGuards.get(sourceAuthority);
+  if (!Array.isArray(sourceGuards)
+    || sourceGuards.length !== 2
+    || new Set(sourceGuards.map((guard) => guard?.key)).size !== 2
+    || sourceGuards.some((guard) => !guard?.key
+      || !guard.expectedValue
+      || guard.expectedValue !== guard.value
+      || !Number.isFinite(guard.options?.expiration)
+      || Number(guard.options.expiration) * 1_000 <= Date.now())) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_GUARD_INVALID');
+  }
   return publish(verified, sourceGuards);
 }
 
 type PaidReadingAuthorityReceiptContext = {
   orderId: string;
-  payloadSha256: string;
+  sourcePayloadSha256: string;
+  orderDigest: string;
   items: JsonObject[];
   line: JsonObject;
   lineKey: string;
@@ -2622,39 +2656,7 @@ type PaidReadingAuthorityReceiptContext = {
   sku: string;
 };
 
-function canonicalReceiptValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalReceiptValue);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value as JsonObject).sort().map((key) => [
-      key,
-      canonicalReceiptValue((value as JsonObject)[key]),
-    ]));
-  }
-  return value;
-}
-
-function canonicalReceiptJson(value: unknown) {
-  let encoded = '';
-  try {
-    encoded = JSON.stringify(value);
-    if (!encoded || Buffer.byteLength(encoded, 'utf8') > MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES) {
-      throw new Error('receipt size');
-    }
-    const normalized = JSON.parse(encoded);
-    return JSON.stringify(canonicalReceiptValue(normalized));
-  } catch {
-    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
-  }
-}
-
-function exactObjectKeys(value: unknown, expected: string[]) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const actual = Object.keys(value as JsonObject).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
-}
-
-function paidReadingAuthorityReceiptSecret(env: WorkerEnvironment) {
+function paidReadingAuthorityAccessSecret(env: WorkerEnvironment) {
   const secret = text(
     env.INTERNAL_ORDER_REPLAY_SECRET
       || env.SHOPIFY_WEBHOOK_SECRET
@@ -2664,24 +2666,6 @@ function paidReadingAuthorityReceiptSecret(env: WorkerEnvironment) {
   );
   if (!secret) throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_SECRET_MISSING');
   return secret;
-}
-
-function paidReadingAuthorityReceiptKey(orderId: string) {
-  const orderHash = createHash('sha256').update(`paid-reading-authority:${orderId}`, 'utf8').digest('hex');
-  return `paid-authority-receipt:${orderHash}`;
-}
-
-function paidReadingAuthorityReceiptSignature(body: PaidReadingAuthorityReceiptBody, secret: string) {
-  return createHmac('sha256', secret)
-    .update('deckaura:paid-reading-authority-receipt:v1\0', 'utf8')
-    .update(canonicalReceiptJson(body), 'utf8')
-    .digest('hex');
-}
-
-function paidReadingAuthorityLineDigest(lineKey: string, line: JsonObject) {
-  return createHash('sha256')
-    .update(canonicalReceiptJson({ lineKey, line }), 'utf8')
-    .digest('hex');
 }
 
 function paidReadingAuthorityReceiptContext(row: WebhookQueueRow): PaidReadingAuthorityReceiptContext | null {
@@ -2694,24 +2678,23 @@ function paidReadingAuthorityReceiptContext(row: WebhookQueueRow): PaidReadingAu
   if (!payloadOrderId || !queuedOrderId || payloadOrderId !== queuedOrderId) {
     throw new QueueOperationError('SHOPIFY_ORDER_ID_MISMATCH');
   }
-  const payloadSha256 = String(row.payload_sha256 || '').trim();
-  if (!/^[a-f0-9]{64}$/.test(payloadSha256)) {
-    throw new QueueOperationError('SHOPIFY_PAYLOAD_HASH_INVALID');
-  }
   const line = items[0];
-  const lineKey = paidReadingLineKey(line, 0);
-  const variantId = text(line.variant_id, 64);
-  const sku = text(line.sku, 80).toUpperCase();
-  if (!lineKey || !variantId || !sku) throw new QueueOperationError('PAID_READING_AUTHORITY_LINE_MISMATCH');
+  let transport;
+  try {
+    transport = paidReadingAuthorityTransportContext({
+      orderId: payloadOrderId,
+      payloadSha256: row.payload_sha256,
+      payload,
+      line,
+      lineIndex: 0,
+    });
+  } catch {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
   return {
-    orderId: payloadOrderId,
-    payloadSha256,
+    ...transport,
     items,
     line,
-    lineKey,
-    lineDigest: paidReadingAuthorityLineDigest(lineKey, line),
-    variantId,
-    sku,
   };
 }
 
@@ -2751,7 +2734,7 @@ function paidReadingAuthorityIdentity(
 }
 
 function normalizedStoredPaidReadingAuthorities(authorities: VerifiedPaidReadingAuthorities): StoredPaidReadingAuthorities {
-  const encoded = canonicalReceiptJson({
+  const encoded = canonicalPaidReadingReceiptJson({
     numerology: authorities.numerology || null,
     checkout: authorities.checkout || null,
     intent: authorities.intent || null,
@@ -2765,29 +2748,27 @@ function paidReadingAuthorityReceipt(
   payload: JsonObject,
   verified: VerifiedPaidReadingAuthorities,
   env: WorkerEnvironment,
+  accessToken: string,
+  preserve: PaidReadingAuthorityReceipt | null = null,
 ): PaidReadingAuthorityReceipt {
   const authorities = normalizedStoredPaidReadingAuthorities(verified);
   assertPaidReadingLineAuthorities(context.items, payload, authorities, env.PAID_READING_AUTHORITY_CUTOFF);
   const identity = paidReadingAuthorityIdentity(context, authorities);
-  const body: PaidReadingAuthorityReceiptBody = {
-    receiptVersion: PAID_READING_AUTHORITY_RECEIPT_VERSION,
-    orderId: context.orderId,
-    payloadSha256: context.payloadSha256,
-    lineKey: identity.lineKey,
-    lineDigest: context.lineDigest,
-    variantId: identity.variantId,
-    sku: identity.sku,
-    authorityKind: identity.authorityKind,
-    authorities,
-  };
-  const receipt = {
-    ...body,
-    signature: paidReadingAuthorityReceiptSignature(body, paidReadingAuthorityReceiptSecret(env)),
-  };
-  if (Buffer.byteLength(JSON.stringify(receipt), 'utf8') > MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES) {
+  if (identity.lineKey !== context.lineKey || identity.variantId !== context.variantId || identity.sku !== context.sku) {
     throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
   }
-  return receipt;
+  try {
+    return createPaidReadingAuthorityReceipt({
+      context: preserve ? { ...context, sourcePayloadSha256: preserve.sourcePayloadSha256 } : context,
+      authorityKind: identity.authorityKind,
+      authorities,
+      accessToken: preserve?.accessToken || accessToken,
+      issuedAt: preserve?.issuedAt,
+      expiresAt: preserve?.expiresAt,
+    }, env) as PaidReadingAuthorityReceipt;
+  } catch (error) {
+    throw new QueueOperationError(text((error as Error)?.message, 100) || 'PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
 }
 
 function restoredPaidReadingAuthorities(
@@ -2796,65 +2777,36 @@ function restoredPaidReadingAuthorities(
   payload: JsonObject,
   env: WorkerEnvironment,
 ) {
-  if (typeof raw !== 'string' || !raw
-    || Buffer.byteLength(raw, 'utf8') > MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES) {
-    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
-  }
-  let parsed: JsonObject;
+  let receipt: PaidReadingAuthorityReceipt;
   try {
-    parsed = JSON.parse(raw) as JsonObject;
-  } catch {
+    receipt = verifyPaidReadingAuthorityReceipt(raw, context, env) as PaidReadingAuthorityReceipt;
+  } catch (error) {
+    const code = text((error as Error)?.message, 100);
+    if (code === 'PAID_READING_AUTHORITY_RECEIPT_SECRET_MISSING'
+      || code === 'PAID_READING_AUTHORITY_RECEIPT_KEYRING_INVALID') {
+      throw new QueueOperationError(code);
+    }
     throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
   }
-  if (!exactObjectKeys(parsed, [
-    'receiptVersion', 'orderId', 'payloadSha256', 'lineKey', 'lineDigest',
-    'variantId', 'sku', 'authorityKind', 'authorities', 'signature',
-  ]) || !exactObjectKeys(parsed.authorities, ['numerology', 'checkout', 'intent', 'preview'])) {
-    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
-  }
-  const body = {
-    receiptVersion: parsed.receiptVersion,
-    orderId: parsed.orderId,
-    payloadSha256: parsed.payloadSha256,
-    lineKey: parsed.lineKey,
-    lineDigest: parsed.lineDigest,
-    variantId: parsed.variantId,
-    sku: parsed.sku,
-    authorityKind: parsed.authorityKind,
-    authorities: parsed.authorities,
-  } as PaidReadingAuthorityReceiptBody;
-  const signature = String(parsed.signature || '');
-  const expectedSignature = paidReadingAuthorityReceiptSignature(body, paidReadingAuthorityReceiptSecret(env));
-  if (body.receiptVersion !== PAID_READING_AUTHORITY_RECEIPT_VERSION
-    || !secureHexEqual(expectedSignature, signature)
-    || body.orderId !== context.orderId
-    || body.payloadSha256 !== context.payloadSha256
-    || body.lineKey !== context.lineKey
-    || body.lineDigest !== context.lineDigest
-    || body.variantId !== context.variantId
-    || body.sku !== context.sku) {
-    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
-  }
-  const authorities = body.authorities;
+  const authorities = receipt.authorities;
   for (const authority of [authorities.numerology, authorities.checkout, authorities.intent, authorities.preview]) {
     if (authority != null && (typeof authority !== 'object' || Array.isArray(authority))) {
       throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
     }
   }
   const identity = paidReadingAuthorityIdentity(context, authorities);
-  if (identity.authorityKind !== body.authorityKind) {
+  if (identity.authorityKind !== receipt.authorityKind) {
     throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
   }
   const decision = assertPaidReadingLineAuthorities(context.items, payload, authorities, env.PAID_READING_AUTHORITY_CUTOFF);
   if (decision.legacyGrandfathered) throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
-  return {
-    receipt: { ...body, signature } as PaidReadingAuthorityReceipt,
-    authorities: {
-      items: context.items,
-      ...authorities,
-      legacyGrandfathered: false,
-    } as VerifiedPaidReadingAuthorities,
-  };
+  const restoredAuthorities = {
+    items: context.items,
+    ...authorities,
+    legacyGrandfathered: false,
+  } as VerifiedPaidReadingAuthorities;
+  paidReadingAuthorityReceipts.set(restoredAuthorities, receipt);
+  return { receipt, authorities: restoredAuthorities };
 }
 
 function paidReadingAuthorityVerifiedFields(authorities: StoredPaidReadingAuthorities) {
@@ -2880,15 +2832,19 @@ function legacyPaidDraftReviewState(
   context: PaidReadingAuthorityReceiptContext,
   existing: PaidDraft | null,
   accessBytes: string,
+  expectedAccessToken: string,
   questionLimit: number,
 ) {
   if (!existing
     || existing.orderId !== context.orderId
     || !validAccessToken(existing.accessToken)
+    || String(existing.accessToken).toLowerCase() !== expectedAccessToken
     || accessBytes !== context.orderId
     || existing.authorityReceiptVersion
+    || existing.authorityReceiptKeyId
     || existing.authorityReceiptSignature
     || existing.authorityReceiptKind
+    || existing.authorityReceiptOrderDigest
     || existing.authorityReceiptLineDigest) return null;
   const status = text(existing.status, 32);
   const editCount = Number(existing.editCount);
@@ -2932,24 +2888,22 @@ function paidReadingAuthorityDraft(
   existing: PaidDraft | null,
   accessToken: string,
   legacyReviewState: ReturnType<typeof legacyPaidDraftReviewState> = null,
+  priorReceipt: PaidReadingAuthorityReceipt | null = null,
 ) {
   if (existing?.orderId && existing.orderId !== context.orderId) {
     throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
   }
-  const receiptBound = existing?.authorityReceiptVersion === PAID_READING_AUTHORITY_RECEIPT_VERSION
-    && existing?.authorityReceiptSignature === receipt.signature
-    && existing?.authorityReceiptKind === receipt.authorityKind
-    && existing?.authorityReceiptLineDigest === receipt.lineDigest;
+  const receiptBound = paidReadingDraftMatchesReceipt(existing, receipt);
+  const priorReceiptBound = priorReceipt != null && paidReadingDraftMatchesReceipt(existing, priorReceipt);
   if ((existing?.authorityReceiptVersion || existing?.authorityReceiptSignature
-    || existing?.authorityReceiptKind || existing?.authorityReceiptLineDigest) && !receiptBound) {
+    || existing?.authorityReceiptKeyId || existing?.authorityReceiptKind
+    || existing?.authorityReceiptOrderDigest || existing?.authorityReceiptLineDigest)
+    && !receiptBound && !priorReceiptBound) {
     throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
   }
-  const verifiedFields = {
-    ...(receiptBound ? existing?.verifiedFields || {} : {}),
-    ...paidReadingAuthorityVerifiedFields(receipt.authorities),
-  };
-  const reviewStateBound = receiptBound || Boolean(legacyReviewState);
-  const existingReviewState = receiptBound ? existing || {} : legacyReviewState || {};
+  const verifiedFields = paidReadingAuthorityVerifiedFields(receipt.authorities);
+  const reviewStateBound = receiptBound || priorReceiptBound || Boolean(legacyReviewState);
+  const existingReviewState = receiptBound || priorReceiptBound ? existing || {} : legacyReviewState || {};
   const packageAuthority = paidPackageAuthority(context.line);
   if (packageAuthority.variantId !== receipt.variantId || packageAuthority.sku !== receipt.sku) {
     throw new QueueOperationError('PAID_READING_AUTHORITY_LINE_MISMATCH');
@@ -2961,13 +2915,31 @@ function paidReadingAuthorityDraft(
   const persistedQuestion = reviewStateBound ? text(existingReviewState.question, questionLimit) : '';
   const question = persistedQuestion || verifiedQuestion || lineQuestion || 'General guidance for the path ahead';
   const missingQuestion = !persistedQuestion && !verifiedQuestion && !lineQuestion;
+  const preservedStatus = reviewStateBound ? text(existingReviewState.status, 32) : '';
+  const preserveOpenReview = preservedStatus === 'pending'
+    && (legacyReviewState != null
+      || existing?.legacyReviewStatePreserved === true
+      || existingReviewState.missingQuestion === true);
+  const status = preservedStatus === 'confirmed' || preservedStatus === 'auto_locked'
+    ? preservedStatus
+    : preserveOpenReview || (!reviewStateBound && missingQuestion)
+      ? 'pending'
+      : 'auto_locked';
+  const draftCreatedAt = reviewStateBound ? Number(existingReviewState.createdAt) || createdAt : createdAt;
+  const reviewUntil = status === 'pending'
+    ? reviewStateBound
+      ? Number(existingReviewState.reviewUntil) || draftCreatedAt + 40 * 60_000
+      : draftCreatedAt + 40 * 60_000
+    : reviewStateBound && (preservedStatus === 'confirmed' || preservedStatus === 'auto_locked')
+      ? Number(existingReviewState.reviewUntil) || draftCreatedAt
+      : draftCreatedAt;
   const localeContext = customerLocaleContext({
     locale: verifiedFields.locale || verifiedFields.lang || payload.customer_locale,
     country: verifiedFields.country || orderCountryCode(payload),
     currency: verifiedFields.currency || payload.presentment_currency || payload.currency,
     market: verifiedFields.market,
   });
-  const preserved = receiptBound ? existing || {} : existingReviewState;
+  const preserved = receiptBound || priorReceiptBound ? existing || {} : existingReviewState;
   return {
     ...preserved,
     schemaVersion: 2,
@@ -2978,19 +2950,23 @@ function paidReadingAuthorityDraft(
       ? text(existingReviewState.originalQuestion, questionLimit) || question
       : question,
     question,
-    name: text(verifiedFields.name, 80) || (receiptBound ? text(existing?.name, 80) : '')
+    name: text(verifiedFields.name, 80) || (receiptBound || priorReceiptBound ? text(existing?.name, 80) : '')
       || itemProperty(context.line, ['name', 'your name']),
     lang: localeContext.language,
     locale: localeContext.locale,
     country: localeContext.country,
     currency: localeContext.currency,
     market: localeContext.market,
-    status: reviewStateBound ? text(existingReviewState.status, 32) || 'pending' : 'pending',
+    status,
     editCount: reviewStateBound ? Math.max(0, Math.min(Number(existingReviewState.editCount) || 0, 1)) : 0,
-    missingQuestion: reviewStateBound ? existingReviewState.missingQuestion === true : missingQuestion,
-    createdAt: reviewStateBound ? Number(existingReviewState.createdAt) || createdAt : createdAt,
-    reviewUntil: reviewStateBound ? Number(existingReviewState.reviewUntil) || createdAt + 40 * 60_000 : createdAt + 40 * 60_000,
-    ...(reviewStateBound && Number(existingReviewState.confirmedAt) > 0 ? { confirmedAt: Number(existingReviewState.confirmedAt) } : {}),
+    missingQuestion: status === 'pending'
+      ? reviewStateBound ? existingReviewState.missingQuestion === true : missingQuestion
+      : false,
+    createdAt: draftCreatedAt,
+    reviewUntil,
+    ...(status === 'confirmed' && Number(existingReviewState.confirmedAt) > 0
+      ? { confirmedAt: Number(existingReviewState.confirmedAt) }
+      : status === 'auto_locked' ? { confirmedAt: draftCreatedAt } : {}),
     ...(reviewStateBound && Number(existingReviewState.editedAt) > 0 ? { editedAt: Number(existingReviewState.editedAt) } : {}),
     tier: packageAuthority.tier,
     shopifyVariantId: packageAuthority.variantId,
@@ -2998,13 +2974,24 @@ function paidReadingAuthorityDraft(
     verifiedFields,
     ...(receipt.authorities.numerology ? { numerology: receipt.authorities.numerology } : {}),
     authorityReceiptVersion: PAID_READING_AUTHORITY_RECEIPT_VERSION,
+    authorityReceiptKeyId: receipt.keyId,
     authorityReceiptSignature: receipt.signature,
     authorityReceiptKind: receipt.authorityKind,
+    authorityReceiptOrderDigest: receipt.orderDigest,
     authorityReceiptLineDigest: receipt.lineDigest,
-    ...(legacyReviewState != null || (receiptBound && existing?.legacyReviewStatePreserved === true)
+    ...(legacyReviewState != null || ((receiptBound || priorReceiptBound) && existing?.legacyReviewStatePreserved === true)
       ? { legacyReviewStatePreserved: true }
       : {}),
   } satisfies PaidDraft;
+}
+
+function paidReadingRecordMatchesReceipt(record: JsonObject | null, receipt: PaidReadingAuthorityReceipt) {
+  return Boolean(record
+    && record.authorityReceiptVersion === receipt.receiptVersion
+    && record.authorityReceiptKeyId === receipt.keyId
+    && record.authorityReceiptSignature === receipt.signature
+    && record.authorityReceiptOrderDigest === receipt.orderDigest
+    && record.authorityReceiptLineDigest === receipt.lineDigest);
 }
 
 async function persistPaidReadingAuthorityReceipt(
@@ -3014,7 +3001,7 @@ async function persistPaidReadingAuthorityReceipt(
   verified: VerifiedPaidReadingAuthorities,
   sourceGuards: PaidReadingAuthoritySourceGuard[] = [],
 ) {
-  const secret = paidReadingAuthorityReceiptSecret(env);
+  const secret = paidReadingAuthorityAccessSecret(env);
   const receiptKey = paidReadingAuthorityReceiptKey(context.orderId);
   const draftKey = `paid-draft:${context.orderId}`;
   const reservedKeys = new Set([receiptKey, draftKey]);
@@ -3027,7 +3014,21 @@ async function persistPaidReadingAuthorityReceipt(
   if (new Set(sourceGuards.map((guard) => guard.key)).size !== sourceGuards.length) {
     throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_GUARD_INVALID');
   }
-  const candidate = paidReadingAuthorityReceipt(context, row.payload || {}, verified, env);
+  const initialDraftValue = await env.READINGS_CACHE.get(draftKey);
+  const initialDraft = parsedStoredObject(initialDraftValue) as PaidDraft | null;
+  if (initialDraftValue != null && (!initialDraft || typeof initialDraftValue !== 'string')) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  let accessToken = paidReadingAuthorityAccessToken(context.orderId, null, secret);
+  if (validAccessToken(initialDraft?.accessToken)) {
+    const existingToken = String(initialDraft?.accessToken).toLowerCase();
+    const existingAccessValue = await env.READINGS_CACHE.get(`paid-access:${existingToken}`);
+    if (existingAccessValue != null && existingAccessValue !== context.orderId) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+    }
+    if (existingAccessValue === context.orderId) accessToken = existingToken;
+  }
+  const candidate = paidReadingAuthorityReceipt(context, row.payload || {}, verified, env, accessToken);
   const candidateBytes = JSON.stringify(candidate);
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -3042,6 +3043,27 @@ async function persistPaidReadingAuthorityReceipt(
       row.payload || {},
       env,
     );
+    let activeReceiptBytes = receiptBytes || candidateBytes;
+    let activeRestored = restored;
+    if (receiptBytes) {
+      const currentCandidate = paidReadingAuthorityReceipt(
+        context,
+        row.payload || {},
+        restored.authorities,
+        env,
+        restored.receipt.accessToken,
+        restored.receipt,
+      );
+      if (currentCandidate.keyId !== restored.receipt.keyId) {
+        activeReceiptBytes = JSON.stringify(currentCandidate);
+        activeRestored = restoredPaidReadingAuthorities(
+          activeReceiptBytes,
+          context,
+          row.payload || {},
+          env,
+        );
+      }
+    }
     const activeSourceGuards = receiptBytes ? [] : sourceGuards;
     if (activeSourceGuards.some((guard) => guard.options.expiration * 1_000 <= Date.now())) {
       throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_CHANGED');
@@ -3053,7 +3075,7 @@ async function persistPaidReadingAuthorityReceipt(
     if (draftBytesValue != null && (!draftBytes || !existingDraft)) {
       throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
     }
-    const accessToken = paidReadingAuthorityAccessToken(context.orderId, existingDraft, secret);
+    accessToken = activeRestored.receipt.accessToken;
     const accessKey = `paid-access:${accessToken}`;
     if (activeSourceGuards.some((guard) => guard.key === accessKey)) {
       throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_GUARD_INVALID');
@@ -3066,23 +3088,40 @@ async function persistPaidReadingAuthorityReceipt(
     const draft = paidReadingAuthorityDraft(
       context,
       row.payload || {},
-      restored.receipt,
+      activeRestored.receipt,
       existingDraft,
       accessToken,
-      legacyPaidDraftReviewState(
+      receiptBytes ? null : legacyPaidDraftReviewState(
         context,
         existingDraft,
         accessBytes,
-        paidQuestionLengthLimit(paidReadingAuthorityVerifiedFields(restored.receipt.authorities)),
+        accessToken,
+        paidQuestionLengthLimit(paidReadingAuthorityVerifiedFields(activeRestored.receipt.authorities)),
       ),
+      activeRestored.receipt.signature !== restored.receipt.signature ? restored.receipt : null,
     );
+    const rekeyingReceipt = activeRestored.receipt.signature !== restored.receipt.signature;
+    const readingKey = `reading:${context.orderId}`;
+    const readingBytesValue = rekeyingReceipt ? await env.READINGS_CACHE.get(readingKey) : null;
+    const readingBytes = typeof readingBytesValue === 'string' ? readingBytesValue : '';
+    const existingReading = readingBytes ? parsedStoredObject(readingBytes) : null;
+    const reboundReading = rekeyingReceipt && paidReadingRecordMatchesReceipt(existingReading, restored.receipt)
+      ? {
+          ...existingReading,
+          authorityReceiptVersion: activeRestored.receipt.receiptVersion,
+          authorityReceiptKeyId: activeRestored.receipt.keyId,
+          authorityReceiptSignature: activeRestored.receipt.signature,
+          authorityReceiptOrderDigest: activeRestored.receipt.orderDigest,
+          authorityReceiptLineDigest: activeRestored.receipt.lineDigest,
+        }
+      : null;
     const persisted = await env.READINGS_CACHE.compareAndSetMany([
       ...activeSourceGuards,
       {
         key: receiptKey,
         expectedValue: receiptBytes || null,
-        value: receiptBytes || candidateBytes,
-        options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
+        value: activeReceiptBytes,
+        options: { expiration: Math.floor(activeRestored.receipt.expiresAt / 1_000) },
       },
       {
         key: draftKey,
@@ -3096,8 +3135,14 @@ async function persistPaidReadingAuthorityReceipt(
         value: context.orderId,
         options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
       },
+      ...(reboundReading ? [{
+        key: readingKey,
+        expectedValue: readingBytes,
+        value: JSON.stringify(reboundReading),
+        options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
+      }] : []),
     ]);
-    if (persisted === true) return restored.authorities;
+    if (persisted === true) return activeRestored.authorities;
   }
   throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_CONFLICT');
 }
@@ -3173,7 +3218,9 @@ async function enqueueReadingFromWebhook(
   const authorities = verifiedAuthorities || await verifyPaidReadingAuthorities(payload, env);
   const { items, numerology, checkout, intent, preview } = authorities;
   if (!items.length) return { queued: false };
-  const { draft } = await queueDraftForOrder(payload, items, env, numerology, checkout, intent, preview);
+  const receipt = paidReadingAuthorityReceipts.get(authorities) || null;
+  if (!receipt) throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  const { draft } = await queueDraftForOrder(payload, items, env, numerology, checkout, intent, preview, receipt);
   const requestedNumerologyDelay = Number(numerology?.deliveryDelayMinutes);
   const delayMinutes = Number.isFinite(requestedNumerologyDelay) && requestedNumerologyDelay > 0
     ? requestedNumerologyDelay
@@ -3283,13 +3330,23 @@ export async function processUndeliveredPaidOrder(
   env: WorkerEnvironment,
   dependencies: PaidWebhookProcessingDependencies = {},
 ) {
-  const verifiedAuthorities = await verifiedOrReceiptedPaidReadingAuthorities(
+  let verifiedAuthorities = await verifiedOrReceiptedPaidReadingAuthorities(
     row,
     env,
     dependencies.verifyAuthorities || verifyPaidReadingAuthorities,
   );
   const replay = await (dependencies.replay || replayShopifyWebhook)(row, env);
   if (!replay.ignored) {
+    // A pre-successor invocation can blind-write its markerless draft while
+    // replay is in flight. Rebind from the immutable HMAC receipt after replay;
+    // no mutable preview/context/intent verifier is allowed on this path.
+    verifiedAuthorities = await verifiedOrReceiptedPaidReadingAuthorities(
+      row,
+      env,
+      async () => {
+        throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+      },
+    );
     await (dependencies.validateMembership || validateMembershipActivation)(row.payload || {}, env);
     await (dependencies.enqueue
       || ((queuedRow, runtimeEnv, authorities) => enqueueReadingFromWebhook(
@@ -3303,7 +3360,11 @@ export async function processUndeliveredPaidOrder(
 }
 
 async function updatePaidOrderBeforeDelivery(orderId: string, env: WorkerEnvironment) {
-  const draft = await paidDraftForOrder(orderId, env);
+  // Delivery must project only an HMAC-receipt-bound draft. An overlapping
+  // pre-successor worker may blind-write a markerless draft after enqueue;
+  // the worker helper verifies the receipt and atomically rebuilds that draft
+  // from frozen server evidence before any database state is updated.
+  const draft = await verifiedPaidReadingDraftForOrderId(orderId, env) as PaidDraft;
   const confirmedQuestion = text(draft?.question, paidQuestionLengthLimit(draft?.verifiedFields));
   const reviewStatus = draft ? normalizedReviewStatus(draft) : 'auto_locked';
   const draftTier = draft?.tier || '';

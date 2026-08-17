@@ -313,9 +313,32 @@ export class PostgresKv {
     const sql = db();
     try {
       return await sql.begin(async (transaction) => {
+        // Row locks cannot protect an absent key. Lock every CAS namespace key
+        // first, in the same deterministic order used below, so a null/null
+        // absence guard and a concurrent insert share a real transaction lock.
+        // Hash collisions only serialize unrelated keys conservatively.
+        for (const entry of normalized) {
+          await transaction`
+            select pg_advisory_xact_lock(
+              hashtextextended(${'deckaura.kv_store.cas:' + entry.key}, 918273645)
+            )
+          `;
+        }
         for (const entry of normalized) {
           if (entry.value == null) {
-            if (entry.expectedValue == null) continue;
+            if (entry.expectedValue == null) {
+              // The advisory namespace lock above makes this empty-row check
+              // a real atomic absence guard without a sentinel record.
+              const present = await transaction<{ key: string }[]>`
+                select key
+                  from deckaura.kv_store
+                 where key = ${entry.key}
+                   and (expires_at is null or expires_at > clock_timestamp())
+                 for update
+              `;
+              if (present.length) throw new KvCompareAndSetConflict();
+              continue;
+            }
             const deleted = await transaction<{ key: string }[]>`
               delete from deckaura.kv_store
                where key = ${entry.key}
@@ -460,22 +483,38 @@ async function entitlementAction(name: string, body: Record<string, unknown>) {
 
     if (['claim-paid-generation', 'release-paid-generation', 'commit-paid-generation'].includes(action)) {
       if (!validClaimId(claimId)) return { error: 'invalid claimId', status: 400 };
-      const completedAt = finiteNumber(state.paidGenerationCompletedAt);
+      let completedAt = finiteNumber(state.paidGenerationCompletedAt);
+      let completedAuthorityDigest = String(state.paidGenerationAuthorityDigest || '');
       let activeClaimId = String(state.paidGenerationClaimId || '');
       let activeClaimedAt = finiteNumber(state.paidGenerationClaimedAt);
+      let activeAuthorityDigest = String(state.paidGenerationClaimDigest || '');
       if (activeClaimId && (!activeClaimedAt || now - activeClaimedAt >= PAID_CLAIM_MS)) {
         delete state.paidGenerationClaimId;
         delete state.paidGenerationClaimedAt;
+        delete state.paidGenerationClaimDigest;
         activeClaimId = '';
         activeClaimedAt = 0;
+        activeAuthorityDigest = '';
       }
       if (action === 'claim-paid-generation') {
+        const authorityDigest = String(body.authorityDigest || '').trim().toLowerCase();
+        const repair = body.repair === true;
+        if (authorityDigest && !/^[a-f0-9]{64}$/.test(authorityDigest)) {
+          return { error: 'invalid authorityDigest', status: 400 };
+        }
+        if (completedAt && authorityDigest && (repair || completedAuthorityDigest !== authorityDigest)) {
+          delete state.paidGenerationCompletedAt;
+          delete state.paidGenerationAuthorityDigest;
+          completedAt = 0;
+          completedAuthorityDigest = '';
+        }
         if (completedAt) result = { allowed: false, reason: 'generation_complete', completedAt };
         else if (activeClaimId === claimId) result = { allowed: true, idempotent: true };
         else if (activeClaimId) result = { allowed: false, reason: 'generation_in_progress' };
         else {
           state.paidGenerationClaimId = claimId;
           state.paidGenerationClaimedAt = now;
+          state.paidGenerationClaimDigest = authorityDigest;
           result = { allowed: true };
         }
       } else if (action === 'commit-paid-generation' && completedAt) {
@@ -485,11 +524,15 @@ async function entitlementAction(name: string, body: Record<string, unknown>) {
       } else if (action === 'release-paid-generation') {
         delete state.paidGenerationClaimId;
         delete state.paidGenerationClaimedAt;
+        delete state.paidGenerationClaimDigest;
         result = { allowed: true };
       } else {
         state.paidGenerationCompletedAt = now;
+        if (activeAuthorityDigest) state.paidGenerationAuthorityDigest = activeAuthorityDigest;
+        else delete state.paidGenerationAuthorityDigest;
         delete state.paidGenerationClaimId;
         delete state.paidGenerationClaimedAt;
+        delete state.paidGenerationClaimDigest;
         result = { allowed: true, completedAt: now };
       }
     } else if (['claim-usage', 'release-usage', 'commit-usage'].includes(action)) {
@@ -1187,6 +1230,10 @@ export function workerEnvironment() {
     SHOPIFY_ADMIN_TOKEN: process.env.SHOPIFY_ADMIN_TOKEN,
     SHOPIFY_WEBHOOK_SECRET: process.env.SHOPIFY_WEBHOOK_SECRET,
     INTERNAL_ORDER_REPLAY_SECRET: process.env.INTERNAL_ORDER_REPLAY_SECRET,
+    PAID_READING_AUTHORITY_RECEIPT_KEY_ID: process.env.PAID_READING_AUTHORITY_RECEIPT_KEY_ID,
+    PAID_READING_AUTHORITY_RECEIPT_SECRET: process.env.PAID_READING_AUTHORITY_RECEIPT_SECRET,
+    PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_KEY_ID: process.env.PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_KEY_ID,
+    PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_SECRET: process.env.PAID_READING_AUTHORITY_RECEIPT_PREVIOUS_SECRET,
     ENTITLEMENT_PEPPER: process.env.ENTITLEMENT_PEPPER,
     MEMBER_SIGNING_SECRET: process.env.MEMBER_SIGNING_SECRET,
     NL_SECRET: process.env.NL_SECRET,

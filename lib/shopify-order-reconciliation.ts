@@ -121,7 +121,7 @@ function signedIntentVariantId(attributes: JsonObject[], funnelVersion: string, 
   return readingPackage(productKeyForCategory(category), tier)?.variantId || '';
 }
 
-function orderPayload(node: JsonObject) {
+export function shopifyReconciledOrderPayload(node: JsonObject) {
   const customer = node.customer && typeof node.customer === 'object' ? node.customer as JsonObject : {};
   const billingAddress = node.billingAddress && typeof node.billingAddress === 'object'
     ? node.billingAddress as JsonObject
@@ -189,7 +189,7 @@ function orderPayload(node: JsonObject) {
   };
 }
 
-function hasReadingLine(payload: ReturnType<typeof orderPayload>) {
+function hasReadingLine(payload: ReturnType<typeof shopifyReconciledOrderPayload>) {
   return payload.line_items.some((line) => /^READING-/.test(text(line.sku, 80).toUpperCase()));
 }
 
@@ -283,7 +283,7 @@ export async function reconcileShopifyPaidOrders(options: { deadlineMs?: number 
     pages += 1;
     for (const node of connection.nodes) {
       scanned += 1;
-      const payload = orderPayload(node);
+      const payload = shopifyReconciledOrderPayload(node);
       if (!payload.id || !hasReadingLine(payload)) continue;
       readingOrders += 1;
       const raw = JSON.stringify(payload);

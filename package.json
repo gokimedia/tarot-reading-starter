@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:postgres-cas": "node scripts/verify-postgres-kv-cas-concurrency.mjs",
     "shared-manifest:generate": "node scripts/generate-shared-tool-manifest.mjs",
     "shared-manifest:check": "node scripts/generate-shared-tool-manifest.mjs --check",
     "lead-magnet:upload": "node scripts/setup-lead-magnet-storage.mjs",
