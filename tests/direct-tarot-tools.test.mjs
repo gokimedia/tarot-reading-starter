@@ -556,6 +556,118 @@ test('a direct preview commit is atomic: persistence failure releases the shared
   assert.equal([...kv.values.keys()].some((key) => key.startsWith('preview:')), false);
 });
 
+test('header-fast body hangs abort once, coalesce one Love readingId, and commit one deterministic preview before client retry', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const providerSignals = [];
+  let modelCalls = 0;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  // Deliberately ignore abort while parsing the body. The server-side deadline
+  // must race the body read itself, not depend on a cooperative provider body.
+  globalThis.fetch = async (_url, init = {}) => {
+    modelCalls += 1;
+    providerSignals.push(init.signal);
+    return {
+      ok: true,
+      status: 200,
+      json: () => new Promise(() => {}),
+    };
+  };
+
+  const kv = jsonKv();
+  const claimIds = [];
+  const aiBudgetClaims = [];
+  const aiBudgetSettlements = [];
+  let commits = 0;
+  let releases = 0;
+  const activeClaims = new Set();
+  const quota = {
+    binding: {
+      claim: async (claimId) => {
+        const idempotent = activeClaims.has(claimId);
+        activeClaims.add(claimId);
+        claimIds.push(claimId);
+        return { allowed: true, idempotent, cap: 3, used: 0, remaining: 2, nextAt: Date.now() + 86_400_000 };
+      },
+      settle: async (claimId, consume) => {
+        if (consume) commits += 1;
+        else {
+          releases += 1;
+          activeClaims.delete(claimId);
+        }
+        return { allowed: true };
+      },
+    },
+  };
+  const env = {
+    ...workerEnv(kv, quota),
+    DEEPSEEK_DIRECT_API_KEY: 'test-only-deepseek-key',
+    FREE_PREVIEW_MODEL_TIMEOUT_MS: 80,
+    FREE_PREVIEW_TOTAL_DEADLINE_MS: 250,
+    AI_BUDGETS: {
+      claim: async (input) => {
+        aiBudgetClaims.push(input);
+        return { allowed: true, claimId: input.claimId };
+      },
+      settle: async (claimId, commit, costMicros) => {
+        aiBudgetSettlements.push({ claimId, commit, costMicros });
+        return { allowed: true };
+      },
+    },
+  };
+
+  const startedAt = Date.now();
+  const [firstResponse, duplicateResponse] = await Promise.all([
+    handleFreeReading(freeRequest(loveSnapshot()), env),
+    handleFreeReading(freeRequest(loveSnapshot()), env),
+  ]);
+  const [first, duplicate] = await Promise.all([firstResponse.json(), duplicateResponse.json()]);
+
+  assert.equal(firstResponse.status, 200, JSON.stringify(first));
+  assert.equal(duplicateResponse.status, 200, JSON.stringify(duplicate));
+  assert.ok(Date.now() - startedAt < 1_000, 'provider body escaped the server deadline');
+  assert.equal(modelCalls, 1, 'same readingId must have one provider owner');
+  assert.equal(providerSignals.length, 1);
+  assert.ok(providerSignals[0] instanceof AbortSignal, 'provider fetch did not receive AbortSignal');
+  assert.equal(providerSignals[0].aborted, true, 'provider signal was not aborted at the deadline');
+  assert.equal(claimIds.length, 2);
+  assert.equal(new Set(claimIds).size, 1, 'same immutable input must use one deterministic quota claim');
+  assert.equal(commits, 1);
+  assert.equal(releases, 0);
+  assert.equal(aiBudgetClaims.length, 1, 'the accepted provider request must reserve the free AI budget');
+  assert.deepEqual(aiBudgetSettlements, [{
+    claimId: aiBudgetClaims[0].claimId,
+    commit: true,
+    costMicros: aiBudgetClaims[0].reserveMicros,
+  }], 'header-200/body-timeout must consume the conservative model reservation');
+  assert.equal(first.token, duplicate.token);
+  assert.match(first.token, /^[a-f0-9]{32}$/i);
+  assert.equal(first.compactInsightSource, 'deterministic_timeout_fallback');
+  assert.equal(first.compactInsightAuditStatus, 'passed_fallback');
+  assert.equal(first.offerAllowed, true);
+  assert.equal(duplicate.offerAllowed, true);
+  assert.ok(first.replayed !== duplicate.replayed, 'one response should be the committed in-flight replay');
+
+  const stored = JSON.parse(kv.values.get(`preview:${first.token}`));
+  assert.equal(stored.readingId, READING_ID);
+  assert.equal(stored.question, LOVE_QUESTION);
+  assert.equal(stored.fields.cards, LOVE_SIGNALS);
+  assert.equal(stored.fields.presentationVariant, LOVE_DIRECT_PRESENTATION_VARIANT);
+  const replayRecord = [...kv.values.entries()]
+    .map(([key, value]) => [key, typeof value === 'string' ? JSON.parse(value) : value])
+    .find(([key]) => key.startsWith('preview-response:'))?.[1];
+  assert.equal(replayRecord.commitState, 'committed');
+
+  const retryResponse = await handleFreeReading(freeRequest(loveSnapshot()), env);
+  const retry = await retryResponse.json();
+  assert.equal(retryResponse.status, 200, JSON.stringify(retry));
+  assert.equal(retry.token, first.token);
+  assert.equal(retry.replayed, true);
+  assert.equal(modelCalls, 1, 'client retry must replay instead of starting provider work');
+  assert.equal(claimIds.length, 2, 'committed replay must be read before another quota claim');
+});
+
 test('canonical snapshots reconcile exact product, presentment quote, and derived Birth evidence after payment', () => {
   for (const [snapshotInput, page, type, product] of [
     [canonicalizeDirectTarotSnapshot(yesSnapshot()), YES_NO_DIRECT_PAGE, YES_NO_DIRECT_TYPE, { variantId: '53675061838097', sku: 'READING-DEEP', price: 5.99 }],

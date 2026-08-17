@@ -347,3 +347,41 @@ test('Hindi language UI retries truncated JSON once without weakening the exact-
   assert.match(result.acknowledgement, /\p{Script=Devanagari}/u);
   assert.match(result.localizedCuriosityQuestion, /\?$/);
 });
+
+test('unsupported Korean language detection shares the free-preview body deadline and fails open to deterministic storefront copy', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const environment = modelEnvironment();
+  const providerSignals = [];
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (_url, options = {}) => {
+    providerSignals.push(options.signal);
+    return {
+      ok: true,
+      status: 200,
+      json: () => new Promise(() => {}),
+    };
+  };
+
+  const startedAt = Date.now();
+  const result = await detectQuestionLanguage(
+    '이직하기 전에 어떤 패턴을 이해해야 하나요?',
+    environment,
+    'What should I verify before taking the next step?',
+    '',
+    'en-US',
+    { deadlineAt: Date.now() + 80, timeoutKind: 'free-preview' },
+  );
+
+  assert.ok(Date.now() - startedAt < 500, 'language detector body escaped the free-preview deadline');
+  assert.equal(providerSignals.length, 1);
+  assert.ok(providerSignals[0] instanceof AbortSignal);
+  assert.equal(providerSignals[0].aborted, true);
+  assert.equal(environment.claims.length, 1);
+  assert.equal(environment.settlements.length, 1);
+  assert.equal(result.code, 'en');
+  assert.equal(result.isEnglish, true);
+  assert.equal(result.acknowledgement, 'Deckaura speaks your language.');
+  assert.equal(result.localizedCuriosityQuestion, 'What should I verify before taking the next step?');
+});

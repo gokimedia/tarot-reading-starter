@@ -3,12 +3,15 @@ import test from 'node:test';
 
 import {
   conciseDeterministicFreeTeaser,
+  deterministicPrivateStateReservedRecovery,
   freePreviewPayload,
   freeTeaserAudit,
+  freeTeaserAssignsUnsupportedStateToName,
   handleFreeReading,
   handleFreeSession,
   hydratePreviewSnapshot,
   privacySafeLogRecord,
+  stripTrailingModelQuestion,
 } from '../lib/legacy-worker.mjs';
 import {
   FREE_TAROT_FUNNEL_VERSION,
@@ -155,6 +158,12 @@ for (const fixture of [
     locale: 'es-ES',
     question: '¿Conviene mantener el plan actual – o elegir un próximo paso más pequeño?',
   },
+  {
+    label: 'long compound Spanish question',
+    lang: 'es',
+    locale: 'es-ES',
+    question: '¿Debo mantener el plan profesional actual – aunque ya no encaje con mis prioridades? ¿O conviene aceptar la alternativa llamada “Proyecto Horizonte”, negociar primero sus condiciones y esperar una señal verificable antes de decidir? Quiero comparar estabilidad, crecimiento y carga real sin convertir la presión de hoy en una decisión definitiva.',
+  },
 ]) {
   test(`reserved preview preserves accepted ${fixture.label} punctuation through response, snapshot, and quota commit`, async () => {
     const kv = jsonKv();
@@ -189,6 +198,250 @@ for (const fixture of [
     assert.equal(budget.releases, 0);
   });
 }
+
+test('reserved runtime keeps exact compound questions opaque across no-whitespace clause boundaries', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  globalThis.fetch = async () => { modelCalls += 1; throw new Error('reserved fast path must not call a model'); };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const fixtures = [
+    ['es-ES', 'es', '¿Mantengo el plan actual?¿O elijo la alternativa y comparo primero las condiciones reales?'],
+    ['es-MX', 'es', '¿Mantengo el plan actual?O elijo la alternativa solo después de comprobar la carga real?'],
+    ['es-ES', 'es', '¡Necesito decidir hoy!¿Conviene esperar una condición verificable antes de elegir?'],
+    ['es-ES', 'es', 'La presión está aumentando.¿Debo mantener el plan o negociar una alternativa concreta?'],
+    ['es-ES', 'es', 'No quiero decidir por miedo sobre mi plan profesional...¿Qué patrón debo entender antes de comparar estabilidad y crecimiento?'],
+    ['es-ES', 'es', '¿Mantengo el plan actual?\u200B¿O espero una señal verificable antes de aceptar la alternativa?'],
+    ['en-US', 'en', 'Should I keep the current career plan?Or should I compare the alternative workload before deciding?'],
+    ['tr-TR', 'tr', 'Mevcut kariyer planını sürdürmeli miyim?Yoksa karar vermeden önce yeni seçeneğin koşullarını mı karşılaştırmalıyım?'],
+    ['pt-BR', 'pt', 'Devo manter o plano profissional atual?Ou devo comparar a carga da alternativa antes de decidir?'],
+    ['de-DE', 'de', 'Soll ich beim aktuellen Berufsplan bleiben?Oder soll ich vor der Entscheidung die Arbeitslast der Alternative vergleichen?'],
+  ];
+  for (const [index, [locale, lang, question]] of fixtures.entries()) {
+    const kv = jsonKv();
+    const budget = rollingBudget({ limit: 1 });
+    const body = {
+      ...readingBody(question, `opaque_boundary_${index}`, `opaque_boundary_visitor_${index}`),
+      lang,
+      locale,
+      requestedLocale: locale,
+    };
+    const result = await createPreview(workerEnv(kv, budget), body);
+    assert.equal(result.response.status, 200, `${locale}: ${JSON.stringify(result.payload)}`);
+    assert.equal(result.payload.question, question, locale);
+    assert.equal(result.payload.servedSource, 'deterministic_reserved_fast_path', locale);
+    assert.ok(result.payload.teaser.includes(question), `${locale}: response changed the exact question`);
+    assert.ok(result.payload.preview.html.includes(question), `${locale}: structured preview changed the exact question`);
+    assert.doesNotMatch(result.payload.teaser, /[\uE000-\uF8FF]/u, `${locale}: sentinel leaked`);
+    const snapshot = JSON.parse(kv.values.get(`preview:${result.payload.token}`));
+    assert.equal(snapshot.question, question, locale);
+    assert.ok(snapshot.teaserText.includes(question), `${locale}: KV snapshot changed the exact question`);
+    assert.equal(budget.claims, 1, locale);
+    assert.equal(budget.commits, 1, locale);
+    assert.equal(budget.releases, 0, locale);
+  }
+  assert.equal(modelCalls, 0);
+});
+
+test('a customer question at model-output tail stays opaque through stripping and structured HTML segmentation', () => {
+  const question = '¿Mantengo el plan actual?¿O comparo primero las condiciones reales?';
+  const fields = {
+    ...readingBody(question, 'tail_exact_question_01', 'tail_exact_question_visitor_01'),
+    lang: 'es',
+    locale: 'es-ES',
+    requestedLocale: 'es-ES',
+  };
+  const draft = [
+    'El patrón inicial muestra una elección que merece una pausa consciente.',
+    'La carta central invita a comparar hechos observables antes de decidir.',
+    'La carta final mantiene abierta una acción pequeña y reversible.',
+    'La dirección sigue siendo simbólica y no una garantía externa.',
+    question,
+  ].join(' ');
+
+  const stripped = stripTrailingModelQuestion(draft, fields);
+  assert.ok(stripped.includes(question), 'tail stripping removed part of the exact customer question');
+  assert.doesNotMatch(stripped, /[\uE000-\uF8FF]/u, 'tail stripping leaked its opaque sentinel');
+
+  const payload = freePreviewPayload('tail-exact-token', stripped, fields);
+  assert.ok(payload.teaser.includes(question), 'response HTML changed the exact tail question');
+  assert.ok(payload.preview.html.includes(question), 'structured HTML changed the exact tail question');
+  assert.doesNotMatch(payload.teaser, /[\uE000-\uF8FF]/u, 'response HTML leaked its opaque sentinel');
+  assert.doesNotMatch(payload.preview.html, /[\uE000-\uF8FF]/u, 'structured HTML leaked its opaque sentinel');
+});
+
+test('an expired 24-hour replay rotates the deterministic claim for the same readingId', async (t) => {
+  const originalNow = Date.now;
+  let now = Date.UTC(2026, 7, 17, 1, 0, 0);
+  Date.now = () => now;
+  t.after(() => { Date.now = originalNow; });
+
+  const kv = jsonKv();
+  const claimed = new Set();
+  const consumed = new Set();
+  const claimIds = [];
+  const budget = {
+    binding: {
+      claim: async (claimId) => {
+        claimIds.push(claimId);
+        const idempotent = claimed.has(claimId) || consumed.has(claimId);
+        claimed.add(claimId);
+        return { allowed: true, idempotent, cap: 3, used: consumed.size, remaining: 2 };
+      },
+      settle: async (claimId, consume) => {
+        if (consume) consumed.add(claimId);
+        return { allowed: true };
+      },
+    },
+  };
+  const env = workerEnv(kv, budget);
+  const body = readingBody('What pattern should I understand before changing careers?', 'rotating_claim_same_reading');
+  const first = await createPreview(env, body);
+  assert.equal(first.response.status, 200, JSON.stringify(first.payload));
+
+  now += 24 * 60 * 60 * 1000 + 1;
+  const afterExpiry = await createPreview(env, body);
+  assert.equal(afterExpiry.response.status, 200, JSON.stringify(afterExpiry.payload));
+  assert.notEqual(afterExpiry.payload.token, first.payload.token);
+  assert.equal(claimIds.length, 2);
+  assert.notEqual(claimIds[0], claimIds[1], 'a retained consumed DB claim must not trap an expired replay');
+  assert.equal(consumed.size, 2);
+});
+
+test('a failed committed marker remains recoverable from its durable snapshot without another quota consumption', async () => {
+  const kv = jsonKv();
+  let failCommittedMarkers = true;
+  let markerFailures = 0;
+  let kvReads = 0;
+  const cache = {
+    get: async (...args) => {
+      kvReads += 1;
+      return kv.binding.get(...args);
+    },
+    put: async (key, value, options) => {
+      const parsed = key.startsWith('preview-response:') ? JSON.parse(value) : null;
+      if (failCommittedMarkers && parsed?.commitState === 'committed') {
+        markerFailures += 1;
+        throw new Error('simulated committed marker failure');
+      }
+      return kv.binding.put(key, value, options);
+    },
+    delete: kv.binding.delete,
+  };
+  const claimed = new Set();
+  const consumed = new Set();
+  let uniqueCommits = 0;
+  let releases = 0;
+  const budget = {
+    binding: {
+      claim: async (claimId) => {
+        const idempotent = claimed.has(claimId) || consumed.has(claimId);
+        claimed.add(claimId);
+        return { allowed: true, idempotent, cap: 3, used: consumed.size, remaining: 2 };
+      },
+      settle: async (claimId, consume) => {
+        if (consume && !consumed.has(claimId)) {
+          consumed.add(claimId);
+          uniqueCommits += 1;
+        } else if (!consume) releases += 1;
+        return { allowed: true, idempotent: consumed.has(claimId) };
+      },
+    },
+  };
+  const env = { ...workerEnv(kv, budget), READINGS_CACHE: cache, FREE_PREVIEW_TOTAL_DEADLINE_MS: 300 };
+  const body = readingBody('What pattern should I understand before changing careers?', 'marker_repair_same_reading');
+
+  const first = await createPreview(env, body);
+  assert.equal(first.response.status, 200, JSON.stringify(first.payload));
+  assert.equal(markerFailures, 3, 'owner marker write must use the bounded retry budget');
+  assert.equal(uniqueCommits, 1);
+  assert.ok(kv.values.has(`preview:${first.payload.token}`), 'consumed quota must retain a restorable snapshot');
+  const pending = [...kv.values.entries()]
+    .filter(([key]) => key.startsWith('preview-response:'))
+    .map(([, value]) => JSON.parse(value))[0];
+  assert.equal(pending.commitState, 'pending');
+
+  failCommittedMarkers = false;
+  const recovered = await createPreview(env, body);
+  assert.equal(recovered.response.status, 200, JSON.stringify(recovered.payload));
+  assert.equal(recovered.payload.token, first.payload.token);
+  assert.equal(recovered.payload.replayed, true);
+  assert.equal(uniqueCommits, 1, 'idempotent repair must not consume quota twice');
+  assert.equal(releases, 0);
+  assert.ok(kvReads <= 40, `replay recovery exceeded the 40-read cap: ${kvReads}`);
+  const committed = [...kv.values.entries()]
+    .filter(([key]) => key.startsWith('preview-response:'))
+    .map(([, value]) => JSON.parse(value))[0];
+  assert.equal(committed.commitState, 'committed');
+});
+
+test('an idempotent follower uses bounded backoff and never exceeds the replay KV read cap', async () => {
+  let kvReads = 0;
+  const env = {
+    ...workerEnv(jsonKv(), {
+      binding: {
+        claim: async () => ({ allowed: true, idempotent: true, cap: 3, used: 0, remaining: 2 }),
+        settle: async () => ({ allowed: true }),
+      },
+    }),
+    READINGS_CACHE: {
+      get: async () => { kvReads += 1; return null; },
+      put: async () => {},
+      delete: async () => {},
+    },
+    FREE_PREVIEW_TOTAL_DEADLINE_MS: 300,
+  };
+  const result = await createPreview(env, readingBody('What pattern should I understand before changing careers?', 'bounded_poll_missing_owner'));
+  assert.equal(result.response.status, 503, JSON.stringify(result.payload));
+  assert.equal(result.payload.reason, 'preview_in_progress');
+  assert.ok(kvReads <= 8, `50→100→200ms backoff made too many reads: ${kvReads}`);
+  assert.ok(kvReads <= 40, 'hard replay KV read cap was exceeded');
+});
+
+test('reserved private-state recovery passes a 1/2/3-person seven-locale compound matrix without copying the question', async () => {
+  const fixtures = [
+    { locale: 'en-US', lang: 'en', question: 'what does alex feel about me, and will the silence change if I do not contact them first?', names: ['alex'] },
+    { locale: 'en-GB', lang: 'en', question: 'What do Ana and Jordan secretly feel about me, or are their quoted “mixed signals” only my interpretation?', names: ['Ana', 'Jordan'] },
+    { locale: 'tr-TR', lang: 'tr', question: 'Ali, Deniz ve Ece benim hakkımda ne düşünüyor; beni özlüyorlar mı, yoksa bu sessizlik başka bir anlama mı geliyor?', names: ['Ali', 'Deniz', 'Ece'] },
+    { locale: 'tr-TR', lang: 'tr', question: 'O gerçekten beni seviyor mu, yoksa gördüğüm işaretler kendi umudumdan mı kaynaklanıyor?', names: [] },
+    { locale: 'de-DE', lang: 'de', question: 'Was fühlt Lena für mich, und was fühlt Lukas wirklich, wenn ihr „vielleicht“ Nähe oder nur Höflichkeit bedeutet?', names: ['Lena', 'Lukas'] },
+    { locale: 'es-ES', lang: 'es', question: '¿Qué siente Ana por mí, qué siente Carlos y qué siente Lucía; volverán porque me extrañan o interpreto mal su silencio?', names: ['Ana', 'Carlos', 'Lucía'] },
+    { locale: 'es-MX', lang: 'es', question: '¿Qué siente él por mí aunque dijo “no”, o esa alternativa contradice lo que realmente quiere?', names: [] },
+    { locale: 'pt-BR', lang: 'pt', question: 'O que Ana sente por mim e o que Carlos sente; a distância significa saudade ou apenas uma escolha que não consigo confirmar?', names: ['Ana', 'Carlos'] },
+    { locale: 'pt-PT', lang: 'pt', question: 'O que Inês sente por mim, e o seu “talvez” significa interesse ou apenas educação?', names: ['Inês'] },
+    { locale: 'de-AT', lang: 'de', question: 'Was fühlt Mila für mich, was fühlt Jonas und was fühlt Priya; wünschen sie eine Rückkehr, oder widerspricht ihr Schweigen?', names: ['Mila', 'Jonas', 'Priya'] },
+  ];
+
+  for (const [index, fixture] of fixtures.entries()) {
+    const fields = {
+      ...readingBody(fixture.question, `private_matrix_${index}`, `private_matrix_visitor_${index}`),
+      lang: fixture.lang,
+      locale: fixture.locale,
+      requestedLocale: fixture.locale,
+    };
+    const deterministic = deterministicPrivateStateReservedRecovery(fields, fixture.locale);
+    assert.ok(deterministic, `${fixture.locale}: dedicated recovery missing`);
+    assert.ok(!deterministic.includes(fixture.question), `${fixture.locale}: long private question was copied`);
+    assert.doesNotMatch(deterministic, /[\uE000-\uF8FF]/u, `${fixture.locale}: internal sentinel leaked`);
+    for (const name of fixture.names) assert.match(deterministic, new RegExp(name, 'iu'), `${fixture.locale}: ${name} missing`);
+    const wordCount = deterministic.trim().split(/\s+/u).length;
+    assert.ok(wordCount >= 180 && wordCount <= 210, `${fixture.locale}: ${wordCount} words`);
+    const audit = freeTeaserAudit(deterministic, fields, 180);
+    assert.equal(audit.ok, true, `${fixture.locale}: ${audit.reason}`);
+    assert.equal(audit.mentionedEvidence, 3, `${fixture.locale}: evidence identity loss`);
+    assert.equal(freeTeaserAssignsUnsupportedStateToName(deterministic, fields), false, fixture.locale);
+    if (index === 0) {
+      const modifiedTemplate = deterministic.replace('visible communication', 'clearly visible communication');
+      const modifiedAudit = freeTeaserAudit(modifiedTemplate, fields, 180);
+      assert.equal(modifiedAudit.ok, false, 'only the byte-exact server template may omit the exact private-state question');
+    }
+
+    const runtime = await createPreview(workerEnv(jsonKv(), rollingBudget({ limit: 1 })), fields);
+    assert.equal(runtime.response.status, 200, `${fixture.locale}: ${JSON.stringify(runtime.payload)}`);
+    assert.equal(runtime.payload.servedSource, 'deterministic_reserved_fast_path');
+    assert.ok(!runtime.payload.teaser.includes(fixture.question), `${fixture.locale}: runtime copied private question`);
+    assert.doesNotMatch(runtime.payload.teaser, /[\uE000-\uF8FF]/u, `${fixture.locale}: runtime sentinel leaked`);
+  }
+});
 
 test('v56 keeps the third approved reading as the verified paid continuation when the rolling 3/24h quota rejects a new question', async () => {
   const kv = jsonKv();
@@ -326,32 +579,42 @@ test('preview persistence failure releases the reserved quota and never returns 
   assert.equal(budget.releases, 1);
 });
 
-test('a bounded model timeout recovers deterministically and commits quota only after the preview is saved', async (t) => {
+test('a header-fast body timeout recovers deterministically and commits quota only after the preview is saved', async (t) => {
   const originalFetch = globalThis.fetch;
   let modelCalls = 0;
+  const providerSignals = [];
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
   globalThis.fetch = async (_url, init = {}) => {
     modelCalls += 1;
-    return new Promise((_resolve, reject) => {
-      init.signal?.addEventListener('abort', () => {
-        const error = new Error('aborted by test timeout');
-        error.name = 'AbortError';
-        reject(error);
-      }, { once: true });
-    });
+    providerSignals.push(init.signal);
+    return {
+      ok: true,
+      status: 200,
+      // Ignore abort deliberately: Promise.race must bound response.json(),
+      // while AbortSignal still reaches the real provider fetch.
+      json: () => new Promise(() => {}),
+    };
   };
 
   const kv = jsonKv();
   const budget = rollingBudget({ limit: 3 });
+  const aiBudgetClaims = [];
+  const aiBudgetSettlements = [];
   const env = {
     ...workerEnv(kv, budget),
     DEEPSEEK_DIRECT_API_KEY: 'test-only-deepseek-key',
     FREE_PREVIEW_MODEL_TIMEOUT_MS: 25,
     AI_BUDGETS: {
-      claim: async ({ claimId }) => ({ allowed: true, claimId }),
-      settle: async () => ({ allowed: true }),
+      claim: async (input) => {
+        aiBudgetClaims.push(input);
+        return { allowed: true, claimId: input.claimId };
+      },
+      settle: async (claimId, commit, costMicros) => {
+        aiBudgetSettlements.push({ claimId, commit, costMicros });
+        return { allowed: true };
+      },
     },
   };
   const body = {
@@ -369,9 +632,17 @@ test('a bounded model timeout recovers deterministically and commits quota only 
   assert.match(result.payload.token, /^[a-f0-9]{32}$/i);
   assert.match(result.payload.servedSource, /^deterministic_/);
   assert.equal(modelCalls, 1, 'public preview transport failures must not multiply provider calls');
+  assert.ok(providerSignals[0] instanceof AbortSignal);
+  assert.equal(providerSignals[0].aborted, true);
   assert.equal(budget.claims, 1);
   assert.equal(budget.commits, 1);
   assert.equal(budget.releases, 0);
+  assert.equal(aiBudgetClaims.length, 1);
+  assert.deepEqual(aiBudgetSettlements, [{
+    claimId: aiBudgetClaims[0].claimId,
+    commit: true,
+    costMicros: aiBudgetClaims[0].reserveMicros,
+  }]);
   assert.ok([...kv.values.keys()].some((key) => key.startsWith('preview:')));
 });
 
