@@ -14,6 +14,7 @@ import readingsWorker, {
   sweepMemberships,
 } from '@/lib/legacy-worker.mjs';
 import {
+  hasAuthoritativeDeliveredOrderEvidence,
   hasConfirmedReadingFulfillment,
   readingIntentPropertiesMatch,
 } from '@/lib/reading-delivery-guards.mjs';
@@ -1629,6 +1630,65 @@ async function paidDraftForOrder(orderId: string, env: WorkerEnvironment) {
   return await env.READINGS_CACHE.get(`paid-draft:${orderId}`, 'json') as PaidDraft | null;
 }
 
+async function hasPreviouslyDeliveredOrderAuthority(row: WebhookQueueRow) {
+  const payload = row.payload || {};
+  const queuedOrderId = text(row.order_id, 96);
+  const payloadOrderId = text(payload.id, 96);
+  if (!queuedOrderId || !payloadOrderId || queuedOrderId !== payloadOrderId) {
+    throw new QueueOperationError('SHOPIFY_ORDER_ID_MISMATCH');
+  }
+  const items = readingItems(payload);
+  if (!items.length) return false;
+
+  const sql = db();
+  const rows = await sql<Array<{
+    order_id: string;
+    financial_status: string | null;
+    status: string;
+    delivered_at: Date | null;
+    fulfillment_id: string | null;
+    sku: string | null;
+    job_order_id: string | null;
+    job_type: string | null;
+    job_status: string | null;
+    completed_at: Date | null;
+    idempotency_key: string | null;
+  }>>`
+    select paid.order_id, paid.financial_status, paid.status, paid.delivered_at,
+           paid.fulfillment_id, paid.sku,
+           job.order_id as job_order_id, job.job_type, job.status as job_status,
+           job.completed_at, job.idempotency_key
+      from deckaura.paid_orders as paid
+      left join lateral (
+        select candidate.order_id, candidate.job_type, candidate.status,
+               candidate.completed_at, candidate.idempotency_key, candidate.created_at
+          from deckaura.delivery_jobs as candidate
+         where candidate.order_id = paid.order_id
+           and candidate.job_type = 'paid_reading'
+         order by (candidate.status = 'completed') desc,
+                  candidate.completed_at desc nulls last,
+                  candidate.created_at desc
+         limit 1
+      ) as job on true
+     where paid.order_id = ${payloadOrderId}
+     limit 1
+  `;
+  const evidence = rows[0];
+  return hasAuthoritativeDeliveredOrderEvidence({
+    queuedOrderId,
+    payloadOrderId,
+    readingSkus: items.map((item) => item.sku),
+    paidOrder: evidence || null,
+    deliveryJob: evidence ? {
+      order_id: evidence.job_order_id,
+      job_type: evidence.job_type,
+      status: evidence.job_status,
+      completed_at: evidence.completed_at,
+      idempotency_key: evidence.idempotency_key,
+    } : null,
+  });
+}
+
 async function queueDraftForOrder(
   payload: JsonObject,
   items: JsonObject[],
@@ -2297,11 +2357,21 @@ async function processWebhookClaim(row: WebhookQueueRow, env: WorkerEnvironment,
       && !shopifyFinancialStatusAllowsReadingFulfillment(row.payload?.financial_status)) {
       throw new QueueOperationError('SHOPIFY_PAYMENT_NOT_CAPTURED');
     }
-    const replay = await replayShopifyWebhook(row, env);
-    if (replay.ignored) state.ignored += 1;
-    else {
-      await validateMembershipActivation(row.payload || {}, env);
-      await enqueueReadingFromWebhook(row, env);
+    const alreadyDelivered = topic === 'orders/paid'
+      ? await hasPreviouslyDeliveredOrderAuthority(row)
+      : false;
+    if (alreadyDelivered) {
+      // Completing the duplicate webhook is the only allowed side effect. In
+      // particular, do not replay the legacy worker, re-email, re-fulfill, or
+      // enqueue another paid-reading job for an authoritatively delivered order.
+      state.ignored += 1;
+    } else {
+      const replay = await replayShopifyWebhook(row, env);
+      if (replay.ignored) state.ignored += 1;
+      else {
+        await validateMembershipActivation(row.payload || {}, env);
+        await enqueueReadingFromWebhook(row, env);
+      }
     }
     const completion = await deliveryRetry.completeShopifyWebhook(row.webhook_id, row.lease_token);
     if (completion.allowed === true) state.completed += 1;
