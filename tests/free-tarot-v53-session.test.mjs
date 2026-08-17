@@ -43,6 +43,14 @@ function jsonKv() {
       },
       put: async (key, value) => values.set(key, value),
       delete: async (key) => values.delete(key),
+      compareAndSetMany: async (entries) => {
+        if (entries.some((entry) => (values.get(entry.key) ?? null) !== entry.expectedValue)) return false;
+        for (const entry of entries) {
+          if (entry.value == null) values.delete(entry.key);
+          else values.set(entry.key, entry.value);
+        }
+        return true;
+      },
     },
   };
 }
@@ -206,14 +214,16 @@ function approvedPointerFailureCache(kv, control) {
   return {
     get: (...args) => kv.binding.get(...args),
     delete: (...args) => kv.binding.delete(...args),
-    put: async (key, value, options) => {
-      let parsed = null;
-      try { parsed = JSON.parse(value); } catch {}
+    put: (key, value, options) => kv.binding.put(key, value, options),
+    compareAndSetMany: async (entries) => {
       const targetPrefix = control.target === 'current' ? 'preview-current:' : 'preview-last-approved:';
-      if (control.enabled && key.startsWith(targetPrefix) && parsed?.approvalStatus === 'approved') {
-        throw new Error(`simulated ${control.target} approved-pointer write failure`);
-      }
-      return kv.binding.put(key, value, options);
+      const failsTarget = entries.some((entry) => {
+        let parsed = null;
+        try { parsed = JSON.parse(entry.value); } catch {}
+        return entry.key.startsWith(targetPrefix) && parsed?.approvalStatus === 'approved';
+      });
+      if (control.enabled && failsTarget) throw new Error(`simulated ${control.target} approved-pointer write failure`);
+      return kv.binding.compareAndSetMany(entries);
     },
   };
 }
@@ -427,8 +437,9 @@ test('concurrent requests straddling the UTC epoch boundary keep one stable owne
 test('stable-claim SQL locks claim plus old-new budget union, recycles mobile visitors, and gates rollout before DML', async () => {
   const migration = await readFile(new URL('../supabase/migrations/20260817055500_recycle_stable_free_preview_claims.sql', import.meta.url), 'utf8');
   const workerEnvSource = await readFile(new URL('../lib/worker-env.ts', import.meta.url), 'utf8');
+  const dreamRouteSource = await readFile(new URL('../app/api/dreams/interpret/route.ts', import.meta.url), 'utf8');
   const fourArgumentFunctionAt = migration.indexOf('p_expected_contract text');
-  const contractValidationAt = migration.indexOf("if p_expected_contract is distinct from 'stable-replay-v1'");
+  const contractValidationAt = migration.indexOf("if p_expected_contract is distinct from 'stable-replay-v2'");
   const firstMutationAt = Math.min(
     ...['delete from deckaura.free_reading_budget_events', 'insert into deckaura.free_reading_budget_events', 'update deckaura.free_reading_budget_events']
       .map((statement) => migration.indexOf(statement))
@@ -437,13 +448,16 @@ test('stable-claim SQL locks claim plus old-new budget union, recycles mobile vi
   const claimLockAt = migration.indexOf("'free-preview-claim:' || p_claim_id::text");
   const unionLockAt = migration.indexOf('select event.budget_name as name');
   const refreshedClockAt = migration.indexOf('v_now := clock_timestamp();', claimLockAt);
-  const ownershipAt = migration.indexOf('-- A deterministic claim is visitor-bound.');
+  const ownershipAt = migration.indexOf('-- Visitor-bearing deterministic preview claims are visitor-bound.');
   const cleanupAt = migration.indexOf('delete from deckaura.free_reading_budget_events event');
   const consistencyAt = migration.indexOf("raise exception 'claim_id has inconsistent budget status'");
   const recycleAt = migration.indexOf('-- Recycle only when every retained row is consumed');
   const recycleDeleteAt = migration.indexOf('delete from deckaura.free_reading_budget_events event', recycleAt);
+  const overlapGuardAt = migration.indexOf('-- During a mixed old/new worker rollout');
+  const insertAt = migration.indexOf('insert into deckaura.free_reading_budget_events');
 
   assert.ok(fourArgumentFunctionAt >= 0, 'new workers require the four-argument contract overload');
+  assert.doesNotMatch(`${migration}\n${workerEnvSource}`, /stable-replay-v1/, 'the retired contract marker must not survive the successor migration or worker');
   assert.ok(contractValidationAt > fourArgumentFunctionAt && contractValidationAt < firstMutationAt, 'contract validation must precede every possible DML statement');
   assert.match(migration, /raise exception 'unsupported free-reading claim contract'/);
   assert.ok(claimLockAt >= 0 && claimLockAt < unionLockAt, 'stable claim lock must precede old-new budget inspection');
@@ -455,11 +469,19 @@ test('stable-claim SQL locks claim plus old-new budget union, recycles mobile vi
   assert.match(migration, /event\.status = 'pending'[\s\S]+event\.status = 'consumed'[\s\S]+claim_id has inconsistent budget status/);
   assert.match(migration, /event\.status <> 'consumed'[\s\S]+event\.consumed_at is null[\s\S]+event\.consumed_at > v_window_start/);
   assert.match(migration.slice(recycleDeleteAt), /where event\.claim_id = p_claim_id;[\s\S]+v_existing_count := 0;/);
-  assert.ok((migration.match(/'claimContract', 'stable-replay-v1'/g) || []).length >= 2, 'allowed and denied SQL results must expose the rollout marker');
-  assert.match(migration, /create or replace function deckaura\.claim_free_reading_budgets\(\s*p_claim_id uuid,\s*p_budgets jsonb,\s*p_reservation_seconds integer default 120\s*\)[\s\S]+select deckaura\.claim_free_reading_budgets\([\s\S]+p_reservation_seconds,\s*'stable-replay-v1'/, 'old three-argument workers must delegate to the guarded implementation');
+  assert.ok((migration.match(/'claimContract', 'stable-replay-v2'/g) || []).length >= 3, 'allowed, denied, and in-progress SQL results must expose the rollout marker');
+  assert.match(migration, /raise exception 'budgets must contain at most one visitor entry'/);
+  assert.doesNotMatch(migration, /budgets must contain exactly one visitor entry/);
+  assert.match(migration, /v_visitor_name is null[\s\S]+v_existing_count <> v_budget_count[\s\S]+event\.budget_kind = 'visitor'[\s\S]+visitor-less claim_id was already used for different budgets/, 'visitor-less Dream retries must remain exact-set and reject mode crossover');
+  assert.match(migration, /v_visitor_name is not null[\s\S]+event\.budget_kind = 'visitor'[\s\S]+event\.budget_name = v_visitor_name[\s\S]+claim_id belongs to a different visitor/, 'visitor-bearing stable claims must retain exact visitor authority while allowing other budget names to move');
+  assert.ok(overlapGuardAt > recycleDeleteAt && overlapGuardAt < insertAt, 'the mixed-worker pending guard must run after cleanup/recycle and before a second insert');
+  assert.match(migration.slice(overlapGuardAt, insertAt), /event\.budget_name = v_visitor_name[\s\S]+event\.status = 'pending'[\s\S]+event\.expires_at > v_now[\s\S]+event\.claim_id <> p_claim_id[\s\S]+'reason', 'preview_in_progress'/);
+  assert.match(migration, /create or replace function deckaura\.claim_free_reading_budgets\(\s*p_claim_id uuid,\s*p_budgets jsonb,\s*p_reservation_seconds integer default 120\s*\)[\s\S]+v_result := deckaura\.claim_free_reading_budgets\([\s\S]+p_reservation_seconds,\s*'stable-replay-v2'[\s\S]+if v_result ->> 'reason' = 'preview_in_progress'[\s\S]+raise exception 'free preview already in progress'/, 'old three-argument workers must delegate to v2 and fail closed before their legacy fallback can mint a second token');
   assert.match(workerEnvSource, /select deckaura\.claim_free_reading_budgets\([\s\S]+120,\s*\$\{STABLE_FREE_READING_CLAIM_CONTRACT\}/, 'new workers must call only the pre-DML guarded overload');
+  assert.match(workerEnvSource, /STABLE_FREE_READING_CLAIM_CONTRACT = 'stable-replay-v2'/);
   assert.match(workerEnvSource, /result\.claimContract !== STABLE_FREE_READING_CLAIM_CONTRACT/);
   assert.match(workerEnvSource, /throw new Error\('Free-reading budget claim contract mismatch'\)/);
+  assert.match(dreamRouteSource, /freeReadingBudgets\.claim\(requestId, \[\s*\{ name: `network:\$\{networkHash\}`, kind: 'network', cap: 12 \},\s*\{ name: 'global:dream_ai_v1', kind: 'global', cap: 500 \},\s*\]\)/, 'Dream must remain a legitimate visitor-less two-budget caller through old and new overloads');
   assert.match(migration, /security invoker[\s\S]+set search_path = ''/);
   assert.match(migration, /revoke all on function deckaura\.claim_free_reading_budgets\(uuid, jsonb, integer, text\)[\s\S]+from public, anon, authenticated/);
 });
@@ -483,6 +505,7 @@ test('a failed committed marker remains recoverable from its durable snapshot wi
       return kv.binding.put(key, value, options);
     },
     delete: kv.binding.delete,
+    compareAndSetMany: kv.binding.compareAndSetMany,
   };
   const claimed = new Set();
   const consumed = new Set();
@@ -686,6 +709,15 @@ test('owner, committed replay, and follower recovery all fail closed on either s
         assert.equal(seeded.response.status, 200, `${branch}/${target}: ${JSON.stringify(seeded.payload)}`);
         token = seeded.payload.token;
       }
+      if (branch === 'committed-replay') {
+        const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+        const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+        const current = JSON.parse(kv.values.get(currentKey));
+        current.approvalStatus = 'pending';
+        current.approvedAt = 0;
+        kv.values.set(currentKey, JSON.stringify(current));
+        kv.values.delete(lastKey);
+      }
       if (branch === 'follower') {
         const replayKey = [...kv.values.keys()].find((key) => key.startsWith('preview-response:'));
         const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
@@ -737,6 +769,526 @@ test('owner, committed replay, and follower recovery all fail closed on either s
       if (branch === 'follower') assert.equal(repairCommits, 1, `${branch}/${target}: follower repair committed more than once`);
     }
   }
+});
+
+test('an approved current-only partial replay repairs last-approved without rewriting the authoritative current session', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 3 }));
+  const body = readingBody(
+    'What exact boundary should this current-only replay preserve?',
+    'current_only_replay_repair',
+    'current_only_replay_repair_visitor',
+  );
+  const seeded = await createPreview(env, body);
+  assert.equal(seeded.response.status, 200, JSON.stringify(seeded.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const currentBytes = kv.values.get(currentKey);
+  kv.values.delete(lastKey);
+  let currentWrites = 0;
+  let lastWrites = 0;
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    put: async (key, value, options) => {
+      if (key === currentKey) currentWrites += 1;
+      if (key === lastKey) lastWrites += 1;
+      return kv.binding.put(key, value, options);
+    },
+    compareAndSetMany: async (entries) => {
+      currentWrites += entries.filter((entry) => entry.key === currentKey && entry.value !== entry.expectedValue).length;
+      lastWrites += entries.filter((entry) => entry.key === lastKey && entry.value !== entry.expectedValue).length;
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+
+  const replayed = await createPreview(env, body);
+  assert.equal(replayed.response.status, 200, JSON.stringify(replayed.payload));
+  assert.equal(replayed.payload.replayed, true);
+  assert.equal(replayed.payload.token, seeded.payload.token);
+  assert.equal(currentWrites, 0, 'replay rewrote an already-finalized current pointer');
+  assert.equal(lastWrites, 1, 'replay did not repair the missing last-approved pointer exactly once');
+  assert.equal(kv.values.get(currentKey), currentBytes, 'current pointer bytes changed during last-approved repair');
+  const repairedLast = JSON.parse(kv.values.get(lastKey));
+  assert.equal(repairedLast.token, seeded.payload.token);
+  assert.equal(repairedLast.approvalStatus, 'approved');
+});
+
+test('a last-approved-only same-token chat state repairs current without losing the newer conversation', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 3 }));
+  const body = readingBody(
+    'What exact conversation must survive a last-approved-only repair?',
+    'last_only_same_token_chat_repair',
+    'last_only_same_token_chat_visitor',
+  );
+  const seeded = await createPreview(env, body);
+  assert.equal(seeded.response.status, 200, JSON.stringify(seeded.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const lastOnly = JSON.parse(kv.values.get(lastKey));
+  lastOnly.messages = [{
+    id: 'last_only_same_token_chat_01',
+    question: 'Which practical boundary should I name first?',
+    answerText: 'Name the smallest boundary you can enforce consistently this week.',
+    answerHtml: '<p>Name the smallest boundary you can enforce consistently this week.</p>',
+    createdAt: Date.now(),
+    safety: false,
+    safetyCategory: '',
+  }];
+  lastOnly.followupsUsed = 1;
+  lastOnly.conversationUpdatedAt = new Date().toISOString();
+  const lastOnlyBytes = JSON.stringify(lastOnly);
+  kv.values.set(lastKey, lastOnlyBytes);
+  kv.values.delete(currentKey);
+
+  const replayed = await createPreview(env, body);
+  assert.equal(replayed.response.status, 200, JSON.stringify(replayed.payload));
+  assert.equal(replayed.payload.replayed, true);
+  assert.equal(replayed.payload.token, seeded.payload.token);
+  assert.equal(replayed.payload.followupsUsed, 1);
+  assert.equal(kv.values.get(currentKey), lastOnlyBytes, 'current did not adopt the surviving same-token chat authority');
+  assert.equal(kv.values.get(lastKey), lastOnlyBytes, 'replay rewrote the surviving same-token chat authority');
+  assert.equal(JSON.parse(kv.values.get(currentKey)).messages[0].id, 'last_only_same_token_chat_01');
+});
+
+test('a newer last-approved-only token blocks late replay from restoring an older authority', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 3 }));
+  const visitorId = 'last_only_newer_token_visitor';
+  const olderBody = readingBody(
+    'What older authority must not return after a newer preview?',
+    'last_only_newer_token_older',
+    visitorId,
+  );
+  const older = await createPreview(env, olderBody);
+  assert.equal(older.response.status, 200, JSON.stringify(older.payload));
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const newer = await createPreview(env, readingBody(
+    'What newer authority should remain after a late replay?',
+    'last_only_newer_token_newer',
+    visitorId,
+  ));
+  assert.equal(newer.response.status, 200, JSON.stringify(newer.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const newerLastBytes = kv.values.get(lastKey);
+  assert.equal(JSON.parse(newerLastBytes).token, newer.payload.token);
+  kv.values.delete(currentKey);
+
+  const replayed = await createPreview(env, olderBody);
+  assert.equal(replayed.response.status, 503, JSON.stringify(replayed.payload));
+  assert.equal(replayed.payload.reason, 'preview_in_progress');
+  assert.equal(replayed.payload.token, undefined);
+  assert.equal(kv.values.has(currentKey), false, 'late replay recreated the older current authority');
+  assert.equal(kv.values.get(lastKey), newerLastBytes, 'late replay overwrote the newer last-approved authority');
+});
+
+test('replay finalization is read-only after a newer same-token chat safety state arrives between replay read and persist', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 3 }));
+  const body = readingBody(
+    'What exact state must a replay preserve after a safety turn?',
+    'replay_chat_safety_interleave',
+    'replay_chat_safety_interleave_visitor',
+  );
+  const seeded = await createPreview(env, body);
+  assert.equal(seeded.response.status, 200, JSON.stringify(seeded.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const baseCurrent = JSON.parse(kv.values.get(currentKey));
+  kv.values.delete(lastKey);
+  const newer = {
+    ...baseCurrent,
+    messages: [{
+      id: 'newer_safety_turn_01',
+      question: 'What should I do if I may be in immediate danger?',
+      answerText: 'Contact local emergency support and a trusted person now.',
+      answerHtml: '<p>Contact local emergency support and a trusted person now.</p>',
+      createdAt: Date.now(),
+      safety: true,
+      safetyCategory: 'danger',
+    }],
+    followupsUsed: 1,
+    safety: true,
+    safetyCategory: 'danger',
+    offer: null,
+    offerBlocked: true,
+    approvalStatus: 'blocked',
+    approvedAt: 0,
+    conversationUpdatedAt: new Date().toISOString(),
+  };
+  const newerBytes = JSON.stringify(newer);
+  let armed = true;
+  let pointerWrites = 0;
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    put: async (key, value, options) => {
+      if (key === currentKey || key === lastKey) pointerWrites += 1;
+      return kv.binding.put(key, value, options);
+    },
+    compareAndSetMany: async (entries) => {
+      if (armed && entries.some((entry) => entry.key === currentKey)) {
+        armed = false;
+        kv.values.set(currentKey, newerBytes);
+        kv.values.set(lastKey, newerBytes);
+      }
+      const persisted = await kv.binding.compareAndSetMany(entries);
+      if (persisted) pointerWrites += entries.filter((entry) => entry.value !== entry.expectedValue).length;
+      return persisted;
+    },
+  };
+
+  const replayed = await createPreview(env, body);
+  assert.equal(replayed.response.status, 200, JSON.stringify(replayed.payload));
+  assert.equal(replayed.payload.replayed, true);
+  assert.equal(replayed.payload.followupsUsed, 1);
+  assert.equal(replayed.payload.followupsRemaining, 2);
+  assert.equal(replayed.payload.safety, true);
+  assert.equal(replayed.payload.safetyCategory, 'danger');
+  assert.equal(replayed.payload.offerAllowed, false);
+  assert.equal(replayed.payload.curiosityQuestion, '');
+  assert.equal(pointerWrites, 0, 'replay attempted to overwrite a finalized same-token chat state');
+  assert.equal(kv.values.get(currentKey), newerBytes);
+  assert.equal(kv.values.get(lastKey), newerBytes);
+  assert.equal(JSON.parse(kv.values.get(currentKey)).messages[0].id, 'newer_safety_turn_01');
+});
+
+test('a blocked replay verifies current atomically before returning its token', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 3 }));
+  const visitorId = 'blocked_replay_authority_race_visitor';
+  const olderBody = readingBody(
+    'What should I understand before accepting this new leadership role?',
+    'blocked_replay_authority_race_older',
+    visitorId,
+  );
+  const older = await createPreview(env, olderBody);
+  assert.equal(older.response.status, 200, JSON.stringify(older.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const olderLastBytes = kv.values.get(lastKey);
+  const blockedOlder = {
+    ...JSON.parse(kv.values.get(currentKey)),
+    messages: [{
+      id: 'blocked_replay_authority_race_safety',
+      question: 'Am I in immediate danger?',
+      answerText: 'Contact emergency support and a trusted person now.',
+      answerHtml: '<p>Contact emergency support and a trusted person now.</p>',
+      createdAt: Date.now(),
+      safety: true,
+      safetyCategory: 'danger',
+    }],
+    followupsUsed: 1,
+    safety: true,
+    safetyCategory: 'danger',
+    offer: null,
+    offerBlocked: true,
+    approvalStatus: 'blocked',
+    approvedAt: 0,
+    conversationUpdatedAt: new Date().toISOString(),
+  };
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const newer = await createPreview(env, readingBody(
+    'What should I understand before accepting a different leadership role?',
+    'blocked_replay_authority_race_newer',
+    visitorId,
+  ));
+  assert.equal(newer.response.status, 200, JSON.stringify(newer.payload));
+  const newerCurrentBytes = kv.values.get(currentKey);
+  const newerLastBytes = kv.values.get(lastKey);
+  kv.values.set(currentKey, JSON.stringify(blockedOlder));
+  kv.values.set(lastKey, olderLastBytes);
+  let armed = true;
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    put: (...args) => kv.binding.put(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    compareAndSetMany: async (entries) => {
+      if (armed && entries.some((entry) => entry.key === currentKey)) {
+        armed = false;
+        kv.values.set(currentKey, newerCurrentBytes);
+        kv.values.set(lastKey, newerLastBytes);
+      }
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+
+  const replayed = await createPreview(env, olderBody);
+  assert.equal(armed, false, 'blocked replay returned without an atomic current-pointer verification');
+  assert.equal(replayed.response.status, 503, JSON.stringify(replayed.payload));
+  assert.equal(replayed.payload.reason, 'preview_in_progress');
+  assert.equal(replayed.payload.token, undefined);
+  assert.equal(kv.values.get(currentKey), newerCurrentBytes);
+  assert.equal(kv.values.get(lastKey), newerLastBytes);
+  assert.equal(JSON.parse(kv.values.get(currentKey)).token, newer.payload.token);
+});
+
+test('an owner response reflects same-token safety state that wins before pointer publication', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const body = readingBody(
+    'What should I understand before accepting this safety-sensitive career role?',
+    'owner_response_same_token_safety_state',
+    'owner_response_same_token_safety_visitor',
+  );
+  let armed = true;
+  let blockedBytes = '';
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    put: (...args) => kv.binding.put(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    compareAndSetMany: async (entries) => {
+      const currentEntry = entries.find((entry) => entry.key.startsWith('preview-current:') && entry.value);
+      let proposed = null;
+      try { proposed = JSON.parse(currentEntry?.value); } catch {}
+      if (armed && proposed?.fields?.readingId === body.readingId) {
+        armed = false;
+        const blocked = {
+          ...proposed,
+          messages: [{
+            id: 'owner_response_same_token_safety_turn',
+            question: 'Am I in immediate danger?',
+            answerText: 'Contact emergency support and a trusted person now.',
+            answerHtml: '<p>Contact emergency support and a trusted person now.</p>',
+            createdAt: Date.now(),
+            safety: true,
+            safetyCategory: 'danger',
+          }],
+          followupsUsed: 1,
+          safety: true,
+          safetyCategory: 'danger',
+          offer: null,
+          offerBlocked: true,
+          approvalStatus: 'blocked',
+          approvedAt: 0,
+          conversationUpdatedAt: new Date().toISOString(),
+        };
+        blockedBytes = JSON.stringify(blocked);
+        kv.values.set(currentEntry.key, blockedBytes);
+      }
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+
+  const result = await createPreview(env, body);
+  assert.equal(armed, false, 'fixture did not inject the same-token safety state');
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.match(result.payload.token, /^[a-f0-9]{32}$/);
+  assert.equal(result.payload.safety, true);
+  assert.equal(result.payload.safetyCategory, 'danger');
+  assert.equal(result.payload.offerAllowed, false);
+  assert.equal(result.payload.curiosityQuestion, '');
+  assert.equal(result.payload.lockedSections, 0);
+  assert.equal(result.payload.followupsUsed, 1);
+  const current = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+  const last = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+  assert.equal(current[1], blockedBytes);
+  assert.equal(last, undefined, 'blocked authority was published as last-approved');
+});
+
+test('a failed newer owner never deletes the previously committed visitor session pointer', async () => {
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 3 });
+  const env = workerEnv(kv, budget);
+  const committedBody = readingBody(
+    'What committed boundary should remain available during another owner failure?',
+    'cleanup_race_committed_authority',
+    'cleanup_race_shared_visitor',
+  );
+  const committed = await createPreview(env, committedBody);
+  assert.equal(committed.response.status, 200, JSON.stringify(committed.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const currentBytes = kv.values.get(currentKey);
+  let failedReplayWrite = false;
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    put: async (key, value, options) => {
+      let parsed = null;
+      try { parsed = JSON.parse(value); } catch {}
+      if (key.startsWith('preview-response:') && parsed?.commitState === 'pending'
+        && parsed.token !== committed.payload.token) {
+        failedReplayWrite = true;
+        throw new Error('simulated newer owner replay persistence failure');
+      }
+      return kv.binding.put(key, value, options);
+    },
+    compareAndSetMany: kv.binding.compareAndSetMany,
+  };
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const failed = await createPreview(env, readingBody(
+    'What should fail without deleting the prior committed conversation?',
+    'cleanup_race_failed_new_owner',
+    'cleanup_race_shared_visitor',
+  ));
+  assert.equal(failed.response.status, 503, JSON.stringify(failed.payload));
+  assert.equal(failed.payload.reason, 'snapshot_store_failed');
+  assert.equal(failedReplayWrite, true);
+  assert.equal(kv.values.get(currentKey), currentBytes, 'failed owner deleted or rewrote the committed current pointer');
+  assert.equal(JSON.parse(kv.values.get(currentKey)).token, committed.payload.token);
+});
+
+test('ambiguous owner settlement never deletes a token already repaired and returned by a follower', async () => {
+  const kv = jsonKv();
+  let claimCalls = 0;
+  let commitCalls = 0;
+  let releaseCalls = 0;
+  let releaseOwnerSettle;
+  let markOwnerSettleStarted;
+  const ownerSettleStarted = new Promise((resolve) => { markOwnerSettleStarted = resolve; });
+  const ownerSettleGate = new Promise((resolve) => { releaseOwnerSettle = resolve; });
+  const budget = {
+    binding: {
+      claim: async () => {
+        claimCalls += 1;
+        return {
+          allowed: true,
+          idempotent: claimCalls > 1,
+          cap: 3,
+          used: 0,
+          remaining: 2,
+          nextAt: Date.now() + 24 * 60 * 60 * 1000,
+        };
+      },
+      settle: async (_claimId, consume) => {
+        if (!consume) {
+          releaseCalls += 1;
+          return { allowed: true };
+        }
+        commitCalls += 1;
+        if (commitCalls === 1) {
+          markOwnerSettleStarted();
+          await ownerSettleGate;
+          return { allowed: false };
+        }
+        return { allowed: true, idempotent: true };
+      },
+    },
+  };
+  const env = workerEnv(kv, budget);
+  const originalPut = kv.binding.put;
+  let committedMarkerAttempts = 0;
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    compareAndSetMany: (...args) => kv.binding.compareAndSetMany(...args),
+    put: async (key, value, options) => {
+      let parsed = null;
+      try { parsed = JSON.parse(value); } catch {}
+      if (key.startsWith('preview-response:') && parsed?.commitState === 'committed') {
+        committedMarkerAttempts += 1;
+        throw new Error('simulated committed marker ambiguity after follower settlement');
+      }
+      return originalPut(key, value, options);
+    },
+  };
+  const body = readingBody(
+    'What should I understand before accepting this exact career change?',
+    'ambiguous_owner_follower_authority',
+    'ambiguous_owner_follower_visitor',
+  );
+
+  const ownerPromise = createPreview(env, body);
+  await ownerSettleStarted;
+  const follower = await createPreview(env, body);
+  assert.equal(follower.response.status, 200, JSON.stringify(follower.payload));
+  assert.equal(follower.payload.replayed, true);
+  assert.match(follower.payload.token, /^[a-f0-9]{32}$/);
+  assert.ok(committedMarkerAttempts > 0, 'fixture did not exercise the pending-marker follower branch');
+  releaseOwnerSettle();
+  const owner = await ownerPromise;
+
+  assert.equal(owner.response.status, 503, JSON.stringify(owner.payload));
+  assert.equal(owner.payload.reason, 'commit_failed');
+  assert.equal(owner.payload.token, undefined);
+  assert.equal(claimCalls, 2);
+  assert.equal(commitCalls, 2);
+  assert.equal(releaseCalls, 1);
+  assert.ok(kv.values.has(`preview:${follower.payload.token}`), 'owner deleted the follower-returned snapshot');
+  const replayEntries = [...kv.values.entries()].filter(([key]) => key.startsWith('preview-response:'));
+  assert.equal(replayEntries.length, 1);
+  assert.equal(JSON.parse(replayEntries[0][1]).token, follower.payload.token);
+  assert.equal(JSON.parse(replayEntries[0][1]).commitState, 'pending', 'fixture unexpectedly persisted the follower marker');
+  const current = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+  const last = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+  assert.equal(JSON.parse(current[1]).token, follower.payload.token);
+  assert.equal(JSON.parse(last[1]).token, follower.payload.token);
+});
+
+test('sequential second and third previews atomically supersede the visitor pointers in authority order', async () => {
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 3 });
+  const env = workerEnv(kv, budget);
+  const results = [];
+  for (let index = 1; index <= 3; index += 1) {
+    if (index > 1) await new Promise((resolve) => setTimeout(resolve, 2));
+    const result = await createPreview(env, readingBody(
+      `What should the visitor understand in sequential preview ${index}?`,
+      `sequential_pointer_authority_${index}`,
+      'sequential_pointer_authority_visitor',
+    ));
+    assert.equal(result.response.status, 200, `${index}: ${JSON.stringify(result.payload)}`);
+    results.push(result.payload);
+  }
+  assert.equal(new Set(results.map((result) => result.token)).size, 3);
+  const current = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+  const last = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+  assert.equal(JSON.parse(current[1]).token, results[2].token);
+  assert.equal(JSON.parse(last[1]).token, results[2].token);
+  assert.equal(current[1], last[1], 'atomic pointer pair diverged after sequential supersession');
+  assert.equal(budget.commits, 3);
+});
+
+test('concurrent different-token finalizers converge on the newer authority without splitting pointers', async () => {
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 3 });
+  const env = workerEnv(kv, budget);
+  let releaseOlder;
+  let markOlderReady;
+  const olderReady = new Promise((resolve) => { markOlderReady = resolve; });
+  const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+  let heldOlder = false;
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    put: (...args) => kv.binding.put(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    compareAndSetMany: async (entries) => {
+      const currentEntry = entries.find((entry) => entry.key.startsWith('preview-current:') && entry.value);
+      let parsed = null;
+      try { parsed = JSON.parse(currentEntry?.value); } catch {}
+      if (!heldOlder && parsed?.fields?.readingId === 'concurrent_authority_older') {
+        heldOlder = true;
+        markOlderReady();
+        await olderGate;
+      }
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+  const olderPromise = createPreview(env, readingBody(
+    'What should the older concurrent authority preserve?',
+    'concurrent_authority_older',
+    'concurrent_authority_shared_visitor',
+  ));
+  await olderReady;
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const newer = await createPreview(env, readingBody(
+    'What should the newer concurrent authority preserve?',
+    'concurrent_authority_newer',
+    'concurrent_authority_shared_visitor',
+  ));
+  releaseOlder();
+  const older = await olderPromise;
+
+  assert.equal(newer.response.status, 200, JSON.stringify(newer.payload));
+  assert.equal(older.response.status, 503, JSON.stringify(older.payload));
+  assert.equal(older.payload.reason, 'preview_in_progress');
+  assert.equal(older.payload.token, undefined);
+  const current = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+  const last = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+  assert.equal(JSON.parse(current[1]).token, newer.payload.token);
+  assert.equal(current[1], last[1], 'concurrent finalizers split current and last-approved');
 });
 
 test('committed replay never returns a token without an exact durable snapshot authority', async () => {
@@ -1262,6 +1814,72 @@ test('v50-v56 legacy current sessions migrate once into a verified last-approved
   }
 });
 
+test('legacy migration returns the same-token safety authority that wins during finalization', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const body = readingBody(
+    'What should I understand before changing this legacy career plan?',
+    'legacy_migration_same_token_safety_race',
+    'legacy_migration_same_token_safety_visitor',
+  );
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const pending = JSON.parse(kv.values.get(currentKey));
+  pending.approvalStatus = 'pending';
+  pending.approvedAt = 0;
+  kv.values.set(currentKey, JSON.stringify(pending));
+  kv.values.delete(lastKey);
+  let armed = true;
+  let blockedBytes = '';
+  env.READINGS_CACHE = {
+    get: (...args) => kv.binding.get(...args),
+    put: (...args) => kv.binding.put(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    compareAndSetMany: async (entries) => {
+      const currentEntry = entries.find((entry) => entry.key === currentKey && entry.value);
+      if (armed && currentEntry) {
+        armed = false;
+        const blocked = {
+          ...pending,
+          messages: [{
+            id: 'legacy_migration_same_token_safety_turn',
+            question: 'Am I in immediate danger?',
+            answerText: 'Contact emergency support and a trusted person now.',
+            answerHtml: '<p>Contact emergency support and a trusted person now.</p>',
+            createdAt: Date.now(),
+            safety: true,
+            safetyCategory: 'danger',
+          }],
+          followupsUsed: 1,
+          safety: true,
+          safetyCategory: 'danger',
+          offer: null,
+          offerBlocked: true,
+          approvalStatus: 'blocked',
+          approvedAt: 0,
+          conversationUpdatedAt: new Date().toISOString(),
+        };
+        blockedBytes = JSON.stringify(blocked);
+        kv.values.set(currentKey, blockedBytes);
+      }
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+
+  const response = await handleFreeSession(sessionRequest(body.visitorId, 'last-approved'), env);
+  assert.equal(armed, false, 'fixture did not interleave safety state with migration finalization');
+  assert.deepEqual(await response.json(), {
+    found: false,
+    kind: 'last-approved',
+    verified: false,
+    reason: 'offer_blocked',
+  });
+  assert.equal(kv.values.get(currentKey), blockedBytes);
+  assert.equal(kv.values.has(lastKey), false, 'migration published stale approved authority after safety won');
+});
+
 test('missing-version v2 Free Tarot sessions migrate only with complete owner-bound evidence', async () => {
   for (const missingEvidence of ['', 'signals']) {
     const kv = jsonKv();
@@ -1515,6 +2133,59 @@ test('a returned historical preview token recovers its exact verified snapshot w
   assert.equal(payload.session.cards, body.cards);
   assert.equal(payload.session.spread, body.spread);
   assert.ok([...kv.values.keys()].some((key) => key.startsWith('preview-last-approved:')));
+});
+
+test('historical token recovery cannot bypass a surviving same-token safety block when last-approved is missing', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const body = readingBody(
+    'What should I understand before changing this exact career plan?',
+    'historical_token_same_token_safety_block',
+    'historical_token_same_token_safety_visitor',
+  );
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  const blocked = {
+    ...JSON.parse(kv.values.get(currentKey)),
+    messages: [{
+      id: 'historical_token_same_token_safety_turn',
+      question: 'Am I in immediate danger?',
+      answerText: 'Contact emergency support and a trusted person now.',
+      answerHtml: '<p>Contact emergency support and a trusted person now.</p>',
+      createdAt: Date.now(),
+      safety: true,
+      safetyCategory: 'danger',
+    }],
+    followupsUsed: 1,
+    safety: true,
+    safetyCategory: 'danger',
+    offer: null,
+    offerBlocked: true,
+    approvalStatus: 'blocked',
+    approvedAt: 0,
+    conversationUpdatedAt: new Date().toISOString(),
+  };
+  const blockedBytes = JSON.stringify(blocked);
+  kv.values.set(currentKey, blockedBytes);
+  kv.values.delete(lastKey);
+
+  const response = await handleFreeSession(sessionRequest(
+    body.visitorId,
+    'last-approved',
+    REQUEST_HEADERS,
+    { token: created.payload.token, readingId: body.readingId, question: body.question },
+  ), env);
+  const payload = await response.json();
+  assert.deepEqual(payload, {
+    found: false,
+    kind: 'last-approved',
+    verified: false,
+    reason: 'offer_blocked',
+  });
+  assert.equal(kv.values.get(currentKey), blockedBytes, 'recovery rewrote the surviving blocked current authority');
+  assert.equal(kv.values.has(lastKey), false, 'recovery recreated an approved last pointer from a stale snapshot');
 });
 
 test('historical token recovery fails closed for altered question, reading, owner, safety, and purchase-only snapshots', async () => {

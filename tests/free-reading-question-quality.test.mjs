@@ -199,6 +199,14 @@ test('reserved Past Present Future preview keeps both career and relationship co
       get: async (key) => cache.get(key) || null,
       put: async (key, value) => cache.set(key, value),
       delete: async (key) => cache.delete(key),
+      compareAndSetMany: async (entries) => {
+        if (entries.some((entry) => (cache.get(entry.key) ?? null) !== entry.expectedValue)) return false;
+        for (const entry of entries) {
+          if (entry.value == null) cache.delete(entry.key);
+          else cache.set(entry.key, entry.value);
+        }
+        return true;
+      },
     },
   });
   const responsePayload = await response.json();
@@ -434,6 +442,14 @@ test('unsupported Korean question uses the English storefront reserved fast path
       get: async (key) => cache.get(key) || null,
       put: async (key, value) => cache.set(key, value),
       delete: async (key) => cache.delete(key),
+      compareAndSetMany: async (entries) => {
+        if (entries.some((entry) => (cache.get(entry.key) ?? null) !== entry.expectedValue)) return false;
+        for (const entry of entries) {
+          if (entry.value == null) cache.delete(entry.key);
+          else cache.set(entry.key, entry.value);
+        }
+        return true;
+      },
     },
   };
   const request = new Request('https://reading.deckaura.com/free-reading', {

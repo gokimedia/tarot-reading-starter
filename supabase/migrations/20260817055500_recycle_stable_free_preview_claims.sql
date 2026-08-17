@@ -35,7 +35,7 @@ begin
   -- This must remain before every DELETE/INSERT/UPDATE. A new worker calling
   -- an old database has no four-argument overload and therefore cannot enter a
   -- mutating function at all; a wrong explicit contract also fails here.
-  if p_expected_contract is distinct from 'stable-replay-v1' then
+  if p_expected_contract is distinct from 'stable-replay-v2' then
     raise exception 'unsupported free-reading claim contract';
   end if;
 
@@ -78,14 +78,11 @@ begin
     end if;
     if v_kind = 'visitor' then
       if v_visitor_name is not null then
-        raise exception 'budgets must contain exactly one visitor entry';
+        raise exception 'budgets must contain at most one visitor entry';
       end if;
       v_visitor_name := v_name;
     end if;
   end loop;
-  if v_visitor_name is null then
-    raise exception 'budgets must contain exactly one visitor entry';
-  end if;
 
   -- Serialize one replay-derived claim independently of its changing device or
   -- network budget names. Then lock the union of retained and requested budget
@@ -114,27 +111,56 @@ begin
   v_now := clock_timestamp();
   v_window_start := v_now - interval '24 hours';
 
-  -- A deterministic claim is visitor-bound. Device and network names may
-  -- legitimately change when the same visitor moves between networks, but a
-  -- claim collision can never borrow another visitor's retained authority.
+  -- Visitor-bearing deterministic preview claims are visitor-bound. Device
+  -- and network names may legitimately change when the same visitor moves.
+  -- Visitor-less callers (currently Dream) instead keep the legacy exact-set
+  -- idempotency contract: they may retry the same claim only with the same
+  -- names and kinds, and neither mode can be crossed by reusing a claim UUID.
   select count(*) into v_existing_count
     from deckaura.free_reading_budget_events event
    where event.claim_id = p_claim_id;
-  if v_existing_count <> 0 and (
-    not exists (
-      select 1 from deckaura.free_reading_budget_events event
-       where event.claim_id = p_claim_id
-         and event.budget_kind = 'visitor'
-         and event.budget_name = v_visitor_name
-    )
-    or exists (
-      select 1 from deckaura.free_reading_budget_events event
-       where event.claim_id = p_claim_id
-         and event.budget_kind = 'visitor'
-         and event.budget_name <> v_visitor_name
-    )
-  ) then
-    raise exception 'claim_id belongs to a different visitor';
+  if v_existing_count <> 0 then
+    if v_visitor_name is null and (
+      v_existing_count <> v_budget_count
+      or exists (
+        select 1 from deckaura.free_reading_budget_events event
+         where event.claim_id = p_claim_id
+           and (
+             event.budget_kind = 'visitor'
+             or not exists (
+               select 1 from jsonb_array_elements(p_budgets) budget
+                where budget.value ->> 'name' = event.budget_name
+                  and budget.value ->> 'kind' = event.budget_kind
+             )
+           )
+      )
+      or exists (
+        select 1 from jsonb_array_elements(p_budgets) budget
+         where not exists (
+           select 1 from deckaura.free_reading_budget_events event
+            where event.claim_id = p_claim_id
+              and event.budget_name = budget.value ->> 'name'
+              and event.budget_kind = budget.value ->> 'kind'
+         )
+      )
+    ) then
+      raise exception 'visitor-less claim_id was already used for different budgets';
+    elsif v_visitor_name is not null and (
+      not exists (
+        select 1 from deckaura.free_reading_budget_events event
+         where event.claim_id = p_claim_id
+           and event.budget_kind = 'visitor'
+           and event.budget_name = v_visitor_name
+      )
+      or exists (
+        select 1 from deckaura.free_reading_budget_events event
+         where event.claim_id = p_claim_id
+           and event.budget_kind = 'visitor'
+           and event.budget_name <> v_visitor_name
+      )
+    ) then
+      raise exception 'claim_id belongs to a different visitor';
+    end if;
   end if;
 
   delete from deckaura.free_reading_budget_events event
@@ -192,6 +218,31 @@ begin
     v_existing_count := 0;
   end if;
 
+  -- During a mixed old/new worker rollout, an old worker can reserve a random
+  -- claim before it has written its KV replay marker. The shared visitor lock
+  -- is the only authority both versions can observe. Refuse a second claim
+  -- while any other live pending claim owns that visitor budget; returning a
+  -- denial also prevents a three-argument old worker from treating the result
+  -- as an idempotent owner and starting a second provider call.
+  if v_visitor_name is not null and v_existing_count = 0 then
+    select min(event.expires_at) into v_next_at
+      from deckaura.free_reading_budget_events event
+     where event.budget_name = v_visitor_name
+       and event.budget_kind = 'visitor'
+       and event.status = 'pending'
+       and event.expires_at > v_now
+       and event.claim_id <> p_claim_id;
+    if v_next_at is not null then
+      return jsonb_build_object(
+        'allowed', false,
+        'claimContract', 'stable-replay-v2',
+        'reason', 'preview_in_progress',
+        'nextAt', floor(extract(epoch from v_next_at) * 1000)::bigint,
+        'budgets', '[]'::jsonb
+      );
+    end if;
+  end if;
+
   for v_budget in select value from jsonb_array_elements(p_budgets)
   loop
     v_name := v_budget ->> 'name';
@@ -244,7 +295,7 @@ begin
 
   if v_denial is not null then
     return v_denial || jsonb_build_object(
-      'claimContract', 'stable-replay-v1',
+      'claimContract', 'stable-replay-v2',
       'budgets', v_results || jsonb_build_array(v_denial)
     );
   end if;
@@ -272,7 +323,7 @@ begin
 
   return jsonb_build_object(
     'allowed', true,
-    'claimContract', 'stable-replay-v1',
+    'claimContract', 'stable-replay-v2',
     'idempotent', v_existing_count > 0,
     'used', coalesce((v_primary ->> 'used')::integer, 0),
     'cap', coalesce((v_primary ->> 'cap')::integer, 0),
@@ -289,16 +340,28 @@ create or replace function deckaura.claim_free_reading_budgets(
   p_reservation_seconds integer default 120
 )
 returns jsonb
-language sql
+language plpgsql
 security invoker
 set search_path = ''
 as $$
-  select deckaura.claim_free_reading_budgets(
+declare
+  v_result jsonb;
+begin
+  v_result := deckaura.claim_free_reading_budgets(
     p_claim_id,
     p_budgets,
     p_reservation_seconds,
-    'stable-replay-v1'
-  )
+    'stable-replay-v2'
+  );
+  -- d01b treats every structured denial for a direct compact reading as an
+  -- invitation to mint its legacy random fallback token. Raising only for the
+  -- overlap result makes the old caller fail closed at its existing limiter
+  -- boundary, while new four-argument workers can return a bounded 503.
+  if v_result ->> 'reason' = 'preview_in_progress' then
+    raise exception 'free preview already in progress';
+  end if;
+  return v_result;
+end;
 $$;
 
 revoke all on function deckaura.claim_free_reading_budgets(uuid, jsonb, integer, text)

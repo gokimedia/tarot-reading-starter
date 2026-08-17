@@ -126,6 +126,14 @@ function jsonKv({ failPreviewPut = false } = {}) {
         values.set(key, value);
       },
       delete: async (key) => values.delete(key),
+      compareAndSetMany: async (entries) => {
+        if (entries.some((entry) => (values.get(entry.key) ?? null) !== entry.expectedValue)) return false;
+        for (const entry of entries) {
+          if (entry.value == null) values.delete(entry.key);
+          else values.set(entry.key, entry.value);
+        }
+        return true;
+      },
     },
   };
 }

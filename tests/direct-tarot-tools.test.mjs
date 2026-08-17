@@ -89,6 +89,14 @@ function jsonKv({ failPreviewPut = false } = {}) {
         values.set(key, value);
       },
       delete: async (key) => values.delete(key),
+      compareAndSetMany: async (entries) => {
+        if (entries.some((entry) => (values.get(entry.key) ?? null) !== entry.expectedValue)) return false;
+        for (const entry of entries) {
+          if (entry.value == null) values.delete(entry.key);
+          else values.set(entry.key, entry.value);
+        }
+        return true;
+      },
     },
   };
 }
@@ -664,11 +672,15 @@ test('locale, Markets, and DOB switches rebind to authority-v2 instead of poison
   assert.notEqual(dob.token, switched.token);
   assert.equal(JSON.parse(kv.values.get(`preview:${dob.token}`)).fields.dob, '1990-01-01');
 
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const currentBeforeStaleReplay = kv.values.get(currentKey);
   const baseReplayResponse = await handleFreeReading(freeRequest(snapshot), env);
   const baseReplay = await baseReplayResponse.json();
-  assert.equal(baseReplayResponse.status, 200, JSON.stringify(baseReplay));
-  assert.equal(baseReplay.replayed, true);
-  assert.equal(baseReplay.token, base.token);
+  assert.equal(baseReplayResponse.status, 503, JSON.stringify(baseReplay));
+  assert.equal(baseReplay.reason, 'preview_in_progress');
+  assert.equal(baseReplay.token, undefined);
+  assert.equal(kv.values.get(currentKey), currentBeforeStaleReplay, 'stale exact replay replaced the newer current authority');
+  assert.equal(JSON.parse(kv.values.get(currentKey)).token, dob.token);
   assert.equal(quota.claims, 3, 'exact v2 replays must not reserve additional quota');
   assert.equal(quota.commits, 3);
   assert.equal(quota.releases, 0);
@@ -742,6 +754,149 @@ test('unsupported-locale quota fallbacks keep English authority but cannot mint 
   assert.equal(session.session.locked, true);
 });
 
+test('an unmarked old-worker visitor owner returns bounded in-progress before direct fallback, provider, or token persistence', async (t) => {
+  const kv = jsonKv();
+  let claimCalls = 0;
+  let settleCalls = 0;
+  let providerCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    providerCalls += 1;
+    throw new Error('provider must not run for a mixed-worker pending owner');
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const env = workerEnv(kv, previewBudget());
+  env.FREE_READING_BUDGETS = {
+    claim: async () => {
+      claimCalls += 1;
+      return { allowed: false, reason: 'preview_in_progress', nextAt: Date.now() + 120_000 };
+    },
+    settle: async () => {
+      settleCalls += 1;
+      return { allowed: true };
+    },
+  };
+
+  const response = await handleFreeReading(freeRequest(yesSnapshot('Justice', {
+    question: 'Should I wait while this exact preview owner finishes?',
+    readingId: 'direct-unmarked-old-worker-owner',
+  })), env);
+  const payload = await response.json();
+
+  assert.equal(response.status, 503, JSON.stringify(payload));
+  assert.equal(payload.reason, 'preview_in_progress');
+  assert.equal(response.headers.get('Retry-After'), '1');
+  assert.equal(payload.token, undefined);
+  assert.equal(claimCalls, 1);
+  assert.equal(settleCalls, 0);
+  assert.equal(providerCalls, 0);
+  assert.equal(kv.writes.length, 0);
+  assert.equal(kv.values.size, 0);
+});
+
+test('concurrent exact quota denials converge on one HMAC token and one durable replay authority', async () => {
+  const kv = jsonKv();
+  const nextAt = Date.now() + 60 * 60 * 1000;
+  let claimCalls = 0;
+  let releaseClaims;
+  const bothClaimsReady = new Promise((resolve) => { releaseClaims = resolve; });
+  const env = workerEnv(kv, previewBudget());
+  env.FREE_READING_BUDGETS = {
+    claim: async () => {
+      claimCalls += 1;
+      if (claimCalls === 2) releaseClaims();
+      await bothClaimsReady;
+      return { allowed: false, reason: 'visitor_rate_limit', cap: 3, used: 3, remaining: 0, nextAt };
+    },
+    settle: async () => {
+      assert.fail('a quota-denied deterministic fallback must not settle personalized allowance');
+    },
+  };
+  const snapshot = yesSnapshot('The Star', {
+    question: 'Should I verify this exact term before accepting the offer?',
+    readingId: 'direct-concurrent-quota-denial',
+  });
+
+  const [leftResponse, rightResponse] = await Promise.all([
+    handleFreeReading(freeRequest(snapshot), env),
+    handleFreeReading(freeRequest(snapshot), env),
+  ]);
+  const [left, right] = await Promise.all([leftResponse.json(), rightResponse.json()]);
+
+  assert.equal(leftResponse.status, 200, JSON.stringify(left));
+  assert.equal(rightResponse.status, 200, JSON.stringify(right));
+  assert.equal(left.quotaFallback, true);
+  assert.equal(right.quotaFallback, true);
+  assert.match(left.token, /^[a-f0-9]{32}$/);
+  assert.equal(right.token, left.token, 'exact concurrent denials minted distinct bearer authorities');
+  assert.equal(claimCalls, 2);
+  assert.deepEqual(
+    [...kv.values.keys()].filter((key) => key.startsWith('preview:') && !key.startsWith('preview-response:')),
+    [`preview:${left.token}`],
+  );
+  const replayKeys = [...kv.values.keys()].filter((key) => key.startsWith('preview-response:'));
+  assert.equal(replayKeys.length, 1);
+  assert.equal(JSON.parse(kv.values.get(replayKeys[0])).token, left.token);
+  for (const key of [...kv.values.keys()].filter((candidate) => /^preview-(?:current|last-approved):/.test(candidate))) {
+    assert.equal(JSON.parse(kv.values.get(key)).token, left.token, key);
+  }
+});
+
+test('legacy deterministic fallback artifacts with missing follow-up flags stay locked across replay, session, and chat', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, previewBudget({ allow: false }));
+  const snapshot = yesSnapshot('Justice', {
+    question: 'Should I verify this exact condition before deciding?',
+    readingId: 'direct-legacy-fallback-missing-flags',
+  });
+  const firstResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const first = await firstResponse.json();
+  assert.equal(firstResponse.status, 200, JSON.stringify(first));
+  assert.equal(first.quotaFallback, true);
+
+  for (const [key, serialized] of [...kv.values.entries()]) {
+    if (!(key.startsWith('preview-response:') || key === `preview:${first.token}` || /^preview-(?:current|last-approved):/.test(key))) continue;
+    const record = JSON.parse(serialized);
+    delete record.followupsAllowed;
+    delete record.maxFollowups;
+    delete record.followupsRemaining;
+    if (record.fields && typeof record.fields === 'object') delete record.fields.followupsAllowed;
+    kv.values.set(key, JSON.stringify(record));
+  }
+
+  const replayResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const replay = await replayResponse.json();
+  assert.equal(replayResponse.status, 200, JSON.stringify(replay));
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.token, first.token);
+  assert.equal(replay.followupsAllowed, false);
+  assert.equal(replay.maxFollowups, 0);
+  assert.equal(replay.followupsRemaining, 0);
+
+  const sessionResponse = await handleFreeSession(freeSessionRequest(), env);
+  const session = await sessionResponse.json();
+  assert.equal(sessionResponse.status, 200, JSON.stringify(session));
+  assert.equal(session.session.followupsAllowed, false);
+  assert.equal(session.session.maxFollowups, 0);
+  assert.equal(session.session.locked, true);
+
+  let usageCalls = 0;
+  env.FREE_ENTITLEMENTS = {
+    getByName: () => ({
+      fetch: async () => {
+        usageCalls += 1;
+        return Response.json({ allowed: true, used: 0, remaining: 3 });
+      },
+    }),
+  };
+  const chatResponse = await handleFreeChat(freeChatRequest(first.token, 'legacy_fallback_missing_flags_chat'), env);
+  const chat = await chatResponse.json();
+  assert.equal(chatResponse.status, 403, JSON.stringify(chat));
+  assert.equal(chat.reason, 'free_chat_not_authorized');
+  assert.equal(chat.maxFollowups, 0);
+  assert.equal(usageCalls, 0);
+});
+
 test('quota fallback pointer partial writes preserve the prior approved session and exact retry repairs the same token', async () => {
   for (const target of ['current', 'last-approved']) {
     const kv = jsonKv();
@@ -775,6 +930,16 @@ test('quota fallback pointer partial writes preserve the prior approved session 
           throw new Error(`simulated quota fallback ${target} pointer failure`);
         }
         return kv.binding.put(key, value, options);
+      },
+      compareAndSetMany: async (entries) => {
+        const targetPrefix = target === 'current' ? 'preview-current:' : 'preview-last-approved:';
+        const failsTarget = entries.some((entry) => {
+          let parsed = null;
+          try { parsed = JSON.parse(entry.value); } catch {}
+          return entry.key.startsWith(targetPrefix) && parsed?.approvalStatus === 'approved' && parsed.token !== initial.token;
+        });
+        if (control.enabled && failsTarget) throw new Error(`simulated quota fallback ${target} pointer failure`);
+        return kv.binding.compareAndSetMany(entries);
       },
     };
 

@@ -10,6 +10,15 @@ type KvPutOptions = {
   expirationTtl?: number;
 };
 
+type KvCompareAndSetEntry = {
+  key: string;
+  expectedValue: string | null;
+  value: string | null;
+  options?: KvPutOptions;
+};
+
+class KvCompareAndSetConflict extends Error {}
+
 type LimiterState = Record<string, unknown>;
 
 type JsonObject = Record<string, unknown>;
@@ -285,6 +294,83 @@ export class PostgresKv {
             expires_at = excluded.expires_at,
             updated_at = clock_timestamp()
     `;
+  }
+
+  async compareAndSetMany(entries: KvCompareAndSetEntry[]) {
+    if (!Array.isArray(entries) || entries.length < 1 || entries.length > 4) {
+      throw new Error('Invalid atomic KV write set');
+    }
+    const normalized = entries.map((entry) => ({
+      key: boundedText(entry?.key, 512, 'KV key'),
+      expectedValue: entry?.expectedValue == null ? null : String(entry.expectedValue),
+      value: entry?.value == null ? null : String(entry.value),
+      options: entry?.options || {},
+    })).sort((left, right) => left.key.localeCompare(right.key));
+    if (new Set(normalized.map((entry) => entry.key)).size !== normalized.length) {
+      throw new Error('Duplicate atomic KV key');
+    }
+
+    const sql = db();
+    try {
+      return await sql.begin(async (transaction) => {
+        for (const entry of normalized) {
+          if (entry.value == null) {
+            if (entry.expectedValue == null) continue;
+            const deleted = await transaction<{ key: string }[]>`
+              delete from deckaura.kv_store
+               where key = ${entry.key}
+                 and value = ${entry.expectedValue}
+              returning key
+            `;
+            if (!deleted.length) throw new KvCompareAndSetConflict();
+            continue;
+          }
+
+          const now = Date.now();
+          const expiresAt = entry.options.expirationTtl
+            ? new Date(now + Math.max(1, entry.options.expirationTtl) * 1000)
+            : entry.options.expiration
+              ? new Date(entry.options.expiration * 1000)
+              : null;
+          if (entry.expectedValue == null) {
+            const replacedExpired = await transaction<{ key: string }[]>`
+              update deckaura.kv_store
+                 set value = ${entry.value},
+                     expires_at = ${expiresAt},
+                     updated_at = clock_timestamp()
+               where key = ${entry.key}
+                 and expires_at is not null
+                 and expires_at <= clock_timestamp()
+              returning key
+            `;
+            if (replacedExpired.length) continue;
+            const inserted = await transaction<{ key: string }[]>`
+              insert into deckaura.kv_store(key, value, expires_at)
+              values (${entry.key}, ${entry.value}, ${expiresAt})
+              on conflict (key) do nothing
+              returning key
+            `;
+            if (!inserted.length) throw new KvCompareAndSetConflict();
+            continue;
+          }
+
+          const updated = await transaction<{ key: string }[]>`
+            update deckaura.kv_store
+               set value = ${entry.value},
+                   expires_at = ${expiresAt},
+                   updated_at = clock_timestamp()
+             where key = ${entry.key}
+               and value = ${entry.expectedValue}
+            returning key
+          `;
+          if (!updated.length) throw new KvCompareAndSetConflict();
+        }
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof KvCompareAndSetConflict) return false;
+      throw error;
+    }
   }
 
   async delete(key: string) {
@@ -673,7 +759,7 @@ function validatedFreeReadingBudgets(input: FreeReadingBudgetInput[]) {
   });
 }
 
-const STABLE_FREE_READING_CLAIM_CONTRACT = 'stable-replay-v1';
+const STABLE_FREE_READING_CLAIM_CONTRACT = 'stable-replay-v2';
 
 export class PostgresFreeReadingBudgets {
   async claim(claimId: string, input: FreeReadingBudgetInput[]) {
