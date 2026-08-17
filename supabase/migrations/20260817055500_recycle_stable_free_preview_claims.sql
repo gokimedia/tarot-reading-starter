@@ -249,22 +249,40 @@ begin
     v_kind := v_budget ->> 'kind';
     v_cap := (v_budget ->> 'cap')::integer;
 
-    select count(*)::integer,
-           min(event.consumed_at + interval '24 hours')
-      into v_used, v_next_at
+    -- Count both states in one statement snapshot. Settlement changes a row
+    -- from pending to consumed; separate statements could observe neither side
+    -- of that transition and admit one request beyond the configured cap.
+    select (count(*) filter (
+             where event.status = 'consumed'
+               and event.consumed_at > v_window_start
+           ))::integer,
+           (count(*) filter (
+             where event.status = 'pending'
+               and event.expires_at > v_now
+               and event.claim_id <> p_claim_id
+           ))::integer,
+           least(
+             min(event.consumed_at + interval '24 hours') filter (
+               where event.status = 'consumed'
+                 and event.consumed_at > v_window_start
+             ),
+             min(event.expires_at) filter (
+               where event.status = 'pending'
+                 and event.expires_at > v_now
+                 and event.claim_id <> p_claim_id
+             )
+           )
+      into v_used, v_pending, v_next_at
       from deckaura.free_reading_budget_events event
      where event.budget_name = v_name
-       and event.status = 'consumed'
-       and event.consumed_at > v_window_start;
-
-    select count(*)::integer,
-           least(v_next_at, min(event.expires_at))
-      into v_pending, v_next_at
-      from deckaura.free_reading_budget_events event
-     where event.budget_name = v_name
-       and event.status = 'pending'
-       and event.expires_at > v_now
-       and event.claim_id <> p_claim_id;
+       and (
+         (event.status = 'consumed' and event.consumed_at > v_window_start)
+         or (
+           event.status = 'pending'
+           and event.expires_at > v_now
+           and event.claim_id <> p_claim_id
+         )
+       );
 
     v_next_at := coalesce(v_next_at, v_now + interval '24 hours');
     v_result := jsonb_build_object(

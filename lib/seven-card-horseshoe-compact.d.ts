@@ -44,6 +44,7 @@ export function sevenCardHorseshoeCheckoutSnapshotFromPreview(preview: unknown, 
   reason: string;
   createdAt?: number;
   snapshot: Record<string, unknown> | null;
+  localeContext?: Readonly<{ locale: string; country: string; currency: string; market: string }>;
 }>;
 export function sevenCardHorseshoeWordCount(value: unknown): number;
 export function deterministicSevenCardHorseshoeCompactInsight(contract?: Record<string, unknown>): string;

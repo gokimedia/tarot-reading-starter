@@ -73,19 +73,25 @@ test('queue closes an authoritative duplicate before legacy replay and preserves
   const deliveredGate = source.indexOf('await hasPreviouslyDeliveredOrderAuthority(row)', claimStart);
   const skipStart = source.indexOf('if (alreadyDelivered) {', deliveredGate);
   const ordinaryPath = source.indexOf('} else {', skipStart);
-  const replay = source.indexOf('const replay = await replayShopifyWebhook(row, env)', ordinaryPath);
-  const enqueue = source.indexOf('await enqueueReadingFromWebhook(row, env)', replay);
-  const completion = source.indexOf('await deliveryRetry.completeShopifyWebhook', enqueue);
+  const ordinaryDispatch = source.indexOf('await processUndeliveredPaidOrder(row, env)', ordinaryPath);
+  const processor = source.indexOf('export async function processUndeliveredPaidOrder');
+  const authorityGate = source.indexOf('await verifiedOrReceiptedPaidReadingAuthorities(', processor);
+  const replay = source.indexOf('const replay = await (dependencies.replay || replayShopifyWebhook)', authorityGate);
+  const enqueue = source.indexOf('dependencies.enqueue', replay);
+  const completion = source.indexOf('await deliveryRetry.completeShopifyWebhook', ordinaryDispatch);
 
   assert.ok(claimStart >= 0 && paymentGate > claimStart, 'captured payment remains the first authority gate');
   assert.ok(deliveredGate > paymentGate && skipStart > deliveredGate, 'delivered evidence is checked only after payment');
-  assert.ok(ordinaryPath > skipStart && replay > ordinaryPath && enqueue > replay,
-    'undelivered orders continue through legacy and signed-intent validation');
-  assert.ok(completion > enqueue, 'both branches converge only on idempotent webhook completion');
+  assert.ok(ordinaryPath > skipStart && ordinaryDispatch > ordinaryPath,
+    'undelivered orders dispatch only through the authority-gated processor');
+  assert.ok(processor >= 0 && authorityGate > processor && replay > authorityGate && enqueue > replay,
+    'undelivered orders require server authority before legacy replay');
+  assert.ok(completion > ordinaryDispatch, 'both branches converge only on idempotent webhook completion');
 
   const deliveredBranch = source.slice(skipStart, ordinaryPath);
   assert.doesNotMatch(deliveredBranch, /replayShopifyWebhook|validateMembershipActivation|enqueueReadingFromWebhook|enqueueDelivery|enqueuePostPurchase|deliverDueReadings/);
   assert.match(source, /const intent = await verifiedReadingIntent\(items, payload\)/);
+  assert.match(source, /throw new QueueOperationError\('PAID_READING_AUTHORITY_REQUIRED'\)/);
   assert.match(source, /throw new QueueOperationError\('SHOPIFY_PACKAGE_VARIANT_INVALID'\)/);
   assert.match(source, /throw new QueueOperationError\('SHOPIFY_ORDER_ID_MISMATCH'\)/);
 });

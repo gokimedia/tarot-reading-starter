@@ -207,6 +207,7 @@ test('direct route allows only bounded preview transport failures, fails policy 
   const logs = [];
   const kvValues = new Map();
   let quote = {};
+  let injectSafetyBeforeIntentLock = false;
   t.after(() => {
     globalThis.fetch = originalFetch;
     globalThis.__deckauraSql = originalSql;
@@ -225,6 +226,17 @@ test('direct route allows only bounded preview transport failures, fails policy 
   const sql = async (strings, ...values) => {
     const query = strings.join(' ');
     if (query.includes('from deckaura.kv_store') && query.includes('select value')) {
+      if (injectSafetyBeforeIntentLock
+        && query.includes('for update')
+        && String(values[0]).startsWith('preview-current:')) {
+        injectSafetyBeforeIntentLock = false;
+        const blocked = JSON.parse(kvValues.get(String(values[0])));
+        blocked.safety = true;
+        blocked.offerBlocked = true;
+        blocked.approvalStatus = 'blocked';
+        blocked.fields = { ...blocked.fields, safetyAction: 'danger' };
+        kvValues.set(String(values[0]), JSON.stringify(blocked));
+      }
       const value = kvValues.get(String(values[0]));
       return value == null ? [] : [{ value }];
     }
@@ -245,6 +257,7 @@ test('direct route allows only bounded preview transport failures, fails policy 
     throw new Error(`Unexpected SQL: ${query.slice(0, 100)}`);
   };
   sql.json = (value) => ({ __testJson: value });
+  sql.begin = async (callback) => callback(sql);
   globalThis.__deckauraSql = sql;
   globalThis.fetch = async (_url, init = {}) => {
     const body = JSON.parse(String(init.body));
@@ -296,10 +309,66 @@ test('direct route allows only bounded preview transport failures, fails policy 
   assert.equal(normalResponse.status, 201, JSON.stringify(normalPayload));
   assert.equal(inserts.at(-1).snapshot.transportFallback, false);
   assert.equal(inserts.at(-1).snapshot.localeContext.country, 'US');
+  const safeSessionBeforeRace = kvValues.get(visitorAuthority.sessionKey);
+  const insertsBeforeRace = inserts.length;
+  const fetchesBeforeRace = fetches.length;
+  injectSafetyBeforeIntentLock = true;
+  const racedResponse = await POST(request(routeBody('yes', previewSnapshot, {
+    previewToken: token,
+    visitorId: VISITOR_ID,
+  })));
+  const racedPayload = await racedResponse.json();
+  assert.equal(racedResponse.status, 422, JSON.stringify(racedPayload));
+  assert.equal(racedPayload.code, 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID');
+  assert.equal(injectSafetyBeforeIntentLock, false, 'the transaction barrier did not run');
+  assert.equal(inserts.length, insertsBeforeRace, 'a concurrent safety winner still persisted a signed direct intent');
+  assert.equal(fetches.length, fetchesBeforeRace + 1,
+    'the race fixture did not cross the post-read, post-quote issuance boundary');
+  kvValues.set(visitorAuthority.sessionKey, safeSessionBeforeRace);
   const localeMismatch = await POST(request(routeBody('yes', previewSnapshot, { previewToken: token, visitorId: VISITOR_ID, country: 'DE' })));
   const localeMismatchPayload = await localeMismatch.json();
   assert.equal(localeMismatch.status, 422);
   assert.equal(localeMismatchPayload.code, 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID');
+
+  const safePreviewBytes = kvValues.get(`preview:${token}`);
+  for (const [label, mutate] of [
+    ['snapshot safety', (value) => { value.safety = true; }],
+    ['snapshot offer block', (value) => { value.offerBlocked = true; }],
+    ['snapshot field safety', (value) => { value.fields.safetyAction = 'danger'; }],
+  ]) {
+    const blockedPreview = JSON.parse(safePreviewBytes);
+    mutate(blockedPreview);
+    kvValues.set(`preview:${token}`, JSON.stringify(blockedPreview));
+    const beforeFetches = fetches.length;
+    const beforeInserts = inserts.length;
+    const blockedResponse = await POST(request(routeBody('yes', previewSnapshot, {
+      previewToken: token,
+      visitorId: VISITOR_ID,
+    })));
+    const blockedPayload = await blockedResponse.json();
+    assert.equal(blockedResponse.status, 422, `${label}: ${JSON.stringify(blockedPayload)}`);
+    assert.equal(blockedPayload.code, 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID', label);
+    assert.equal(fetches.length, beforeFetches, `${label} must fail before Shopify`);
+    assert.equal(inserts.length, beforeInserts, `${label} must not persist an intent`);
+  }
+  kvValues.set(`preview:${token}`, safePreviewBytes);
+
+  const safeSessionBytes = kvValues.get(visitorAuthority.sessionKey);
+  const blockedSession = JSON.parse(safeSessionBytes);
+  blockedSession.fields.safetyAction = 'medical';
+  kvValues.set(visitorAuthority.sessionKey, JSON.stringify(blockedSession));
+  const beforeSessionSafetyFetches = fetches.length;
+  const beforeSessionSafetyInserts = inserts.length;
+  const blockedSessionResponse = await POST(request(routeBody('yes', previewSnapshot, {
+    previewToken: token,
+    visitorId: VISITOR_ID,
+  })));
+  const blockedSessionPayload = await blockedSessionResponse.json();
+  assert.equal(blockedSessionResponse.status, 422, JSON.stringify(blockedSessionPayload));
+  assert.equal(blockedSessionPayload.code, 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID');
+  assert.equal(fetches.length, beforeSessionSafetyFetches, 'session safety must fail before Shopify');
+  assert.equal(inserts.length, beforeSessionSafetyInserts, 'session safety must not persist an intent');
+  kvValues.set(visitorAuthority.sessionKey, safeSessionBytes);
 
   for (const [label, body, code] of [
     ['normal missing token', routeBody('yes', yesSnapshot()), 'DIRECT_TAROT_PREVIEW_TOKEN_INVALID'],

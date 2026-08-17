@@ -23,6 +23,7 @@ import {
 } from '@/lib/personal-direct-reading.mjs';
 import {
   SEVEN_CARD_HORSESHOE_PAGE,
+  SEVEN_CARD_HORSESHOE_VISITOR_TTL_MS,
   sevenCardHorseshoeCheckoutSnapshotFromPreview,
   sevenCardHorseshoeCheckoutQuestionPolicy,
   sevenCardHorseshoeVisitorAuthority,
@@ -33,6 +34,7 @@ import {
   CAREER_DIRECT_PAGE,
   LOVE_DIRECT_PAGE,
   YES_NO_DIRECT_PAGE,
+  DIRECT_TAROT_VISITOR_TTL_MS,
   canonicalizeDirectTarotSnapshot,
   directTarotCheckoutSnapshotFromPreview,
   directTarotQuestionPolicy,
@@ -129,6 +131,14 @@ const DIRECT_TAROT_CHECKOUT_INTENT_TTL_MS = 24 * 60 * 60 * 1000;
 const DIRECT_TAROT_DISPLAYED_QUOTE_INVALID = 'DIRECT_TAROT_DISPLAYED_QUOTE_INVALID';
 const DIRECT_TAROT_QUOTE_CHANGED = 'DIRECT_TAROT_QUOTE_CHANGED';
 const DIRECT_TAROT_TRANSPORT_FAILURES = new Set(['timeout', 'http_408', 'http_429', 'http_5xx']);
+
+type CheckoutIntentSourceGuard = {
+  key: string;
+  expectedValue: string;
+  absoluteExpiresAt: number;
+};
+
+class CheckoutIntentSourceChanged extends Error {}
 
 const allowedOrigins = new Set([
   'https://deckaura.com',
@@ -239,6 +249,25 @@ function record(value: unknown) {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function storedBytes(value: unknown) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
+}
+
+function storedRecord(value: unknown) {
+  if (typeof value !== 'string') return record(value);
+  try {
+    return record(JSON.parse(value));
+  } catch {
+    return {};
+  }
 }
 
 function safeYesNoSnapshot(value: unknown) {
@@ -406,6 +435,7 @@ export async function POST(request: Request) {
     country: string;
   } | null = null;
   let snapshot: Record<string, unknown>;
+  let sourceGuards: CheckoutIntentSourceGuard[] = [];
 
   if (numerologyCompatibility) {
     if (funnelVersion !== NUMEROLOGY_COMPATIBILITY_FUNNEL_VERSION) {
@@ -721,13 +751,13 @@ export async function POST(request: Request) {
             variantId: expectedVariantValue,
           });
         }
-        let visitorPreview: unknown;
-        let currentVisitorSession: unknown;
+        let visitorPreviewValue: unknown;
+        let currentVisitorSessionValue: unknown;
         try {
           const cache = workerEnvironment().READINGS_CACHE;
-          [visitorPreview, currentVisitorSession] = await Promise.all([
-            cache.get(`preview:${previewToken}`, 'json'),
-            cache.get(visitorAuthority.sessionKey, 'json'),
+          [visitorPreviewValue, currentVisitorSessionValue] = await Promise.all([
+            cache.get(`preview:${previewToken}`),
+            cache.get(visitorAuthority.sessionKey),
           ]);
         } catch {
           return sharedCheckoutRejection(503, 'SHARED_SEVEN_CARD_PREVIEW_LOOKUP_FAILED', origin, {
@@ -737,21 +767,47 @@ export async function POST(request: Request) {
             variantId: expectedVariantValue,
           });
         }
+        const visitorPreviewBytes = storedBytes(visitorPreviewValue);
+        const currentVisitorSessionBytes = storedBytes(currentVisitorSessionValue);
+        const visitorPreview = storedRecord(visitorPreviewValue);
+        const currentVisitorSession = storedRecord(currentVisitorSessionValue);
         const authority = sevenCardHorseshoeCheckoutSnapshotFromPreview(visitorPreview);
         const currentSession = record(currentVisitorSession);
         const currentSessionFields = record(currentSession.fields);
         const currentSessionExpiresAt = Number(currentSession.expiresAt);
+        const authorityLocale = record(authority.localeContext);
+        const authorityLocaleValue = clean(authorityLocale.locale, 24);
+        const authorityCountry = clean(authorityLocale.country, 2).toUpperCase();
+        const authorityCurrency = clean(authorityLocale.currency, 3).toUpperCase();
+        const authorityMarket = clean(authorityLocale.market, 64).toLowerCase();
+        const submittedLocale = clean(body.locale || body.language || body.lang, 24);
+        const submittedCountry = clean(body.country, 2).toUpperCase();
+        const submittedCurrency = clean(body.currency, 3).toUpperCase();
+        const submittedMarket = clean(body.market, 64).toLowerCase();
         if (!authority.ok
           || !authority.snapshot
-          || clean(record(visitorPreview).ownerVisitorHash, 96) !== visitorAuthority.visitorName
+          || !visitorPreviewBytes
+          || !currentVisitorSessionBytes
+          || clean(visitorPreview.ownerVisitorHash, 96) !== visitorAuthority.visitorName
+          || visitorPreview.offerBlocked === true
+          || visitorPreview.safety === true
+          || Boolean(clean(record(visitorPreview.fields).safetyAction, 40))
           || clean(currentSession.token, 64).toLowerCase() !== previewToken
           || currentSession.approvalStatus !== 'approved'
           || currentSession.offerBlocked === true
           || currentSession.safety === true
+          || Boolean(clean(currentSessionFields.safetyAction, 40))
           || !Number.isFinite(currentSessionExpiresAt)
           || currentSessionExpiresAt <= Date.now()
           || clean(currentSessionFields.presentationVariant, 80) !== clean(authority.snapshot.presentationVariant, 80)
-          || clean(currentSessionFields.readingId, 80) !== clean(authority.snapshot.readingId, 80)) {
+          || clean(currentSessionFields.readingId, 80) !== clean(authority.snapshot.readingId, 80)
+          || !authorityLocaleValue
+          || !/^[A-Z]{2}$/.test(authorityCountry)
+          || !/^[A-Z]{3}$/.test(authorityCurrency)
+          || (submittedLocale && customerLocaleContext({ locale: submittedLocale }).locale !== customerLocaleContext({ locale: authorityLocaleValue }).locale)
+          || (submittedCountry && submittedCountry !== authorityCountry)
+          || (submittedCurrency && submittedCurrency !== authorityCurrency)
+          || (submittedMarket && submittedMarket !== authorityMarket)) {
           return sharedCheckoutRejection(422, 'SHARED_SEVEN_CARD_PREVIEW_EXPIRED_OR_INVALID', origin, {
             page: pageValue,
             toolType,
@@ -759,7 +815,25 @@ export async function POST(request: Request) {
             variantId: expectedVariantValue,
           });
         }
+        sourceGuards = [
+          {
+            key: `preview:${previewToken}`,
+            expectedValue: visitorPreviewBytes,
+            absoluteExpiresAt: Number(authority.createdAt) + SEVEN_CARD_HORSESHOE_VISITOR_TTL_MS,
+          },
+          {
+            key: visitorAuthority.sessionKey,
+            expectedValue: currentVisitorSessionBytes,
+            absoluteExpiresAt: currentSessionExpiresAt,
+          },
+        ];
         sharedSnapshot = authority.snapshot;
+        intentLocaleContext = customerLocaleContext({
+          locale: authorityLocaleValue,
+          country: authorityCountry,
+          currency: authorityCurrency,
+          market: authorityMarket,
+        }, request.headers);
       }
       sharedSnapshot = { ...sharedSnapshot, transportFallback };
     }
@@ -869,13 +943,13 @@ export async function POST(request: Request) {
               publicCode: 'DIRECT_TAROT_VISITOR_AUTHORITY_INVALID',
             });
           }
-          let visitorPreview: unknown;
-          let currentVisitorSession: unknown;
+          let visitorPreviewValue: unknown;
+          let currentVisitorSessionValue: unknown;
           try {
             const cache = workerEnvironment().READINGS_CACHE;
-            [visitorPreview, currentVisitorSession] = await Promise.all([
-              cache.get(`preview:${previewToken}`, 'json'),
-              cache.get(visitorAuthority.sessionKey, 'json'),
+            [visitorPreviewValue, currentVisitorSessionValue] = await Promise.all([
+              cache.get(`preview:${previewToken}`),
+              cache.get(visitorAuthority.sessionKey),
             ]);
           } catch {
             return sharedCheckoutRejection(503, 'DIRECT_TAROT_PREVIEW_LOOKUP_FAILED', origin, {
@@ -886,6 +960,10 @@ export async function POST(request: Request) {
               publicCode: 'DIRECT_TAROT_PREVIEW_LOOKUP_FAILED',
             });
           }
+          const visitorPreviewBytes = storedBytes(visitorPreviewValue);
+          const currentVisitorSessionBytes = storedBytes(currentVisitorSessionValue);
+          const visitorPreview = storedRecord(visitorPreviewValue);
+          const currentVisitorSession = storedRecord(currentVisitorSessionValue);
           const authority = directTarotCheckoutSnapshotFromPreview(visitorPreview);
           const currentSession = record(currentVisitorSession);
           const currentSessionFields = record(currentSession.fields);
@@ -901,11 +979,17 @@ export async function POST(request: Request) {
           const submittedMarket = clean(body.market, 64).toLowerCase();
           if (!authority.ok
             || !authority.snapshot
-            || clean(record(visitorPreview).ownerVisitorHash, 96) !== visitorAuthority.visitorName
+            || !visitorPreviewBytes
+            || !currentVisitorSessionBytes
+            || clean(visitorPreview.ownerVisitorHash, 96) !== visitorAuthority.visitorName
+            || visitorPreview.offerBlocked === true
+            || visitorPreview.safety === true
+            || Boolean(clean(record(visitorPreview.fields).safetyAction, 40))
             || clean(currentSession.token, 64).toLowerCase() !== previewToken
             || currentSession.approvalStatus !== 'approved'
             || currentSession.offerBlocked === true
             || currentSession.safety === true
+            || Boolean(clean(currentSessionFields.safetyAction, 40))
             || !Number.isFinite(currentSessionExpiresAt)
             || currentSessionExpiresAt <= Date.now()
             || clean(currentSessionFields.presentationVariant, 80) !== clean(authority.snapshot.presentationVariant, 80)
@@ -927,6 +1011,18 @@ export async function POST(request: Request) {
               publicCode: 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID',
             });
           }
+          sourceGuards = [
+            {
+              key: `preview:${previewToken}`,
+              expectedValue: visitorPreviewBytes,
+              absoluteExpiresAt: Number(authority.createdAt) + DIRECT_TAROT_VISITOR_TTL_MS,
+            },
+            {
+              key: visitorAuthority.sessionKey,
+              expectedValue: currentVisitorSessionBytes,
+              absoluteExpiresAt: currentSessionExpiresAt,
+            },
+          ];
           sharedSnapshot = authority.snapshot;
           intentLocaleContext = customerLocaleContext({
             locale: authorityLocaleValue,
@@ -1352,21 +1448,78 @@ export async function POST(request: Request) {
     snapshotHash,
   };
   const signature = signCheckoutIntent(canonical, secret);
+  const insertIntent = async (executor: any) => executor`
+    insert into deckaura.checkout_intents(
+      id, expires_at, page, funnel_version, reading_id, reading_type,
+      category, deck, question, answer, card_name, card_id, tier,
+      shopify_variant_id, sku, price, snapshot, signature, intent_kind, snapshot_hash
+    ) values (
+      ${id}, ${expiresAt}, ${page}, ${funnelVersion}, ${readingId}, ${readingType},
+      ${category}, ${deck}, ${question}, ${answer}, ${cardName}, ${cardId}, ${tier},
+      ${product.variantId}, ${product.sku}, ${product.price}, ${executor.json(snapshot as never)}, ${signature},
+      ${intentKind}, ${snapshotHash}
+    )
+  `;
   try {
     const sql = db();
-    await sql`
-      insert into deckaura.checkout_intents(
-        id, expires_at, page, funnel_version, reading_id, reading_type,
-        category, deck, question, answer, card_name, card_id, tier,
-        shopify_variant_id, sku, price, snapshot, signature, intent_kind, snapshot_hash
-      ) values (
-        ${id}, ${expiresAt}, ${page}, ${funnelVersion}, ${readingId}, ${readingType},
-        ${category}, ${deck}, ${question}, ${answer}, ${cardName}, ${cardId}, ${tier},
-        ${product.variantId}, ${product.sku}, ${product.price}, ${sql.json(snapshot as never)}, ${signature},
-        ${intentKind}, ${snapshotHash}
-      )
-    `;
-  } catch {
+    if (sourceGuards.length) {
+      if (new Set(sourceGuards.map((guard) => guard.key)).size !== sourceGuards.length) {
+        throw new CheckoutIntentSourceChanged();
+      }
+      await sql.begin(async (transaction) => {
+        // The row locks and signed intent insert share one PostgreSQL
+        // transaction. If a safety/chat CAS wins first, its changed bytes are
+        // observed and no intent is inserted. If these locks win first, the
+        // intent issuance is ordered before that later safety mutation.
+        for (const guard of [...sourceGuards].sort((left, right) => left.key.localeCompare(right.key))) {
+          if (!guard.expectedValue || !Number.isFinite(guard.absoluteExpiresAt)) {
+            throw new CheckoutIntentSourceChanged();
+          }
+          const locked = await transaction`
+            select value
+              from deckaura.kv_store
+             where key = ${guard.key}
+               and value = ${guard.expectedValue}
+               and (expires_at is null or expires_at > clock_timestamp())
+               and clock_timestamp() < ${new Date(guard.absoluteExpiresAt)}
+             for update
+          ` as Array<{ value: string }>;
+          if (locked.length !== 1 || locked[0].value !== guard.expectedValue) {
+            throw new CheckoutIntentSourceChanged();
+          }
+          // A row-lock wait can cross an absolute deadline without changing
+          // the stored bytes. Re-evaluate both the physical and contract
+          // expiry on PostgreSQL's clock after this transaction owns the row.
+          const fresh = await transaction`
+            select value
+              from deckaura.kv_store
+             where key = ${guard.key}
+               and value = ${guard.expectedValue}
+               and (expires_at is null or expires_at > clock_timestamp())
+               and clock_timestamp() < ${new Date(guard.absoluteExpiresAt)}
+          ` as Array<{ value: string }>;
+          if (fresh.length !== 1 || fresh[0].value !== guard.expectedValue) {
+            throw new CheckoutIntentSourceChanged();
+          }
+        }
+        await insertIntent(transaction);
+      });
+    } else {
+      await insertIntent(sql);
+    }
+  } catch (error) {
+    if (error instanceof CheckoutIntentSourceChanged) {
+      const publicCode = page === SEVEN_CARD_HORSESHOE_PAGE
+        ? 'SHARED_SEVEN_CARD_PREVIEW_EXPIRED_OR_INVALID'
+        : 'DIRECT_TAROT_PREVIEW_EXPIRED_OR_INVALID';
+      return sharedCheckoutRejection(422, publicCode, origin, {
+        page,
+        toolType: clean(body.toolType, 80),
+        tier: storefrontTier,
+        variantId: product.variantId,
+        publicCode,
+      });
+    }
     console.error(JSON.stringify({
       event: 'checkout_intent_persist_failed',
       status: 503,

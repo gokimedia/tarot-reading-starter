@@ -5,11 +5,15 @@ import test from 'node:test';
 import {
   conciseDeterministicFreeTeaser,
   deterministicPrivateStateReservedRecovery,
+  freePreviewComplexity,
   freePreviewPayload,
   freeReservedThreeCardVerdictLeak,
   freeReservedThreeCardYesNoMeaning,
   freeTeaserAudit,
   freeTeaserAssignsUnsupportedStateToName,
+  handleCheckoutContext,
+  handleCheckoutSnapshot,
+  handleFreeChat,
   handleFreeReading,
   handleFreeSession,
   hydratePreviewSnapshot,
@@ -226,6 +230,58 @@ function approvedPointerFailureCache(kv, control) {
       return kv.binding.compareAndSetMany(entries);
     },
   };
+}
+
+function chatRequest(visitorId, token, requestId, message, headers = REQUEST_HEADERS) {
+  return new Request('https://reading.deckaura.com/free-chat', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ visitorId, token, requestId, message }),
+  });
+}
+
+function checkoutContextRequest(visitorId, token, overrides = {}, headers = REQUEST_HEADERS) {
+  return new Request('https://reading.deckaura.com/checkout-context', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      visitorId,
+      previewToken: token,
+      tier: 'standard',
+      variantId: '53782500606225',
+      paidQuestion: 'What exact pattern should the full reading clarify?',
+      clarifiers: [],
+      ...overrides,
+    }),
+  });
+}
+
+function checkoutSnapshotRequest(visitorId, overrides = {}, headers = REQUEST_HEADERS) {
+  return new Request('https://reading.deckaura.com/checkout-snapshot', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      visitorId,
+      readingId: 'career_checkout_snapshot_reading',
+      question: 'What should I understand before accepting this exact career opportunity?',
+      requestedLocale: 'en-US',
+      locale: 'en-US',
+      country: 'US',
+      currency: 'USD',
+      market: 'us',
+      type: 'Career Tarot',
+      tool: '/pages/career-tarot-reading',
+      spread: 'Three Card Career Spread',
+      context: 'Current Position: The Fool Upright; Deciding Factor: The Magician Reversed; Best Next Step: The World Upright.',
+      signals: 'Current Position: The Fool Upright; Deciding Factor: The Magician Reversed; Best Next Step: The World Upright',
+      cards: 'The Fool, The Magician, The World',
+      scope: '3-card Career Tarot draw for one focused decision',
+      confidence: 'Symbolic tarot direction, not a factual prediction',
+      snapshotVersion: 'reading-snapshot-v2',
+      funnelVersion: 'clarifier-checkout-2026-08-v40',
+      ...overrides,
+    }),
+  });
 }
 
 test('reserved runtime keeps exact compound questions opaque across no-whitespace clause boundaries', async (t) => {
@@ -484,6 +540,65 @@ test('stable-claim SQL locks claim plus old-new budget union, recycles mobile vi
   assert.match(dreamRouteSource, /freeReadingBudgets\.claim\(requestId, \[\s*\{ name: `network:\$\{networkHash\}`, kind: 'network', cap: 12 \},\s*\{ name: 'global:dream_ai_v1', kind: 'global', cap: 500 \},\s*\]\)/, 'Dream must remain a legitimate visitor-less two-budget caller through old and new overloads');
   assert.match(migration, /security invoker[\s\S]+set search_path = ''/);
   assert.match(migration, /revoke all on function deckaura\.claim_free_reading_budgets\(uuid, jsonb, integer, text\)[\s\S]+from public, anon, authenticated/);
+});
+
+test('budget cap accounting reads consumed and pending rows from one aggregate SQL snapshot', async () => {
+  const migration = await readFile(new URL('../supabase/migrations/20260817055500_recycle_stable_free_preview_claims.sql', import.meta.url), 'utf8');
+  const loopAt = migration.indexOf('for v_budget in select value from jsonb_array_elements(p_budgets)');
+  const accountingAt = migration.indexOf("v_cap := (v_budget ->> 'cap')::integer;", loopAt);
+  const nextAtAt = migration.indexOf('v_next_at := coalesce', loopAt);
+  assert.ok(loopAt >= 0 && accountingAt > loopAt && nextAtAt > accountingAt, 'budget cap-accounting loop not found');
+  const accounting = migration.slice(accountingAt, nextAtAt);
+  assert.equal((accounting.match(/\bselect\b/gi) || []).length, 1, 'consumed and pending counts must share one PostgreSQL statement snapshot');
+  assert.equal((accounting.match(/count\(\*\) filter\s*\(\s*where/gi) || []).length, 2, 'one aggregate must expose both consumed and pending counts');
+  assert.equal((accounting.match(/min\([^)]*\) filter\s*\(\s*where/gi) || []).length, 2, 'one aggregate must expose both renewal boundaries');
+  assert.match(accounting, /event\.status = 'consumed'[\s\S]+event\.consumed_at > v_window_start/);
+  assert.match(accounting, /event\.status = 'pending'[\s\S]+event\.expires_at > v_now[\s\S]+event\.claim_id <> p_claim_id/);
+  assert.match(accounting, /least\([\s\S]+min\(event\.consumed_at \+ interval '24 hours'\) filter[\s\S]+min\(event\.expires_at\) filter[\s\S]+into v_used, v_pending, v_next_at/);
+  assert.equal((accounting.match(/from deckaura\.free_reading_budget_events event/gi) || []).length, 1, 'cap accounting must scan the budget event relation once');
+});
+
+test('single-snapshot cap model cannot lose a concurrent pending-to-consumed transition', () => {
+  const now = Date.parse('2026-08-17T08:00:00.000Z');
+  const windowStart = now - 24 * 60 * 60 * 1000;
+  const claimId = 'claim-new';
+  const pendingBefore = Object.freeze({
+    claimId: 'claim-existing',
+    status: 'pending',
+    expiresAt: now + 90_000,
+    consumedAt: 0,
+  });
+  const consumedAfter = Object.freeze({
+    ...pendingBefore,
+    status: 'consumed',
+    consumedAt: now - 1_000,
+  });
+  const aggregateSnapshot = (rows) => {
+    const consumed = rows.filter((row) => row.status === 'consumed' && row.consumedAt > windowStart);
+    const pending = rows.filter((row) => row.status === 'pending' && row.expiresAt > now && row.claimId !== claimId);
+    const nextAt = [
+      ...consumed.map((row) => row.consumedAt + 24 * 60 * 60 * 1000),
+      ...pending.map((row) => row.expiresAt),
+    ].sort((left, right) => left - right)[0] ?? now + 24 * 60 * 60 * 1000;
+    return { used: consumed.length, pending: pending.length, nextAt };
+  };
+
+  const splitStatementMiss = aggregateSnapshot([pendingBefore]).used
+    + aggregateSnapshot([consumedAfter]).pending;
+  assert.equal(splitStatementMiss, 0, 'fixture must reproduce the two-statement transition gap');
+  assert.equal(aggregateSnapshot([pendingBefore]).used + aggregateSnapshot([pendingBefore]).pending, 1);
+  assert.equal(aggregateSnapshot([consumedAfter]).used + aggregateSnapshot([consumedAfter]).pending, 1);
+  assert.equal(aggregateSnapshot([pendingBefore]).nextAt, pendingBefore.expiresAt);
+  assert.equal(aggregateSnapshot([consumedAfter]).nextAt, consumedAfter.consumedAt + 24 * 60 * 60 * 1000);
+
+  const ownPending = { ...pendingBefore, claimId };
+  const expiredPending = { ...pendingBefore, claimId: 'claim-expired', expiresAt: now - 1 };
+  const outsideWindow = { ...consumedAfter, claimId: 'claim-old', consumedAt: windowStart };
+  assert.deepEqual(aggregateSnapshot([ownPending, expiredPending, outsideWindow]), {
+    used: 0,
+    pending: 0,
+    nextAt: now + 24 * 60 * 60 * 1000,
+  }, 'own, expired, and out-of-window rows must preserve existing exclusion semantics');
 });
 
 test('a failed committed marker remains recoverable from its durable snapshot without another quota consumption', async () => {
@@ -1814,6 +1929,166 @@ test('v50-v56 legacy current sessions migrate once into a verified last-approved
   }
 });
 
+test('combined high-complexity legacy PPF private-state question commits one durable server-owned recovery', async (t) => {
+  const question = 'What does Alex feel about me while they remain distant and why do I not understand whether their silence means they care about me in this situation right now?';
+  const visitorId = 'combined_private_ppf_visitor_20260817';
+  const body = readingBody(question, 'combined_private_ppf_reading_20260817', visitorId);
+  const complexity = freePreviewComplexity(body);
+  assert.equal(question.length, 158);
+  assert.deepEqual(complexity, {
+    score: 7,
+    reasons: ['private_state', 'ambiguous_reference', 'negation', 'long_question'],
+    useThinking: true,
+    band: 'high',
+  });
+
+  const dedicated = deterministicPrivateStateReservedRecovery(body, 'en');
+  const dedicatedAudit = freeTeaserAudit(dedicated, body, 180);
+  assert.equal(dedicatedAudit.ok, true, `${dedicatedAudit.reason}: ${dedicated}`);
+  assert.equal(dedicatedAudit.mentionedEvidence, 3);
+  assert.equal(freeTeaserAssignsUnsupportedStateToName(dedicated, body), false);
+
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 1 });
+  const env = workerEnv(kv, budget);
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    throw new Error('the dedicated private-state reserved path must intercept before provider output');
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await createPreview(env, body);
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.servedSource, 'deterministic_reserved_fast_path');
+  assert.equal(result.payload.servedModel, 'deterministic');
+  assert.equal(result.payload.question, question);
+  assert.equal(modelCalls, 0);
+  assert.equal(budget.claims, 1);
+  assert.equal(budget.commits, 1);
+  assert.equal(budget.releases, 0);
+  assert.match(result.payload.token, /^[a-f0-9]{32}$/i);
+
+  const visible = result.payload.teaser.replace(/<[^>]+>/g, ' ').replace(/&(?:#39|quot);/g, "'").replace(/\s+/g, ' ').trim();
+  assert.match(visible, /cannot know, verify, or prove another person's private thoughts, feelings, intentions, or future actions/i);
+  assert.match(visible, /\bAlex\b/);
+  assert.match(visible, /\bnot\b/i, 'the safe recovery lost the question\'s negated premise');
+  assert.doesNotMatch(visible, /Alex\s+(?:really\s+)?(?:feels?|thinks?|wants?|cares?|loves?|misses?|is\s+(?:distant|confused|interested))/i);
+  assert.match(visible, /Two of Wands upright in the Past position/i);
+  assert.match(visible, /Nine of Wands upright in the Present position/i);
+  assert.match(visible, /Future position holds Eight of Wands reversed, but its interpretation stays sealed/i);
+  assert.equal(freeReservedThreeCardVerdictLeak(visible), false, 'an independent verdict leaked outside the lock promise');
+  const runtimeAudit = freeTeaserAudit(visible, body, 180);
+  assert.equal(runtimeAudit.ok, true, `${runtimeAudit.reason}: ${visible}`);
+  assert.equal(runtimeAudit.mentionedEvidence, 3);
+  assert.equal(freeTeaserAssignsUnsupportedStateToName(visible, body), false);
+
+  const snapshotBytes = kv.values.get(`preview:${result.payload.token}`);
+  assert.ok(snapshotBytes, 'durable token snapshot missing');
+  const snapshot = JSON.parse(snapshotBytes);
+  assert.equal(snapshot.question, question);
+  assert.equal(snapshot.readingId, body.readingId);
+  assert.equal(snapshot.fields.signals, body.signals);
+  assert.equal(snapshot.offerBlocked, undefined);
+  assert.equal(snapshot.safety, undefined);
+
+  const replayEntry = [...kv.values.entries()].find(([key]) => key.startsWith('preview-response:'));
+  assert.ok(replayEntry, 'committed replay marker missing');
+  assert.equal(JSON.parse(replayEntry[1]).commitState, 'committed');
+  const currentEntry = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+  const lastEntry = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+  assert.ok(currentEntry && lastEntry, 'approved session pointers missing');
+  const current = JSON.parse(currentEntry[1]);
+  const last = JSON.parse(lastEntry[1]);
+  assert.equal(current.token, result.payload.token);
+  assert.equal(last.token, result.payload.token);
+  assert.equal(current.approvalStatus, 'approved');
+  assert.equal(last.approvalStatus, 'approved');
+  assert.equal(current.offerBlocked, false);
+  assert.equal(last.offerBlocked, false);
+});
+
+test('relationship-outcome legacy PPF private-state question commits one durable server-owned recovery', async (t) => {
+  const question = 'What does Alex feel about me while they remain distant and why do I not understand whether their silence means they care about me in this relationship right now?';
+  const visitorId = 'relationship_private_ppf_visitor_20260817';
+  const body = readingBody(question, 'relationship_private_ppf_reading_20260817', visitorId);
+  const complexity = freePreviewComplexity(body);
+  assert.equal(question.length, 161);
+  assert.deepEqual(complexity, {
+    score: 9,
+    reasons: ['private_state', 'relationship_outcome', 'ambiguous_reference', 'negation', 'long_question'],
+    useThinking: true,
+    band: 'high',
+  });
+
+  const dedicated = deterministicPrivateStateReservedRecovery(body, 'en');
+  const dedicatedAudit = freeTeaserAudit(dedicated, body, 180);
+  assert.equal(dedicatedAudit.ok, true, `${dedicatedAudit.reason}: ${dedicated}`);
+  assert.equal(dedicatedAudit.mentionedEvidence, 3);
+  assert.equal(freeTeaserAssignsUnsupportedStateToName(dedicated, body), false);
+
+  const kv = jsonKv();
+  const budget = rollingBudget({ limit: 1 });
+  const env = workerEnv(kv, budget);
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    throw new Error('the dedicated private-state reserved path must intercept before provider output');
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await createPreview(env, body);
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.servedSource, 'deterministic_reserved_fast_path');
+  assert.equal(result.payload.servedModel, 'deterministic');
+  assert.equal(result.payload.question, question);
+  assert.equal(modelCalls, 0);
+  assert.equal(budget.claims, 1);
+  assert.equal(budget.commits, 1);
+  assert.equal(budget.releases, 0);
+  assert.match(result.payload.token, /^[a-f0-9]{32}$/i);
+
+  const visible = result.payload.teaser.replace(/<[^>]+>/g, ' ').replace(/&(?:#39|quot);/g, "'").replace(/\s+/g, ' ').trim();
+  assert.match(visible, /cannot know, verify, or prove another person's private thoughts, feelings, intentions, or future actions/i);
+  assert.match(visible, /\bAlex\b/);
+  assert.match(visible, /\bnot\b/i, 'the safe recovery lost the question\'s negated premise');
+  assert.doesNotMatch(visible, /Alex\s+(?:really\s+)?(?:feels?|thinks?|wants?|cares?|loves?|misses?|is\s+(?:distant|confused|interested))/i);
+  assert.match(visible, /Two of Wands upright in the Past position/i);
+  assert.match(visible, /Nine of Wands upright in the Present position/i);
+  assert.match(visible, /Future position holds Eight of Wands reversed, but its interpretation stays sealed/i);
+  assert.equal(freeReservedThreeCardVerdictLeak(visible), false, 'an independent verdict leaked outside the lock promise');
+  const runtimeAudit = freeTeaserAudit(visible, body, 180);
+  assert.equal(runtimeAudit.ok, true, `${runtimeAudit.reason}: ${visible}`);
+  assert.equal(runtimeAudit.mentionedEvidence, 3);
+  assert.equal(freeTeaserAssignsUnsupportedStateToName(visible, body), false);
+
+  const snapshotBytes = kv.values.get(`preview:${result.payload.token}`);
+  assert.ok(snapshotBytes, 'durable token snapshot missing');
+  const snapshot = JSON.parse(snapshotBytes);
+  assert.equal(snapshot.question, question);
+  assert.equal(snapshot.readingId, body.readingId);
+  assert.equal(snapshot.fields.signals, body.signals);
+  assert.equal(snapshot.offerBlocked, undefined);
+  assert.equal(snapshot.safety, undefined);
+
+  const replayEntry = [...kv.values.entries()].find(([key]) => key.startsWith('preview-response:'));
+  assert.ok(replayEntry, 'committed replay marker missing');
+  assert.equal(JSON.parse(replayEntry[1]).commitState, 'committed');
+  const currentEntry = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+  const lastEntry = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+  assert.ok(currentEntry && lastEntry, 'approved session pointers missing');
+  const current = JSON.parse(currentEntry[1]);
+  const last = JSON.parse(lastEntry[1]);
+  assert.equal(current.token, result.payload.token);
+  assert.equal(last.token, result.payload.token);
+  assert.equal(current.approvalStatus, 'approved');
+  assert.equal(last.approvalStatus, 'approved');
+  assert.equal(current.offerBlocked, false);
+  assert.equal(last.offerBlocked, false);
+});
+
 test('legacy migration returns the same-token safety authority that wins during finalization', async () => {
   const kv = jsonKv();
   const env = workerEnv(kv, rollingBudget({ limit: 1 }));
@@ -2189,7 +2464,7 @@ test('historical token recovery cannot bypass a surviving same-token safety bloc
 });
 
 test('historical token recovery fails closed for altered question, reading, owner, safety, and purchase-only snapshots', async () => {
-  for (const mode of ['question', 'reading', 'owner', 'safety', 'purchase-only']) {
+  for (const mode of ['question', 'reading', 'owner', 'safety', 'snapshot-safety', 'snapshot-offer-blocked', 'purchase-only']) {
     const kv = jsonKv();
     const env = workerEnv(kv, rollingBudget({ limit: 1 }));
     const body = readingBody(`What career pattern should I understand for ${mode}?`, `v53_token_reject_${mode}`);
@@ -2202,6 +2477,8 @@ test('historical token recovery fails closed for altered question, reading, owne
     const snapshot = JSON.parse(kv.values.get(snapshotKey));
     if (mode === 'owner') snapshot.ownerVisitorHash = 'visitor:not-the-requesting-owner';
     if (mode === 'safety') snapshot.fields.safetyAction = 'medical';
+    if (mode === 'snapshot-safety') snapshot.safety = true;
+    if (mode === 'snapshot-offer-blocked') snapshot.offerBlocked = true;
     if (mode === 'purchase-only') snapshot.purchaseIntentOnly = true;
     kv.values.set(snapshotKey, JSON.stringify(snapshot));
     const response = await handleFreeSession(sessionRequest(VISITOR_ID, 'last-approved', REQUEST_HEADERS, {
@@ -2219,8 +2496,520 @@ test('historical token recovery fails closed for altered question, reading, owne
   }
 });
 
+test('post-quota chat recovery returns and caches the same concurrent safety authority it persists', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: 'The Star points to one practical detail.' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 120, completion_tokens: 12 },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  const visitorId = 'post_quota_chat_safety_visitor';
+  const requestId = 'post_quota_chat_safety_request';
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  env.DEEPSEEK_DIRECT_API_KEY = 'test-only-deepseek-key';
+  env.AI_BUDGETS = {
+    claim: async (input) => ({ allowed: true, claimId: input.claimId }),
+    settle: async () => ({ allowed: true }),
+  };
+  env.FREE_ENTITLEMENTS = {
+    getByName: () => ({
+      fetch: async (_url, init) => {
+        const action = JSON.parse(init.body).action;
+        return Response.json({
+          allowed: true,
+          used: action === 'commit-usage' ? 3 : 2,
+          remaining: 0,
+        });
+      },
+    }),
+  };
+
+  const body = readingBody(
+    'What should I understand before changing this exact career plan?',
+    'post_quota_chat_safety_reading',
+    visitorId,
+  );
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const token = created.payload.token;
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  assert.ok(currentKey, 'preview current pointer was not created');
+
+  let chatCasCalls = 0;
+  env.READINGS_CACHE = {
+    ...kv.binding,
+    compareAndSetMany: async (entries) => {
+      if (!entries.some((entry) => entry.key === currentKey)) {
+        return kv.binding.compareAndSetMany(entries);
+      }
+      chatCasCalls += 1;
+      if (chatCasCalls === 1) {
+        const current = JSON.parse(kv.values.get(currentKey));
+        kv.values.set(currentKey, JSON.stringify({
+          ...current,
+          messages: [{
+            id: 'concurrent_safety_chat_turn',
+            question: 'Am I in immediate danger?',
+            answerText: 'Contact emergency support and a trusted person now.',
+            answerHtml: '<p>Contact emergency support and a trusted person now.</p>',
+            createdAt: Date.now(),
+            safety: true,
+            safetyCategory: 'danger',
+          }],
+          followupsUsed: 1,
+          safety: true,
+          safetyCategory: 'danger',
+          offer: null,
+          offerBlocked: true,
+          approvalStatus: 'blocked',
+          approvedAt: 0,
+          conversationUpdatedAt: new Date().toISOString(),
+        }));
+      }
+      // Exhaust the first pointer publisher after injecting a newer same-token
+      // safety state. The catch-path publisher must then merge and persist it.
+      if (chatCasCalls <= 4) return false;
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+
+  const response = await handleFreeChat(chatRequest(
+    visitorId,
+    token,
+    requestId,
+    'What practical detail should I verify before deciding?',
+  ), env);
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.recoveryPending, true);
+  assert.equal(payload.safety, true);
+  assert.equal(payload.safetyCategory, 'danger');
+  assert.equal(payload.offerAllowed, false);
+  assert.equal(payload.offer, null);
+  assert.equal(chatCasCalls, 5, 'catch-path recovery did not perform the successful fifth CAS');
+  assert.equal(modelCalls, 1);
+
+  const durable = JSON.parse(kv.values.get(currentKey));
+  assert.equal(durable.safety, true);
+  assert.equal(durable.offerBlocked, true);
+  assert.equal(durable.offer, null);
+  assert.ok(durable.messages.some((entry) => entry.id === 'concurrent_safety_chat_turn'));
+
+  const durableSnapshot = JSON.parse(kv.values.get(`preview:${token}`));
+  assert.equal(durableSnapshot.safety, true);
+  assert.equal(durableSnapshot.safetyCategory, 'danger');
+  assert.equal(durableSnapshot.offerBlocked, true);
+  assert.equal(durableSnapshot.offer, null);
+
+  const cached = JSON.parse(kv.values.get(`preview-chat-reply:${token}:${requestId}`));
+  assert.equal(cached.safety, true);
+  assert.equal(cached.safetyCategory, 'danger');
+  assert.equal(cached.offerAllowed, false);
+  assert.equal(cached.offer, null);
+});
+
+test('post-quota chat recovery fails closed and removes only its stale request payload when authority cannot persist', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { content: 'The Star points to one practical detail.' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 120, completion_tokens: 12 },
+  }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  const visitorId = 'post_quota_chat_failed_recovery_visitor';
+  const requestId = 'post_quota_chat_failed_recovery_request';
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  env.DEEPSEEK_DIRECT_API_KEY = 'test-only-deepseek-key';
+  env.AI_BUDGETS = {
+    claim: async (input) => ({ allowed: true, claimId: input.claimId }),
+    settle: async () => ({ allowed: true }),
+  };
+  env.FREE_ENTITLEMENTS = {
+    getByName: () => ({
+      fetch: async (_url, init) => {
+        const action = JSON.parse(init.body).action;
+        return Response.json({ allowed: true, used: action === 'commit-usage' ? 3 : 2, remaining: 0 });
+      },
+    }),
+  };
+
+  const created = await createPreview(env, readingBody(
+    'What should I understand before changing this exact career plan?',
+    'post_quota_chat_failed_recovery_reading',
+    visitorId,
+  ));
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const token = created.payload.token;
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const snapshotKey = `preview:${token}`;
+  const replyKey = `preview-chat-reply:${token}:${requestId}`;
+  let pointerCasCalls = 0;
+  let staleSnapshotBytes = null;
+  let safetyInjected = false;
+  env.READINGS_CACHE = {
+    ...kv.binding,
+    put: async (key, value, options) => {
+      if (key === replyKey && !safetyInjected) {
+        safetyInjected = true;
+        staleSnapshotBytes = kv.values.get(snapshotKey);
+        const staleSnapshot = JSON.parse(staleSnapshotBytes);
+        assert.ok(staleSnapshot.offer, 'initial atomic chat publication did not create the paid offer fixture');
+        const current = JSON.parse(kv.values.get(currentKey));
+        kv.values.set(currentKey, JSON.stringify({
+          ...current,
+          messages: [...current.messages, {
+            id: 'failed_recovery_concurrent_safety_turn',
+            question: 'Am I in immediate danger?',
+            answerText: 'Contact emergency support and a trusted person now.',
+            answerHtml: '<p>Contact emergency support and a trusted person now.</p>',
+            createdAt: Date.now(),
+            safety: true,
+            safetyCategory: 'danger',
+          }].slice(-3),
+          safety: true,
+          safetyCategory: 'danger',
+          offer: null,
+          offerBlocked: true,
+          approvalStatus: 'blocked',
+          approvedAt: 0,
+          conversationUpdatedAt: new Date().toISOString(),
+        }));
+        throw new Error('reply persistence failed after the initial offer snapshot committed');
+      }
+      return kv.binding.put(key, value, options);
+    },
+    compareAndSetMany: async (entries) => {
+      if (!entries.some((entry) => entry.key === currentKey)) {
+        return kv.binding.compareAndSetMany(entries);
+      }
+      pointerCasCalls += 1;
+      if (pointerCasCalls === 1) return kv.binding.compareAndSetMany(entries);
+      return false;
+    },
+  };
+
+  const response = await handleFreeChat(chatRequest(
+    visitorId,
+    token,
+    requestId,
+    'What practical detail should I verify before deciding?',
+  ), env);
+  const payload = await response.json();
+  assert.equal(response.status, 503, JSON.stringify(payload));
+  assert.equal(payload.reason, 'session_authority_changed');
+  assert.equal(payload.retryable, true);
+  assert.equal(payload.recoveryPending, true);
+  assert.equal(payload.offerAllowed, false);
+  assert.equal(payload.offer, null);
+  assert.equal(pointerCasCalls, 5, 'initial publication plus four failed recovery CAS attempts were not observed');
+  assert.ok(staleSnapshotBytes, 'partial stale-snapshot fixture did not execute');
+  assert.equal(kv.values.has(`preview-chat-pending:${token}:${requestId}`), false);
+  assert.equal(kv.values.has(replyKey), false);
+  assert.equal(kv.values.has(snapshotKey), false, 'stale offer-authorizing snapshot survived exact-byte invalidation');
+
+  const durable = JSON.parse(kv.values.get(currentKey));
+  assert.equal(durable.safety, true);
+  assert.equal(durable.offerBlocked, true);
+  assert.equal(durable.offer, null);
+});
+
+test('near-expiry chat publication preserves the original 24-hour paid-authority deadline', async () => {
+  const visitorId = 'near_expiry_chat_authority_visitor';
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const body = readingBody(
+    'What should I understand before choosing this exact career direction?',
+    'near_expiry_chat_authority_reading',
+    visitorId,
+  );
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const token = created.payload.token;
+  const snapshotKey = `preview:${token}`;
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const originalCurrentBytes = kv.values.get(currentKey);
+  const originalSnapshot = JSON.parse(kv.values.get(snapshotKey));
+  kv.values.set(snapshotKey, JSON.stringify({
+    ...originalSnapshot,
+    createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000 + 8_000).toISOString(),
+  }));
+
+  const casCalls = [];
+  env.READINGS_CACHE = {
+    ...kv.binding,
+    compareAndSetMany: async (entries) => {
+      casCalls.push(entries);
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+  const response = await handleFreeChat(chatRequest(
+    visitorId,
+    token,
+    'near_expiry_chat_authority_request',
+    'Should I change my medication dose because these cards point to this career?',
+  ), env);
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.safety, true);
+  assert.equal(payload.offerAllowed, false);
+  const snapshotWrite = casCalls.flat().find((entry) => entry.key === snapshotKey && entry.value);
+  assert.ok(snapshotWrite, 'chat did not atomically publish the snapshot authority');
+  assert.ok(snapshotWrite.options.expirationTtl >= 1 && snapshotWrite.options.expirationTtl <= 8,
+    `snapshot TTL was refreshed beyond the original deadline: ${snapshotWrite.options.expirationTtl}`);
+
+  kv.values.set(snapshotKey, JSON.stringify({
+    ...originalSnapshot,
+    createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000 - 1_000).toISOString(),
+  }));
+  kv.values.set(currentKey, originalCurrentBytes);
+  await assert.rejects(
+    hydratePreviewSnapshot({ ...body, freeToken: token }, env),
+    (error) => error?.code === 'PREVIEW_SNAPSHOT_EXPIRED',
+  );
+  const checkoutResponse = await handleCheckoutContext(checkoutContextRequest(visitorId, token, {
+    readingId: body.readingId,
+    clarifiers: [{ id: 0, isReversed: false }, { id: 1, isReversed: true }],
+  }), env);
+  const checkoutPayload = await checkoutResponse.json();
+  assert.equal(checkoutResponse.status, 410, JSON.stringify(checkoutPayload));
+  assert.equal(checkoutPayload.reason, 'PREVIEW_NOT_FOUND');
+});
+
+test('safety-blocked preview authority cannot mint checkout context or hydrate a paid continuation', async () => {
+  const visitorId = 'blocked_paid_authority_visitor';
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  env.CHECKOUT_CONTEXT_SECRET = 'test-only-checkout-context-secret';
+  const body = readingBody(
+    'What should I understand before changing this exact career plan?',
+    'blocked_paid_authority_reading',
+    visitorId,
+  );
+  const created = await createPreview(env, body);
+  assert.equal(created.response.status, 200, JSON.stringify(created.payload));
+  const token = created.payload.token;
+  const snapshotKey = `preview:${token}`;
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const safeSnapshotBytes = kv.values.get(snapshotKey);
+  const safeCurrentBytes = kv.values.get(currentKey);
+  const checkoutCasWrites = [];
+  env.READINGS_CACHE = {
+    ...kv.binding,
+    compareAndSetMany: async (entries) => {
+      checkoutCasWrites.push(entries);
+      return kv.binding.compareAndSetMany(entries);
+    },
+  };
+
+  const safeResponse = await handleCheckoutContext(checkoutContextRequest(visitorId, token, {
+    readingId: body.readingId,
+    clarifiers: [{ id: 0, isReversed: false }, { id: 1, isReversed: true }],
+  }), env);
+  const safePayload = await safeResponse.json();
+  assert.equal(safeResponse.status, 200, JSON.stringify(safePayload));
+  assert.equal(safePayload.ok, true);
+  assert.match(safePayload.contextId, /^[a-f0-9-]{36}$/i);
+  const safeHandoff = checkoutCasWrites.find((entries) => entries.some((entry) => entry.key === `checkout-context:${safePayload.contextId}`));
+  assert.equal(safeHandoff.length, 3, 'normal checkout mint must atomically bind snapshot, current pointer, and context');
+  assert.deepEqual(safeHandoff.slice(0, 2).map((entry) => entry.key), [snapshotKey, currentKey]);
+  kv.values.delete(`checkout-context:${safePayload.contextId}`);
+
+  const blockedSnapshot = {
+    ...JSON.parse(safeSnapshotBytes),
+    offer: null,
+    offerBlocked: true,
+    safety: true,
+    safetyCategory: 'danger',
+  };
+  kv.values.set(snapshotKey, JSON.stringify(blockedSnapshot));
+  const blockedSnapshotResponse = await handleCheckoutContext(
+    checkoutContextRequest(visitorId, token),
+    env,
+  );
+  const blockedSnapshotPayload = await blockedSnapshotResponse.json();
+  assert.equal(blockedSnapshotResponse.status, 422, JSON.stringify(blockedSnapshotPayload));
+  assert.equal(blockedSnapshotPayload.reason, 'PREVIEW_OFFER_BLOCKED');
+  assert.equal([...kv.values.keys()].some((key) => key.startsWith('checkout-context:')), false);
+  await assert.rejects(
+    hydratePreviewSnapshot({ ...body, freeToken: token }, env),
+    (error) => error?.code === 'PREVIEW_OFFER_BLOCKED' && error?.missing?.includes('freeToken'),
+  );
+
+  kv.values.set(snapshotKey, safeSnapshotBytes);
+  const current = JSON.parse(safeCurrentBytes);
+  kv.values.set(currentKey, JSON.stringify({
+    ...current,
+    safety: true,
+    safetyCategory: 'danger',
+    offer: null,
+    offerBlocked: true,
+    approvalStatus: 'blocked',
+    approvedAt: 0,
+  }));
+  const blockedSessionResponse = await handleCheckoutContext(
+    checkoutContextRequest(visitorId, token),
+    env,
+  );
+  const blockedSessionPayload = await blockedSessionResponse.json();
+  assert.equal(blockedSessionResponse.status, 410, JSON.stringify(blockedSessionPayload));
+  assert.equal(blockedSessionPayload.reason, 'PREVIEW_NOT_FOUND');
+  assert.equal([...kv.values.keys()].some((key) => key.startsWith('checkout-context:')), false);
+
+  kv.values.set(snapshotKey, safeSnapshotBytes);
+  kv.values.set(currentKey, safeCurrentBytes);
+  let injectedConcurrentSafety = false;
+  env.READINGS_CACHE.compareAndSetMany = async (entries) => {
+    if (!injectedConcurrentSafety && entries.some((entry) => entry.key.startsWith('checkout-context:'))) {
+      injectedConcurrentSafety = true;
+      const currentWinner = JSON.parse(safeCurrentBytes);
+      kv.values.set(currentKey, JSON.stringify({
+        ...currentWinner,
+        safety: true,
+        safetyCategory: 'danger',
+        offer: null,
+        offerBlocked: true,
+        approvalStatus: 'blocked',
+        approvedAt: 0,
+      }));
+    }
+    return kv.binding.compareAndSetMany(entries);
+  };
+  const racedResponse = await handleCheckoutContext(checkoutContextRequest(visitorId, token, {
+    readingId: body.readingId,
+    clarifiers: [{ id: 0, isReversed: false }, { id: 1, isReversed: true }],
+  }), env);
+  const racedPayload = await racedResponse.json();
+  assert.equal(injectedConcurrentSafety, true);
+  assert.equal(racedResponse.status, 410, JSON.stringify(racedPayload));
+  assert.equal(racedPayload.reason, 'PREVIEW_NOT_FOUND');
+  assert.equal([...kv.values.keys()].some((key) => key.startsWith('checkout-context:')), false,
+    'a concurrent safety winner still minted signed checkout authority');
+});
+
+test('Career checkout snapshot preserves the live no-visitor context handoff while blocking unsafe, tampered, and cross-device authority', async () => {
+  const visitorId = 'career_checkout_snapshot_visitor';
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 1 }));
+  const quotaActions = [];
+  env.FREE_ENTITLEMENTS = {
+    getByName: (name) => ({
+      fetch: async (_url, init) => {
+        quotaActions.push({ name, ...JSON.parse(String(init.body)) });
+        return Response.json({ allowed: true, used: 1 });
+      },
+    }),
+  };
+
+  const unsafeResponse = await handleCheckoutSnapshot(checkoutSnapshotRequest(visitorId, {
+    question: 'Should I change my medication dose because these career cards say so?',
+    readingId: 'career_checkout_snapshot_unsafe',
+  }), env);
+  const unsafePayload = await unsafeResponse.json();
+  assert.equal(unsafeResponse.status, 422, JSON.stringify(unsafePayload));
+  assert.equal(unsafePayload.reason, 'CHECKOUT_SNAPSHOT_SAFETY_BLOCKED');
+  assert.equal(unsafePayload.offerAllowed, false);
+  assert.equal(quotaActions.length, 0, 'unsafe snapshot reached quota reservation');
+  assert.equal([...kv.values.keys()].some((key) => key.startsWith('preview:')), false, 'unsafe snapshot minted a token');
+
+  const snapshotResponse = await handleCheckoutSnapshot(checkoutSnapshotRequest(visitorId), env);
+  const snapshotPayload = await snapshotResponse.json();
+  assert.equal(snapshotResponse.status, 200, JSON.stringify(snapshotPayload));
+  assert.equal(snapshotPayload.purchaseIntentOnly, true);
+  assert.match(snapshotPayload.token, /^[a-f0-9]{32}$/i);
+  assert.equal([...kv.values.keys()].some((key) => key.startsWith('preview-current:')), false, 'Career handoff unexpectedly required a free-session pointer');
+  assert.equal(quotaActions.filter((entry) => entry.action === 'claim-usage').length, 1);
+
+  const contextOverrides = {
+    readingId: snapshotPayload.readingId,
+    conversationId: snapshotPayload.conversationId,
+    clarifiers: [{ id: 10, isReversed: false }, { id: 11, isReversed: true }],
+  };
+  const purchaseContextCasWrites = [];
+  const purchaseContextCompareAndSetMany = env.READINGS_CACHE.compareAndSetMany.bind(env.READINGS_CACHE);
+  env.READINGS_CACHE = {
+    ...env.READINGS_CACHE,
+    compareAndSetMany: async (entries) => {
+      purchaseContextCasWrites.push(entries);
+      return purchaseContextCompareAndSetMany(entries);
+    },
+  };
+  const contextResponse = await handleCheckoutContext(
+    checkoutContextRequest(undefined, snapshotPayload.token, contextOverrides),
+    env,
+  );
+  const contextPayload = await contextResponse.json();
+  assert.equal(contextResponse.status, 200, JSON.stringify(contextPayload));
+  assert.equal(contextPayload.ok, true);
+  assert.match(contextPayload.contextId, /^[a-f0-9-]{36}$/i);
+  const purchaseHandoff = purchaseContextCasWrites.find((entries) => entries.some((entry) => entry.key === `checkout-context:${contextPayload.contextId}`));
+  assert.equal(purchaseHandoff.length, 2, 'purchase-only checkout mint must atomically bind its snapshot and context');
+  assert.deepEqual(purchaseHandoff.map((entry) => entry.key), [
+    `preview:${snapshotPayload.token}`,
+    `checkout-context:${contextPayload.contextId}`,
+  ]);
+  kv.values.delete(`checkout-context:${contextPayload.contextId}`);
+
+  const wrongVisitorResponse = await handleCheckoutContext(
+    checkoutContextRequest('career_checkout_snapshot_other_visitor', snapshotPayload.token, contextOverrides),
+    env,
+  );
+  assert.equal(wrongVisitorResponse.status, 410, JSON.stringify(await wrongVisitorResponse.json()));
+  const wrongDeviceResponse = await handleCheckoutContext(
+    checkoutContextRequest(undefined, snapshotPayload.token, contextOverrides, {
+      ...REQUEST_HEADERS,
+      'CF-Connecting-IP': '198.51.100.222',
+      'User-Agent': 'Different checkout device',
+    }),
+    env,
+  );
+  assert.equal(wrongDeviceResponse.status, 410, JSON.stringify(await wrongDeviceResponse.json()));
+
+  for (const [label, paidQuestion] of [
+    ['medical', 'Should I stop taking my medication because the cards say this job is right?'],
+    ['crisis', 'Will I kill myself if I do not accept this exact career opportunity?'],
+  ]) {
+    const blockedQuestionResponse = await handleCheckoutContext(
+      checkoutContextRequest(undefined, snapshotPayload.token, { ...contextOverrides, paidQuestion }),
+      env,
+    );
+    const blockedQuestionPayload = await blockedQuestionResponse.json();
+    assert.equal(blockedQuestionResponse.status, 422, `${label}: ${JSON.stringify(blockedQuestionPayload)}`);
+    assert.equal(blockedQuestionPayload.reason, 'PAID_QUESTION_SAFETY_BLOCKED', label);
+    assert.equal(blockedQuestionPayload.offerAllowed, false, label);
+  }
+
+  const snapshotKey = `preview:${snapshotPayload.token}`;
+  const snapshot = JSON.parse(kv.values.get(snapshotKey));
+  kv.values.set(snapshotKey, JSON.stringify({ ...snapshot, offerBlocked: true, safety: true }));
+  const blockedSnapshotResponse = await handleCheckoutContext(
+    checkoutContextRequest(undefined, snapshotPayload.token, contextOverrides),
+    env,
+  );
+  const blockedSnapshotPayload = await blockedSnapshotResponse.json();
+  assert.equal(blockedSnapshotResponse.status, 422, JSON.stringify(blockedSnapshotPayload));
+  assert.equal(blockedSnapshotPayload.reason, 'PREVIEW_OFFER_BLOCKED');
+  assert.equal([...kv.values.keys()].some((key) => key.startsWith('checkout-context:')), false);
+});
+
 test('legacy migration rejects blocked, safety, owner, question, and funnel-version mismatches', async () => {
-  for (const mode of ['blocked', 'safety-snapshot', 'owner-mismatch', 'question-mismatch', 'unknown-version']) {
+  for (const mode of ['blocked', 'safety-snapshot', 'top-level-safety', 'top-level-offer-blocked', 'owner-mismatch', 'question-mismatch', 'unknown-version']) {
     const kv = jsonKv();
     const env = workerEnv(kv, rollingBudget({ limit: 1 }));
     const body = readingBody(`What should I understand before a ${mode} career decision?`, `legacy_reject_${mode}`);
@@ -2239,6 +3028,8 @@ test('legacy migration rejects blocked, safety, owner, question, and funnel-vers
       const snapshotKey = `preview:${created.payload.token}`;
       const snapshot = JSON.parse(kv.values.get(snapshotKey));
       if (mode === 'safety-snapshot') snapshot.fields.safetyAction = 'medical';
+      if (mode === 'top-level-safety') snapshot.safety = true;
+      if (mode === 'top-level-offer-blocked') snapshot.offerBlocked = true;
       if (mode === 'owner-mismatch') snapshot.ownerVisitorHash = 'visitor:unrelated-owner';
       if (mode === 'question-mismatch') snapshot.question = 'A different stored question?';
       if (mode === 'unknown-version') snapshot.fields.funnelVersion = 'premium-choice-2026-08-v57';

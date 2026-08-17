@@ -297,7 +297,7 @@ export class PostgresKv {
   }
 
   async compareAndSetMany(entries: KvCompareAndSetEntry[]) {
-    if (!Array.isArray(entries) || entries.length < 1 || entries.length > 4) {
+    if (!Array.isArray(entries) || entries.length < 1 || entries.length > 8) {
       throw new Error('Invalid atomic KV write set');
     }
     const normalized = entries.map((entry) => ({
@@ -341,12 +341,14 @@ export class PostgresKv {
                where key = ${entry.key}
                  and expires_at is not null
                  and expires_at <= clock_timestamp()
-              returning key
+                 and (${expiresAt}::timestamptz is null or ${expiresAt}::timestamptz > clock_timestamp())
+               returning key
             `;
             if (replacedExpired.length) continue;
             const inserted = await transaction<{ key: string }[]>`
               insert into deckaura.kv_store(key, value, expires_at)
-              values (${entry.key}, ${entry.value}, ${expiresAt})
+              select ${entry.key}, ${entry.value}, ${expiresAt}
+               where (${expiresAt}::timestamptz is null or ${expiresAt}::timestamptz > clock_timestamp())
               on conflict (key) do nothing
               returning key
             `;
@@ -361,6 +363,8 @@ export class PostgresKv {
                    updated_at = clock_timestamp()
              where key = ${entry.key}
                and value = ${entry.expectedValue}
+               and (expires_at is null or expires_at > clock_timestamp())
+               and (${expiresAt}::timestamptz is null or ${expiresAt}::timestamptz > clock_timestamp())
             returning key
           `;
           if (!updated.length) throw new KvCompareAndSetConflict();
@@ -1182,6 +1186,7 @@ export function workerEnvironment() {
     SHOPIFY_CLIENT_SECRET: process.env.SHOPIFY_CLIENT_SECRET,
     SHOPIFY_ADMIN_TOKEN: process.env.SHOPIFY_ADMIN_TOKEN,
     SHOPIFY_WEBHOOK_SECRET: process.env.SHOPIFY_WEBHOOK_SECRET,
+    INTERNAL_ORDER_REPLAY_SECRET: process.env.INTERNAL_ORDER_REPLAY_SECRET,
     ENTITLEMENT_PEPPER: process.env.ENTITLEMENT_PEPPER,
     MEMBER_SIGNING_SECRET: process.env.MEMBER_SIGNING_SECRET,
     NL_SECRET: process.env.NL_SECRET,
@@ -1189,6 +1194,7 @@ export function workerEnvironment() {
     READING_SERVICE_ORIGIN: process.env.READING_SERVICE_ORIGIN,
     READING_DELAY_MIN: process.env.READING_DELAY_MIN,
     READING_DELAY_MAX: process.env.READING_DELAY_MAX,
+    PAID_READING_AUTHORITY_CUTOFF: process.env.PAID_READING_AUTHORITY_CUTOFF,
     READINGS_CACHE: readingsCache,
     FREE_ENTITLEMENTS: freeEntitlements,
     FREE_READING_BUDGETS: freeReadingBudgets,

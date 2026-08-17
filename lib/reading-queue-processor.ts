@@ -10,6 +10,8 @@ import {
 } from '@/lib/worker-env';
 import readingsWorker, {
   deliverDueReadings,
+  freePreviewSnapshotTtlSeconds,
+  hydratePreviewSnapshot,
   readingDeliveryDelayMinutes,
   sweepMemberships,
 } from '@/lib/legacy-worker.mjs';
@@ -152,20 +154,36 @@ type JsonObject = Record<string, unknown>;
 type WorkerEnvironment = ReturnType<typeof workerEnvironment>;
 
 type PaidDraft = {
+  schemaVersion?: number;
+  orderId?: string;
+  orderName?: string;
   accessToken?: string;
   originalQuestion?: string;
   question?: string;
   name?: string;
+  lang?: string;
+  locale?: string;
+  country?: string;
+  currency?: string;
+  market?: string;
   status?: string;
   editCount?: number;
   reviewUntil?: number;
   missingQuestion?: boolean;
   confirmedAt?: number;
+  editedAt?: number;
+  createdAt?: number;
+  reviewEmailSentAt?: number;
   tier?: ReadingTier;
   shopifyVariantId?: string;
   shopifySku?: string;
   verifiedFields?: JsonObject;
   numerology?: JsonObject;
+  authorityReceiptVersion?: string;
+  authorityReceiptSignature?: string;
+  authorityReceiptKind?: string;
+  authorityReceiptLineDigest?: string;
+  legacyReviewStatePreserved?: boolean;
 };
 
 type QueueCounters = {
@@ -400,6 +418,7 @@ const TAROT_PACKAGES = Object.freeze({
 type TarotPackageTier = keyof typeof TAROT_PACKAGES;
 
 type VerifiedCheckoutContext = {
+  lineKey: string;
   contextId: string;
   tier: TarotPackageTier;
   variantId: string;
@@ -409,6 +428,7 @@ type VerifiedCheckoutContext = {
 };
 
 type VerifiedReadingIntent = {
+  lineKey: string;
   intentId: string;
   tier: ReadingTier;
   variantId: string;
@@ -418,6 +438,70 @@ type VerifiedReadingIntent = {
   intentKind: 'big_three' | 'birth_chart' | 'love_tarot' | 'daily_tarot' | 'daily_horoscope' | 'angel_number' | 'zodiac_compatibility' | 'moon_lunar' | 'numerology_compatibility' | 'shared_tool' | 'yes_no';
   verifiedFields: JsonObject;
 };
+
+type VerifiedPreviewAuthority = {
+  lineKey: string;
+  token: string;
+  ownerVisitorHash: string;
+  variantId: string;
+  sku: string;
+  tier: TarotPackageTier;
+  verifiedFields: JsonObject;
+};
+
+const FREE_PREVIEW_AUTHORITY_TTL_SECONDS = 60 * 60 * 24;
+const PURCHASE_INTENT_AUTHORITY_TTL_SECONDS = 60 * 60 * 24 * 7;
+
+function paidReadingLineKey(item: JsonObject, index: number) {
+  const lineId = text(item.id, 96);
+  return lineId
+    ? `id:${lineId}`
+    : `index:${index}:${text(item.variant_id, 64)}:${text(item.sku, 80).toUpperCase()}`;
+}
+
+type VerifiedPaidReadingAuthorities = {
+  items: JsonObject[];
+  numerology: JsonObject | null;
+  checkout: VerifiedCheckoutContext | null;
+  intent: VerifiedReadingIntent | null;
+  preview: VerifiedPreviewAuthority | null;
+  legacyGrandfathered: boolean;
+};
+
+type StoredPaidReadingAuthorities = Omit<VerifiedPaidReadingAuthorities, 'items' | 'legacyGrandfathered'>;
+
+type PaidReadingAuthorityReceiptBody = {
+  receiptVersion: 'paid-reading-authority-receipt-v1';
+  orderId: string;
+  payloadSha256: string;
+  lineKey: string;
+  lineDigest: string;
+  variantId: string;
+  sku: string;
+  authorityKind: 'checkout' | 'intent' | 'preview' | 'numerology';
+  authorities: StoredPaidReadingAuthorities;
+};
+
+type PaidReadingAuthorityReceipt = PaidReadingAuthorityReceiptBody & {
+  signature: string;
+};
+
+type PaidReadingAuthoritySourceGuard = {
+  key: string;
+  expectedValue: string;
+  value: string;
+  options: { expiration: number };
+};
+
+type PaidReadingAuthorityPublisher = (
+  verified: VerifiedPaidReadingAuthorities,
+  sourceGuards: PaidReadingAuthoritySourceGuard[],
+) => Promise<VerifiedPaidReadingAuthorities>;
+
+const PAID_READING_AUTHORITY_RECEIPT_VERSION = 'paid-reading-authority-receipt-v1';
+const MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES = 512 * 1024;
+const PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS = 60 * 60 * 24 * 365;
+const paidReadingAuthoritySourceGuards = new WeakMap<object, PaidReadingAuthoritySourceGuard[]>();
 
 function packageTierForLineItem(item: JsonObject): TarotPackageTier | null {
   const variantId = text(item.variant_id, 64);
@@ -469,23 +553,22 @@ function checkoutIntentCanonicalFromRow(row: JsonObject): CheckoutIntentCanonica
   };
 }
 
+export function checkoutIntentCanAuthorizeOrder(row: JsonObject, payload: JsonObject, now = Date.now()) {
+  const expiresAt = new Date(String(row.expires_at || '')).getTime();
+  if (!Number.isFinite(expiresAt)) return false;
+  const orderId = text(payload.id, 96);
+  const paidForThisOrder = text(row.status, 20) === 'paid'
+    && Boolean(orderId)
+    && text(row.order_id, 96) === orderId;
+  return expiresAt > now || paidForThisOrder;
+}
+
 async function verifiedReadingIntent(
   items: JsonObject[],
   payload: JsonObject,
 ): Promise<VerifiedReadingIntent | null> {
-  const relevant = items.filter((item) => {
-    const variantId = text(item.variant_id, 64);
-    const funnelVersion = itemProperty(item, ['funnel version']);
-    return Boolean(
-      readingPackageByVariant(variantId) && isSupportedCheckoutFunnelVersion(funnelVersion)
-      || SHARED_TOOL_VARIANT_IDS.includes(variantId) && funnelVersion === SHARED_TOOL_FUNNEL_VERSION,
-    );
-  });
   const candidates = items.filter((item) => itemProperty(item, ['checkout intent']));
-  if (!candidates.length) {
-    if (relevant.length) throw new QueueOperationError('CHECKOUT_INTENT_REQUIRED');
-    return null;
-  }
+  if (!candidates.length) return null;
   if (candidates.length !== 1) throw new QueueOperationError('CHECKOUT_INTENT_COUNT_INVALID');
   const item = candidates[0];
   const intentId = itemProperty(item, ['checkout intent']);
@@ -510,8 +593,8 @@ async function verifiedReadingIntent(
     && text(row.funnel_version, 128) !== SHARED_TOOL_FUNNEL_VERSION) {
     throw new QueueOperationError('CHECKOUT_INTENT_VERSION_INVALID');
   }
-  const expiresAt = new Date(String(row.expires_at || '')).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+  const orderId = text(payload.id, 96);
+  if (!checkoutIntentCanAuthorizeOrder(row, payload)) {
     throw new QueueOperationError('CHECKOUT_INTENT_EXPIRED');
   }
 
@@ -1290,19 +1373,21 @@ async function verifiedReadingIntent(
     sharedToolVerifiedFields = sharedOrderVerification.verifiedFields as JsonObject;
   }
 
-  const orderId = text(payload.id, 96);
   const consumed = await sql<{ id: string }[]>`
     update deckaura.checkout_intents
        set status = 'paid',
            consumed_at = coalesce(consumed_at, clock_timestamp()),
            order_id = coalesce(order_id, ${orderId})
      where id = ${intentId}::uuid
-       and expires_at > clock_timestamp()
-       and (status = 'pending' or (status = 'paid' and order_id = ${orderId}))
+       and (
+         (status = 'pending' and expires_at > clock_timestamp())
+         or (status = 'paid' and order_id = ${orderId})
+       )
     returning id::text as id
   `;
   if (!consumed[0]) throw new QueueOperationError('CHECKOUT_INTENT_ALREADY_CONSUMED');
   return {
+    lineKey: paidReadingLineKey(item, items.indexOf(item)),
     intentId,
     tier: product.tier,
     variantId: product.variantId,
@@ -1385,26 +1470,33 @@ function secureHexEqual(expected: string, supplied: string) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-async function verifiedTarotCheckoutContext(items: JsonObject[], env: WorkerEnvironment): Promise<VerifiedCheckoutContext | null> {
+async function verifiedTarotCheckoutContext(
+  items: JsonObject[],
+  payload: JsonObject,
+  env: WorkerEnvironment,
+): Promise<VerifiedCheckoutContext | null> {
   const candidates = items.map((item) => ({ item, tier: packageTierForLineItem(item) })).filter((entry) => entry.tier);
   if (!candidates.length) return null;
   if (candidates.length !== 1) throw new QueueOperationError('SHOPIFY_READING_PACKAGE_COUNT_INVALID');
   const { item, tier } = candidates[0] as { item: JsonObject; tier: TarotPackageTier };
   const contextId = itemProperty(item, ['checkout context']);
   const suppliedSignature = itemProperty(item, ['checkout signature']).toLowerCase();
-  const funnelVersion = itemProperty(item, ['funnel version']);
-  const contextRequired = funnelVersion === 'clarifier-checkout-2026-08-v40' || Boolean(contextId || suppliedSignature);
-  if (!contextRequired) return null;
+  if (!contextId && !suppliedSignature) return null;
   if (!/^[0-9a-f-]{36}$/i.test(contextId) || !/^[a-f0-9]{64}$/.test(suppliedSignature)) {
     throw new QueueOperationError('CHECKOUT_CONTEXT_REFERENCE_INVALID');
   }
-  const record = await env.READINGS_CACHE.get(`checkout-context:${contextId}`, 'json') as JsonObject | null;
-  if (!record || text(record.contextVersion, 64) !== 'clarifier-checkout-v1') {
+  const contextKey = `checkout-context:${contextId}`;
+  const recordValue = await env.READINGS_CACHE.get(contextKey);
+  const recordBytes = typeof recordValue === 'string' ? recordValue : '';
+  const record = parsedStoredObject(recordValue);
+  if (!recordBytes || !record || text(record.contextVersion, 64) !== 'clarifier-checkout-v1') {
     throw new QueueOperationError('CHECKOUT_CONTEXT_NOT_FOUND');
   }
   if (Number(record.expiresAt || 0) <= Date.now()) throw new QueueOperationError('CHECKOUT_CONTEXT_EXPIRED');
   const secret = text(
-    process.env.ENTITLEMENT_PEPPER
+    env.ENTITLEMENT_PEPPER
+      || env.SHOPIFY_WEBHOOK_SECRET
+      || process.env.ENTITLEMENT_PEPPER
       || process.env.FREE_ENTITLEMENT_SALT
       || process.env.SHOPIFY_WEBHOOK_SECRET,
     512,
@@ -1431,6 +1523,37 @@ async function verifiedTarotCheckoutContext(items: JsonObject[], env: WorkerEnvi
     || paidQuestion !== text(record.paidQuestion, 400)) {
     throw new QueueOperationError('CHECKOUT_CONTEXT_READING_MISMATCH');
   }
+  const snapshotKey = `preview:${freeToken}`;
+  const snapshotValue = await env.READINGS_CACHE.get(snapshotKey);
+  const snapshotBytes = typeof snapshotValue === 'string' ? snapshotValue : '';
+  const snapshot = parsedStoredObject(snapshotValue);
+  const snapshotFields = snapshot?.fields && typeof snapshot.fields === 'object' && !Array.isArray(snapshot.fields)
+    ? snapshot.fields as JsonObject
+    : null;
+  if (!snapshotBytes || !snapshot || snapshot.schemaVersion !== 2
+    || text(snapshot.snapshotVersion, 64) !== READING_SNAPSHOT_VERSION
+    || !snapshotFields || paidPreviewSnapshotBlocked(snapshot)) {
+    throw new QueueOperationError('CHECKOUT_CONTEXT_PREVIEW_INVALID');
+  }
+  const localeContext = exactPreviewLocaleContext(snapshotFields, payload, item);
+  let hydrated: JsonObject;
+  try {
+    hydrated = await hydratePreviewSnapshot({
+      ...snapshotFields,
+      question: text(snapshot.question, 400),
+      readingId: text(record.readingId, 128),
+      conversationId: text(record.conversationId, 64),
+      freeToken,
+      tier,
+      locale: localeContext.locale,
+      country: localeContext.country,
+      currency: localeContext.currency,
+      market: localeContext.market,
+    }, env) as JsonObject;
+  } catch {
+    throw new QueueOperationError('CHECKOUT_CONTEXT_PREVIEW_INVALID');
+  }
+  if (hydrated.previewContinuity !== true) throw new QueueOperationError('CHECKOUT_CONTEXT_PREVIEW_INVALID');
   const rawClarifiers = Array.isArray(record.clarifiers) ? record.clarifiers : [];
   if (rawClarifiers.length !== definition.clarifierCount) throw new QueueOperationError('CHECKOUT_CONTEXT_CLARIFIER_COUNT_INVALID');
   const clarifiers = rawClarifiers.map((value) => {
@@ -1446,13 +1569,15 @@ async function verifiedTarotCheckoutContext(items: JsonObject[], env: WorkerEnvi
     throw new QueueOperationError('CHECKOUT_CONTEXT_CLARIFIER_INVALID');
   }
   const clarifierCards = clarifiers.map((card) => `${card.position}: ${card.name} · ${card.isReversed ? 'Reversed' : 'Upright'}`).join('; ');
-  return {
+  const authority = {
+    lineKey: paidReadingLineKey(item, items.indexOf(item)),
     contextId,
     tier,
     variantId: definition.variantId,
     sku: definition.sku,
     clarifiers,
     verifiedFields: {
+      ...hydrated,
       checkoutContextId: contextId,
       tier,
       question: text(record.paidQuestion, 400),
@@ -1460,6 +1585,322 @@ async function verifiedTarotCheckoutContext(items: JsonObject[], env: WorkerEnvi
       clarifierSpread: clarifiers.map((card) => card.position).join(' · '),
     },
   };
+  const snapshotLifetime = paidPreviewSnapshotExpiresAt(snapshot);
+  if (!Number.isFinite(snapshotLifetime.expiresAt) || snapshotLifetime.expiresAt <= Date.now()) {
+    throw new QueueOperationError('CHECKOUT_CONTEXT_PREVIEW_INVALID');
+  }
+  paidReadingAuthoritySourceGuards.set(authority, [
+    {
+      key: contextKey,
+      expectedValue: recordBytes,
+      value: recordBytes,
+      options: { expiration: Number(record.expiresAt) / 1_000 },
+    },
+    {
+      key: snapshotKey,
+      expectedValue: snapshotBytes,
+      value: snapshotBytes,
+      options: { expiration: snapshotLifetime.expiresAt / 1_000 },
+    },
+  ]);
+  return authority;
+}
+
+function parsedStoredObject(value: unknown): JsonObject | null {
+  if (!value) return null;
+  if (typeof value === 'object' && !Array.isArray(value)) return value as JsonObject;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as JsonObject : null;
+  } catch {
+    return null;
+  }
+}
+
+function paidPreviewSnapshotBlocked(snapshot: JsonObject | null) {
+  const fields = snapshot?.fields && typeof snapshot.fields === 'object' && !Array.isArray(snapshot.fields)
+    ? snapshot.fields as JsonObject
+    : {};
+  return snapshot?.safety === true || snapshot?.offerBlocked === true || Boolean(text(fields.safetyAction, 40));
+}
+
+function paidPreviewPointerBlocked(pointer: JsonObject | null) {
+  const fields = pointer?.fields && typeof pointer.fields === 'object' && !Array.isArray(pointer.fields)
+    ? pointer.fields as JsonObject
+    : {};
+  return pointer?.safety === true
+    || pointer?.offerBlocked === true
+    || text(pointer?.approvalStatus, 20) === 'blocked'
+    || Boolean(text(fields.safetyAction, 40));
+}
+
+function paidPreviewSnapshotExpiresAt(snapshot: JsonObject) {
+  const fields = snapshot.fields && typeof snapshot.fields === 'object' && !Array.isArray(snapshot.fields)
+    ? snapshot.fields as JsonObject
+    : {};
+  const createdAt = Date.parse(text(snapshot.createdAt, 80));
+  const contractTtl = snapshot.purchaseIntentOnly === true
+    ? PURCHASE_INTENT_AUTHORITY_TTL_SECONDS
+    : Math.min(
+      FREE_PREVIEW_AUTHORITY_TTL_SECONDS,
+      Math.max(1, Number(freePreviewSnapshotTtlSeconds(fields)) || FREE_PREVIEW_AUTHORITY_TTL_SECONDS),
+    );
+  return { createdAt, expiresAt: createdAt + contractTtl * 1_000 };
+}
+
+function exactPreviewLocaleContext(snapshotFields: JsonObject, payload: JsonObject, item: JsonObject) {
+  const snapshotRaw = {
+    locale: text(snapshotFields.locale || snapshotFields.lang, 24),
+    country: text(snapshotFields.country, 2).toUpperCase(),
+    currency: text(snapshotFields.currency, 3).toUpperCase(),
+    market: text(snapshotFields.market, 64).toLowerCase(),
+  };
+  const lineRaw = {
+    locale: itemProperty(item, ['locale', 'language']),
+    country: itemProperty(item, ['country']).toUpperCase(),
+    currency: itemProperty(item, ['currency']).toUpperCase(),
+    market: itemProperty(item, ['market']).toLowerCase(),
+  };
+  if (Object.values(snapshotRaw).some((value) => !value) || Object.values(lineRaw).some((value) => !value)) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_MARKET_MISSING');
+  }
+  const snapshotContext = customerLocaleContext(snapshotRaw);
+  const lineContext = customerLocaleContext(lineRaw);
+  if (snapshotContext.locale.toLowerCase() !== lineContext.locale.toLowerCase()
+    || snapshotContext.country !== lineContext.country
+    || snapshotContext.currency !== lineContext.currency
+    || snapshotContext.market !== lineContext.market) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_MARKET_MISMATCH');
+  }
+  const paidCountry = orderCountryCode(payload);
+  const paidCurrency = text(payload.presentment_currency || payload.currency, 3).toUpperCase();
+  if ((paidCountry && paidCountry.toUpperCase() !== snapshotContext.country)
+    || (paidCurrency && paidCurrency !== snapshotContext.currency)) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_ORDER_MARKET_MISMATCH');
+  }
+  return snapshotContext;
+}
+
+export async function verifiedFreePreviewAuthority(
+  items: JsonObject[],
+  payload: JsonObject,
+  env: WorkerEnvironment,
+): Promise<VerifiedPreviewAuthority | null> {
+  const candidates = items.filter((item) => itemProperty(item, ['free_token', 'freetoken']));
+  if (!candidates.length) return null;
+  if (candidates.length !== 1) throw new QueueOperationError('PREVIEW_AUTHORITY_COUNT_INVALID');
+  const item = candidates[0];
+  const token = itemProperty(item, ['free_token', 'freetoken']).toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(token)) throw new QueueOperationError('PREVIEW_AUTHORITY_TOKEN_INVALID');
+  const packageAuthority = freeTarotPaidPackageAuthority({
+    variantId: text(item.variant_id, 64),
+    sku: text(item.sku, 80).toUpperCase(),
+  });
+  if (!packageAuthority || packageAuthority.ok !== true) {
+    throw new QueueOperationError(packageAuthority?.reason || 'PREVIEW_AUTHORITY_PACKAGE_INVALID');
+  }
+  const tier = packageTierForLineItem(item);
+  if (!tier || tier !== packageAuthority.tier) throw new QueueOperationError('PREVIEW_AUTHORITY_PACKAGE_INVALID');
+
+  const snapshotKey = `preview:${token}`;
+  const snapshotBytesValue = await env.READINGS_CACHE.get(snapshotKey);
+  const snapshotBytes = typeof snapshotBytesValue === 'string' ? snapshotBytesValue : '';
+  const snapshot = parsedStoredObject(snapshotBytesValue);
+  const snapshotFields = snapshot?.fields && typeof snapshot.fields === 'object' && !Array.isArray(snapshot.fields)
+    ? snapshot.fields as JsonObject
+    : null;
+  if (!snapshotBytes || !snapshot || snapshot.schemaVersion !== 2
+    || text(snapshot.snapshotVersion, 64) !== READING_SNAPSHOT_VERSION || !snapshotFields) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_NOT_FOUND');
+  }
+  if (paidPreviewSnapshotBlocked(snapshot)) throw new QueueOperationError('PREVIEW_AUTHORITY_BLOCKED');
+  const ownerVisitorHash = text(snapshot.ownerVisitorHash, 96).toLowerCase();
+  if (!/^visitor:[a-f0-9]{64}$/.test(ownerVisitorHash)) throw new QueueOperationError('PREVIEW_AUTHORITY_OWNER_INVALID');
+  if (!/^\/pages\/free-tarot-reading(?:\s*[·|]|$)/i.test(text(snapshotFields.tool, 160))) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_TOOL_INVALID');
+  }
+  if (snapshot.purchaseIntentOnly === true && snapshot.paidNewSpread !== true) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_KIND_INVALID');
+  }
+
+  const pointerKey = snapshot.purchaseIntentOnly === true
+    ? `preview-paid-new-spread:${ownerVisitorHash}`
+    : `preview-current:${ownerVisitorHash}`;
+  const pointerBytesValue = await env.READINGS_CACHE.get(pointerKey);
+  const pointerBytes = typeof pointerBytesValue === 'string' ? pointerBytesValue : '';
+  const pointer = parsedStoredObject(pointerBytesValue);
+  const now = Date.now();
+  const pointerCreatedAt = Number(pointer?.createdAt) || 0;
+  const pointerExpiresAt = Math.min(
+    Number(pointer?.expiresAt) || 0,
+    pointerCreatedAt + FREE_PREVIEW_AUTHORITY_TTL_SECONDS * 1_000,
+  );
+  if (!pointerBytes || !pointer || pointer.schemaVersion !== 2
+    || text(pointer.token, 64).toLowerCase() !== token
+    || pointerExpiresAt <= now
+    || paidPreviewPointerBlocked(pointer)
+    || (text(pointer.approvalStatus, 20) !== 'approved' && !(Number(pointer.approvedAt) > 0))) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_SESSION_INVALID');
+  }
+
+  const readingId = itemProperty(item, ['reading id']);
+  const question = itemProperty(item, ['question', 'your question']);
+  const conversationId = itemProperty(item, ['conversation id']);
+  if (!readingId || readingId !== text(snapshot.readingId || snapshotFields.readingId, 128)
+    || !question || question.replace(/\s+/g, ' ').trim() !== text(snapshot.question, 400).replace(/\s+/g, ' ').trim()
+    || !conversationId || conversationId !== text(snapshot.conversationId, 64)
+    || readingId !== text((pointer.fields as JsonObject | undefined)?.readingId, 128)
+    || question.replace(/\s+/g, ' ').trim() !== text(pointer.question, 400).replace(/\s+/g, ' ').trim()) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_READING_MISMATCH');
+  }
+  const localeContext = exactPreviewLocaleContext(snapshotFields, payload, item);
+  const hydrated = await hydratePreviewSnapshot({
+    ...snapshotFields,
+    question,
+    readingId,
+    conversationId,
+    freeToken: token,
+    tier,
+    locale: localeContext.locale,
+    country: localeContext.country,
+    currency: localeContext.currency,
+    market: localeContext.market,
+  }, env) as JsonObject;
+  if (hydrated.previewContinuity !== true) throw new QueueOperationError('PREVIEW_AUTHORITY_HYDRATION_FAILED');
+
+  const snapshotLifetime = paidPreviewSnapshotExpiresAt(snapshot);
+  if (!Number.isFinite(snapshotLifetime.createdAt)
+    || snapshotLifetime.createdAt > now + 60_000
+    || snapshotLifetime.expiresAt <= now) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_EXPIRED');
+  }
+  const pointerExpiration = Math.floor(pointerExpiresAt / 1_000);
+  const snapshotExpiration = Math.floor(snapshotLifetime.expiresAt / 1_000);
+  if (pointerExpiration * 1_000 <= now || snapshotExpiration * 1_000 <= now) {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_EXPIRED');
+  }
+  if (!env.READINGS_CACHE || typeof env.READINGS_CACHE.compareAndSetMany !== 'function') {
+    throw new QueueOperationError('PREVIEW_AUTHORITY_ATOMIC_STORE_REQUIRED');
+  }
+  const sourceGuards: PaidReadingAuthoritySourceGuard[] = [
+    {
+      key: pointerKey,
+      expectedValue: pointerBytes,
+      value: pointerBytes,
+      options: { expiration: pointerExpiration },
+    },
+    {
+      key: snapshotKey,
+      expectedValue: snapshotBytes,
+      value: snapshotBytes,
+      options: { expiration: snapshotExpiration },
+    },
+  ];
+  const linearized = await env.READINGS_CACHE.compareAndSetMany(sourceGuards);
+  if (linearized !== true) throw new QueueOperationError('PREVIEW_AUTHORITY_CHANGED');
+  const authority = {
+    lineKey: paidReadingLineKey(item, items.indexOf(item)),
+    token,
+    ownerVisitorHash,
+    variantId: packageAuthority.variantId,
+    sku: packageAuthority.sku,
+    tier,
+    verifiedFields: {
+      ...hydrated,
+      freeToken: token,
+      previewAuthorityVerified: true,
+    },
+  };
+  paidReadingAuthoritySourceGuards.set(authority, sourceGuards);
+  return authority;
+}
+
+function numerologyAuthorityLineKey(items: JsonObject[], numerology: JsonObject | null) {
+  if (!numerology) return '';
+  const kind = text(numerology.kind, 32);
+  const matches = items.map((item, index) => ({ item, index })).filter(({ item }) => {
+    const readingType = itemProperty(item, ['reading type', 'type']).toLowerCase();
+    const product = itemProperty(item, ['numerology product']).toLowerCase();
+    const kindMatches = kind === 'life_path'
+      ? readingType === 'numerology life path' || product === 'life_path'
+      : readingType === 'numerology compatibility' || product === 'compatibility';
+    return kindMatches
+      && text(item.variant_id, 64) === text(numerology.variantId, 64)
+      && text(item.sku, 80).toUpperCase() === text(numerology.sku, 80).toUpperCase();
+  });
+  return matches.length === 1 ? paidReadingLineKey(matches[0].item, matches[0].index) : '';
+}
+
+function strictShopifyOrderCreatedAt(payload: JsonObject) {
+  const raw = text(payload.created_at, 80);
+  const parsed = Date.parse(raw);
+  if (!raw || !Number.isFinite(parsed)) throw new QueueOperationError('SHOPIFY_ORDER_CREATED_AT_INVALID');
+  return parsed;
+}
+
+function protectedReadingLine(item: JsonObject) {
+  const variantId = text(item.variant_id, 64);
+  const sku = text(item.sku, 80).toUpperCase();
+  const freeTarot = freeTarotPaidPackageAuthority({ variantId, sku });
+  if (freeTarot?.ok === false) throw new QueueOperationError(freeTarot.reason);
+  const catalog = readingPackageByVariant(variantId);
+  if (catalog && catalog.sku !== sku) throw new QueueOperationError('SHOPIFY_PACKAGE_VARIANT_SKU_MISMATCH');
+  return freeTarot?.ok === true || Boolean(catalog) || SHARED_TOOL_VARIANT_IDS.includes(variantId);
+}
+
+export function assertPaidReadingLineAuthorities(
+  items: JsonObject[],
+  payload: JsonObject,
+  authorities: {
+    numerology?: JsonObject | null;
+    checkout?: VerifiedCheckoutContext | null;
+    intent?: VerifiedReadingIntent | null;
+    preview?: VerifiedPreviewAuthority | null;
+  },
+  cutoffValue: unknown,
+) {
+  const createdAt = strictShopifyOrderCreatedAt(payload);
+  const lineByKey = new Map(items.map((item, index) => [paidReadingLineKey(item, index), item]));
+  const claimed = new Map<string, string>();
+  const claim = (kind: string, lineKey: string, variantId: unknown, sku: unknown, reference: string) => {
+    const item = lineByKey.get(lineKey);
+    if (!item
+      || text(item.variant_id, 64) !== text(variantId, 64)
+      || text(item.sku, 80).toUpperCase() !== text(sku, 80).toUpperCase()
+      || (reference && itemProperty(item, kind === 'checkout'
+        ? ['checkout context']
+        : kind === 'intent'
+          ? ['checkout intent']
+          : ['free_token', 'freetoken']) !== reference)) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_LINE_MISMATCH');
+    }
+    if (claimed.has(lineKey)) throw new QueueOperationError('CHECKOUT_AUTHORITY_AMBIGUOUS');
+    claimed.set(lineKey, kind);
+  };
+  if (authorities.checkout) {
+    claim('checkout', authorities.checkout.lineKey, authorities.checkout.variantId, authorities.checkout.sku, authorities.checkout.contextId);
+  }
+  if (authorities.intent) {
+    claim('intent', authorities.intent.lineKey, authorities.intent.variantId, authorities.intent.sku, authorities.intent.intentId);
+  }
+  if (authorities.preview) {
+    claim('preview', authorities.preview.lineKey, authorities.preview.variantId, authorities.preview.sku, authorities.preview.token);
+  }
+  const numerologyLineKey = numerologyAuthorityLineKey(items, authorities.numerology || null);
+  if (authorities.numerology && !numerologyLineKey) throw new QueueOperationError('NUMEROLOGY_AUTHORITY_LINE_MISMATCH');
+  if (authorities.numerology && !claimed.has(numerologyLineKey)) {
+    claimed.set(numerologyLineKey, 'numerology');
+  }
+
+  const unsigned = items.filter((item, index) => !claimed.has(paidReadingLineKey(item, index)));
+  if (!unsigned.length) return { legacyGrandfathered: false, createdAt };
+  const cutoff = Date.parse(text(cutoffValue, 80));
+  if (!Number.isFinite(cutoff)) throw new QueueOperationError('PAID_READING_AUTHORITY_CUTOFF_MISSING');
+  if (createdAt < cutoff) return { legacyGrandfathered: true, createdAt };
+  if (unsigned.some((item) => !protectedReadingLine(item))) {
+    throw new QueueOperationError('SHOPIFY_PACKAGE_VARIANT_INVALID');
+  }
+  throw new QueueOperationError('PAID_READING_AUTHORITY_REQUIRED');
 }
 
 function readingAttribution(item: JsonObject) {
@@ -1593,6 +2034,50 @@ function normalizedReviewStatus(draft: PaidDraft): 'pending' | 'confirmed' | 'au
   return 'pending';
 }
 
+async function receiptBoundPaidDraftReviewState(
+  orderId: string,
+  existing: PaidDraft,
+  env: WorkerEnvironment,
+  questionLimit: number,
+) {
+  const status = text(existing.status, 32);
+  const question = text(existing.question, questionLimit);
+  const originalQuestion = text(existing.originalQuestion, questionLimit);
+  const editCount = Number(existing.editCount);
+  const createdAt = Number(existing.createdAt);
+  const reviewUntil = Number(existing.reviewUntil);
+  const confirmedAt = Number(existing.confirmedAt);
+  const editedAt = Number(existing.editedAt);
+  const accessToken = String(existing.accessToken || '').toLowerCase();
+  if (existing.orderId !== orderId
+    || existing.authorityReceiptVersion !== PAID_READING_AUTHORITY_RECEIPT_VERSION
+    || !/^[a-f0-9]{64}$/i.test(String(existing.authorityReceiptSignature || ''))
+    || !/^[a-f0-9]{64}$/i.test(String(existing.authorityReceiptLineDigest || ''))
+    || !['checkout', 'intent', 'preview', 'numerology'].includes(String(existing.authorityReceiptKind || ''))
+    || !validAccessToken(accessToken)
+    || !['pending', 'confirmed', 'auto_locked'].includes(status)
+    || (status === 'pending' && (existing.legacyReviewStatePreserved !== true || reviewUntil <= Date.now()))
+    || !question || !originalQuestion
+    || !Number.isInteger(editCount) || editCount < 0 || editCount > 1
+    || !Number.isFinite(createdAt) || createdAt <= 0
+    || !Number.isFinite(reviewUntil) || reviewUntil < createdAt
+    || (status === 'confirmed' && (!Number.isFinite(confirmedAt) || confirmedAt <= 0))
+    || (editCount === 1 && (!Number.isFinite(editedAt) || editedAt <= 0))) return null;
+  const mappedOrderId = String(await env.READINGS_CACHE.get(`paid-access:${accessToken}`) || '').trim();
+  if (mappedOrderId !== orderId) return null;
+  return {
+    question,
+    originalQuestion,
+    status: status as 'pending' | 'confirmed' | 'auto_locked',
+    editCount,
+    missingQuestion: existing.missingQuestion === true,
+    createdAt,
+    reviewUntil,
+    ...(Number.isFinite(confirmedAt) && confirmedAt > 0 ? { confirmedAt } : {}),
+    ...(Number.isFinite(editedAt) && editedAt > 0 ? { editedAt } : {}),
+  };
+}
+
 async function replayShopifyWebhook(row: WebhookQueueRow, env: WorkerEnvironment) {
   const topic = text(row.topic, 128).toLowerCase().replace(/_/g, '/');
   if (topic !== 'orders/paid') return { ignored: true };
@@ -1696,10 +2181,11 @@ async function queueDraftForOrder(
   numerology: JsonObject | null = null,
   checkout: VerifiedCheckoutContext | null = null,
   intent: VerifiedReadingIntent | null = null,
+  preview: VerifiedPreviewAuthority | null = null,
 ) {
   const orderId = text(payload.id, 96);
   const existing = await paidDraftForOrder(orderId, env);
-  const verifiedVariantId = intent?.variantId || checkout?.variantId || '';
+  const verifiedVariantId = intent?.variantId || checkout?.variantId || preview?.variantId || text(numerology?.variantId, 64);
   const first = verifiedVariantId
     ? items.find((item) => text(item.variant_id, 64) === verifiedVariantId) || items[0] || {}
     : items[0] || {};
@@ -1712,6 +2198,7 @@ async function queueDraftForOrder(
     ...((numerology?.verifiedFields && typeof numerology.verifiedFields === 'object')
       ? numerology.verifiedFields as JsonObject
       : {}),
+    ...(preview?.verifiedFields || {}),
     // The HMAC-bound server snapshot is the highest-authority source when a
     // numerology order also passes the legacy line-property validator.
     ...(intent?.verifiedFields || {}),
@@ -1722,7 +2209,8 @@ async function queueDraftForOrder(
     const verifiedQuestion = text(verifiedFields?.question, questionLimit);
     const fallbackQuestion = 'General guidance for the path ahead';
     const existingRealQuestion = text(existing.question || existing.originalQuestion, questionLimit);
-    const knownQuestion = verifiedQuestion || checkoutQuestion
+    const receiptReviewState = await receiptBoundPaidDraftReviewState(orderId, existing, env, questionLimit);
+    const knownQuestion = receiptReviewState?.question || verifiedQuestion || checkoutQuestion
       || (existing.status === 'confirmed' || (existingRealQuestion && existingRealQuestion !== fallbackQuestion) ? existingRealQuestion : '');
     // A property-less direct purchase carries no question at all. Locking it
     // at second zero buries the customer's real question behind a generic
@@ -1750,13 +2238,19 @@ async function queueDraftForOrder(
     }
     const draft: PaidDraft = {
       ...existing,
-      originalQuestion: text(verifiedQuestion || existing.originalQuestion || existing.question || checkoutQuestion, questionLimit)
+      originalQuestion: text(receiptReviewState?.originalQuestion
+        || verifiedQuestion || existing.originalQuestion || existing.question || checkoutQuestion, questionLimit)
         || fallbackQuestion,
       question: knownQuestion || fallbackQuestion,
       name: text(verifiedFields?.name, 80) || itemProperty(first, ['name', 'your name']) || existing.name,
-      status: 'auto_locked',
-      reviewUntil: createdAt,
-      confirmedAt: createdAt,
+      status: receiptReviewState?.status || 'auto_locked',
+      reviewUntil: receiptReviewState?.reviewUntil || createdAt,
+      ...(receiptReviewState?.status === 'pending'
+        ? {}
+        : { confirmedAt: receiptReviewState?.confirmedAt || createdAt }),
+      editCount: receiptReviewState?.editCount ?? Math.max(0, Math.min(Number(existing.editCount) || 0, 1)),
+      ...(receiptReviewState?.editedAt ? { editedAt: receiptReviewState.editedAt } : {}),
+      missingQuestion: receiptReviewState?.status === 'pending' ? receiptReviewState.missingQuestion : false,
       tier: packageAuthority.tier,
       shopifyVariantId: packageAuthority.variantId,
       shopifySku: packageAuthority.sku,
@@ -1836,9 +2330,10 @@ async function persistPaidOrder(
   numerology: JsonObject | null = null,
   checkout: VerifiedCheckoutContext | null = null,
   intent: VerifiedReadingIntent | null = null,
+  preview: VerifiedPreviewAuthority | null = null,
 ) {
   const orderId = text(payload.id, 96);
-  const verifiedVariantId = intent?.variantId || checkout?.variantId || '';
+  const verifiedVariantId = intent?.variantId || checkout?.variantId || preview?.variantId || text(numerology?.variantId, 64);
   const first = verifiedVariantId
     ? items.find((item) => text(item.variant_id, 64) === verifiedVariantId) || items[0] || {}
     : items[0] || {};
@@ -1903,6 +2398,14 @@ async function persistPaidOrder(
         price: intent.price,
         category: intent.category,
         kind: intent.intentKind,
+        verifiedServerSide: true,
+      },
+    } : {}),
+    ...(preview ? {
+      previewAuthority: {
+        tokenHash: createHash('sha256').update(preview.token, 'utf8').digest('hex'),
+        variantId: preview.variantId,
+        sku: preview.sku,
         verifiedServerSide: true,
       },
     } : {}),
@@ -2053,10 +2556,612 @@ async function persistPaidOrder(
   `;
 }
 
-async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnvironment) {
+export async function verifyPaidReadingAuthorities(
+  payload: JsonObject,
+  env: WorkerEnvironment,
+  publish?: PaidReadingAuthorityPublisher,
+): Promise<VerifiedPaidReadingAuthorities> {
+  const items = readingItems(payload);
+  if (!items.length) {
+    return {
+      items,
+      numerology: null,
+      checkout: null,
+      intent: null,
+      preview: null,
+      legacyGrandfathered: false,
+    };
+  }
+  // The generator and persisted paid draft currently carry one verified field
+  // set. Do not let a second reading line borrow the first line's authority or
+  // inflate reading credits until there is an explicit per-line draft model.
+  if (items.length !== 1) throw new QueueOperationError('PAID_READING_LINE_COUNT_INVALID');
+  const compatibilityNumerology = validateNumerologyCompatibilityOrder(payload, items) as JsonObject | null;
+  const lifePathNumerology = validateNumerologyLifePathOrder(payload, items) as JsonObject | null;
+  if (compatibilityNumerology && lifePathNumerology) throw new QueueOperationError('NUMEROLOGY_REPORT_TYPE_AMBIGUOUS');
+  const numerology = compatibilityNumerology || lifePathNumerology;
+  const checkout = await verifiedTarotCheckoutContext(items, payload, env);
+  const intent = await verifiedReadingIntent(items, payload);
+  if (checkout && intent) throw new QueueOperationError('CHECKOUT_AUTHORITY_AMBIGUOUS');
+  const preview = checkout || intent ? null : await verifiedFreePreviewAuthority(items, payload, env);
+  const decision = assertPaidReadingLineAuthorities(items, payload, {
+    numerology,
+    checkout,
+    intent,
+    preview,
+  }, env.PAID_READING_AUTHORITY_CUTOFF);
+  if (decision.legacyGrandfathered) {
+    // A pre-cutoff signed Shopify timestamp identifies an already-paid legacy
+    // order, but it does not authenticate the browser's reading evidence.
+    // Quarantine it for the existing terminal/manual-review workflow instead
+    // of silently generating from unsigned line properties.
+    throw new QueueOperationError('PAID_READING_LEGACY_MANUAL_REVIEW_REQUIRED');
+  }
+  const verified = {
+    items,
+    numerology,
+    checkout,
+    intent,
+    preview,
+    legacyGrandfathered: decision.legacyGrandfathered,
+  };
+  if (!publish) return verified;
+  const sourceAuthority = checkout || preview;
+  const sourceGuards = sourceAuthority ? paidReadingAuthoritySourceGuards.get(sourceAuthority) || [] : [];
+  return publish(verified, sourceGuards);
+}
+
+type PaidReadingAuthorityReceiptContext = {
+  orderId: string;
+  payloadSha256: string;
+  items: JsonObject[];
+  line: JsonObject;
+  lineKey: string;
+  lineDigest: string;
+  variantId: string;
+  sku: string;
+};
+
+function canonicalReceiptValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalReceiptValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value as JsonObject).sort().map((key) => [
+      key,
+      canonicalReceiptValue((value as JsonObject)[key]),
+    ]));
+  }
+  return value;
+}
+
+function canonicalReceiptJson(value: unknown) {
+  let encoded = '';
+  try {
+    encoded = JSON.stringify(value);
+    if (!encoded || Buffer.byteLength(encoded, 'utf8') > MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES) {
+      throw new Error('receipt size');
+    }
+    const normalized = JSON.parse(encoded);
+    return JSON.stringify(canonicalReceiptValue(normalized));
+  } catch {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+}
+
+function exactObjectKeys(value: unknown, expected: string[]) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value as JsonObject).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function paidReadingAuthorityReceiptSecret(env: WorkerEnvironment) {
+  const secret = text(
+    env.INTERNAL_ORDER_REPLAY_SECRET
+      || env.SHOPIFY_WEBHOOK_SECRET
+      || process.env.INTERNAL_ORDER_REPLAY_SECRET
+      || process.env.SHOPIFY_WEBHOOK_SECRET,
+    512,
+  );
+  if (!secret) throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_SECRET_MISSING');
+  return secret;
+}
+
+function paidReadingAuthorityReceiptKey(orderId: string) {
+  const orderHash = createHash('sha256').update(`paid-reading-authority:${orderId}`, 'utf8').digest('hex');
+  return `paid-authority-receipt:${orderHash}`;
+}
+
+function paidReadingAuthorityReceiptSignature(body: PaidReadingAuthorityReceiptBody, secret: string) {
+  return createHmac('sha256', secret)
+    .update('deckaura:paid-reading-authority-receipt:v1\0', 'utf8')
+    .update(canonicalReceiptJson(body), 'utf8')
+    .digest('hex');
+}
+
+function paidReadingAuthorityLineDigest(lineKey: string, line: JsonObject) {
+  return createHash('sha256')
+    .update(canonicalReceiptJson({ lineKey, line }), 'utf8')
+    .digest('hex');
+}
+
+function paidReadingAuthorityReceiptContext(row: WebhookQueueRow): PaidReadingAuthorityReceiptContext | null {
   const payload = row.payload || {};
   const items = readingItems(payload);
-  if (!items.length) return { queued: false };
+  if (!items.length) return null;
+  if (items.length !== 1) throw new QueueOperationError('PAID_READING_LINE_COUNT_INVALID');
+  const payloadOrderId = text(payload.id, 96);
+  const queuedOrderId = text(row.order_id, 96);
+  if (!payloadOrderId || !queuedOrderId || payloadOrderId !== queuedOrderId) {
+    throw new QueueOperationError('SHOPIFY_ORDER_ID_MISMATCH');
+  }
+  const payloadSha256 = String(row.payload_sha256 || '').trim();
+  if (!/^[a-f0-9]{64}$/.test(payloadSha256)) {
+    throw new QueueOperationError('SHOPIFY_PAYLOAD_HASH_INVALID');
+  }
+  const line = items[0];
+  const lineKey = paidReadingLineKey(line, 0);
+  const variantId = text(line.variant_id, 64);
+  const sku = text(line.sku, 80).toUpperCase();
+  if (!lineKey || !variantId || !sku) throw new QueueOperationError('PAID_READING_AUTHORITY_LINE_MISMATCH');
+  return {
+    orderId: payloadOrderId,
+    payloadSha256,
+    items,
+    line,
+    lineKey,
+    lineDigest: paidReadingAuthorityLineDigest(lineKey, line),
+    variantId,
+    sku,
+  };
+}
+
+function paidReadingAuthorityKind(authorities: StoredPaidReadingAuthorities) {
+  const primary = ([
+    ['checkout', authorities.checkout],
+    ['intent', authorities.intent],
+    ['preview', authorities.preview],
+  ] as const).filter(([, authority]) => Boolean(authority));
+  if (primary.length > 1) throw new QueueOperationError('CHECKOUT_AUTHORITY_AMBIGUOUS');
+  if (primary[0]) return primary[0][0];
+  if (authorities.numerology) return 'numerology' as const;
+  throw new QueueOperationError('PAID_READING_AUTHORITY_REQUIRED');
+}
+
+function paidReadingAuthorityIdentity(
+  context: PaidReadingAuthorityReceiptContext,
+  authorities: StoredPaidReadingAuthorities,
+) {
+  const authorityKind = paidReadingAuthorityKind(authorities);
+  const authority = authorityKind === 'checkout'
+    ? authorities.checkout
+    : authorityKind === 'intent'
+      ? authorities.intent
+      : authorityKind === 'preview'
+        ? authorities.preview
+        : authorities.numerology;
+  const lineKey = authorityKind === 'numerology'
+    ? numerologyAuthorityLineKey(context.items, authorities.numerology)
+    : text((authority as JsonObject | null)?.lineKey, 200);
+  const variantId = text((authority as JsonObject | null)?.variantId, 64);
+  const sku = text((authority as JsonObject | null)?.sku, 80).toUpperCase();
+  if (lineKey !== context.lineKey || variantId !== context.variantId || sku !== context.sku) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_LINE_MISMATCH');
+  }
+  return { authorityKind, lineKey, variantId, sku };
+}
+
+function normalizedStoredPaidReadingAuthorities(authorities: VerifiedPaidReadingAuthorities): StoredPaidReadingAuthorities {
+  const encoded = canonicalReceiptJson({
+    numerology: authorities.numerology || null,
+    checkout: authorities.checkout || null,
+    intent: authorities.intent || null,
+    preview: authorities.preview || null,
+  });
+  return JSON.parse(encoded) as StoredPaidReadingAuthorities;
+}
+
+function paidReadingAuthorityReceipt(
+  context: PaidReadingAuthorityReceiptContext,
+  payload: JsonObject,
+  verified: VerifiedPaidReadingAuthorities,
+  env: WorkerEnvironment,
+): PaidReadingAuthorityReceipt {
+  const authorities = normalizedStoredPaidReadingAuthorities(verified);
+  assertPaidReadingLineAuthorities(context.items, payload, authorities, env.PAID_READING_AUTHORITY_CUTOFF);
+  const identity = paidReadingAuthorityIdentity(context, authorities);
+  const body: PaidReadingAuthorityReceiptBody = {
+    receiptVersion: PAID_READING_AUTHORITY_RECEIPT_VERSION,
+    orderId: context.orderId,
+    payloadSha256: context.payloadSha256,
+    lineKey: identity.lineKey,
+    lineDigest: context.lineDigest,
+    variantId: identity.variantId,
+    sku: identity.sku,
+    authorityKind: identity.authorityKind,
+    authorities,
+  };
+  const receipt = {
+    ...body,
+    signature: paidReadingAuthorityReceiptSignature(body, paidReadingAuthorityReceiptSecret(env)),
+  };
+  if (Buffer.byteLength(JSON.stringify(receipt), 'utf8') > MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  return receipt;
+}
+
+function restoredPaidReadingAuthorities(
+  raw: unknown,
+  context: PaidReadingAuthorityReceiptContext,
+  payload: JsonObject,
+  env: WorkerEnvironment,
+) {
+  if (typeof raw !== 'string' || !raw
+    || Buffer.byteLength(raw, 'utf8') > MAX_PAID_READING_AUTHORITY_RECEIPT_BYTES) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  let parsed: JsonObject;
+  try {
+    parsed = JSON.parse(raw) as JsonObject;
+  } catch {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  if (!exactObjectKeys(parsed, [
+    'receiptVersion', 'orderId', 'payloadSha256', 'lineKey', 'lineDigest',
+    'variantId', 'sku', 'authorityKind', 'authorities', 'signature',
+  ]) || !exactObjectKeys(parsed.authorities, ['numerology', 'checkout', 'intent', 'preview'])) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  const body = {
+    receiptVersion: parsed.receiptVersion,
+    orderId: parsed.orderId,
+    payloadSha256: parsed.payloadSha256,
+    lineKey: parsed.lineKey,
+    lineDigest: parsed.lineDigest,
+    variantId: parsed.variantId,
+    sku: parsed.sku,
+    authorityKind: parsed.authorityKind,
+    authorities: parsed.authorities,
+  } as PaidReadingAuthorityReceiptBody;
+  const signature = String(parsed.signature || '');
+  const expectedSignature = paidReadingAuthorityReceiptSignature(body, paidReadingAuthorityReceiptSecret(env));
+  if (body.receiptVersion !== PAID_READING_AUTHORITY_RECEIPT_VERSION
+    || !secureHexEqual(expectedSignature, signature)
+    || body.orderId !== context.orderId
+    || body.payloadSha256 !== context.payloadSha256
+    || body.lineKey !== context.lineKey
+    || body.lineDigest !== context.lineDigest
+    || body.variantId !== context.variantId
+    || body.sku !== context.sku) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  const authorities = body.authorities;
+  for (const authority of [authorities.numerology, authorities.checkout, authorities.intent, authorities.preview]) {
+    if (authority != null && (typeof authority !== 'object' || Array.isArray(authority))) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+    }
+  }
+  const identity = paidReadingAuthorityIdentity(context, authorities);
+  if (identity.authorityKind !== body.authorityKind) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  const decision = assertPaidReadingLineAuthorities(context.items, payload, authorities, env.PAID_READING_AUTHORITY_CUTOFF);
+  if (decision.legacyGrandfathered) throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  return {
+    receipt: { ...body, signature } as PaidReadingAuthorityReceipt,
+    authorities: {
+      items: context.items,
+      ...authorities,
+      legacyGrandfathered: false,
+    } as VerifiedPaidReadingAuthorities,
+  };
+}
+
+function paidReadingAuthorityVerifiedFields(authorities: StoredPaidReadingAuthorities) {
+  return {
+    ...(authorities.checkout?.verifiedFields || {}),
+    ...((authorities.numerology?.verifiedFields && typeof authorities.numerology.verifiedFields === 'object')
+      ? authorities.numerology.verifiedFields as JsonObject
+      : {}),
+    ...(authorities.preview?.verifiedFields || {}),
+    ...(authorities.intent?.verifiedFields || {}),
+  };
+}
+
+function paidReadingAuthorityAccessToken(orderId: string, existing: PaidDraft | null, secret: string) {
+  if (validAccessToken(existing?.accessToken)) return String(existing?.accessToken).toLowerCase();
+  return createHmac('sha256', secret)
+    .update(`paid-authority-access:${orderId}`, 'utf8')
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function legacyPaidDraftReviewState(
+  context: PaidReadingAuthorityReceiptContext,
+  existing: PaidDraft | null,
+  accessBytes: string,
+  questionLimit: number,
+) {
+  if (!existing
+    || existing.orderId !== context.orderId
+    || !validAccessToken(existing.accessToken)
+    || accessBytes !== context.orderId
+    || existing.authorityReceiptVersion
+    || existing.authorityReceiptSignature
+    || existing.authorityReceiptKind
+    || existing.authorityReceiptLineDigest) return null;
+  const status = text(existing.status, 32);
+  const editCount = Number(existing.editCount);
+  const createdAt = Number(existing.createdAt);
+  const reviewUntil = Number(existing.reviewUntil);
+  const confirmedAt = Number(existing.confirmedAt);
+  const editedAt = Number(existing.editedAt);
+  const reviewEmailSentAt = Number(existing.reviewEmailSentAt);
+  const rawQuestion = String(existing.question || '').trim();
+  const rawOriginalQuestion = String(existing.originalQuestion || '').trim();
+  if (!['pending', 'confirmed', 'auto_locked'].includes(status)
+    || !Number.isInteger(editCount) || editCount < 0 || editCount > 1
+    || !Number.isFinite(createdAt) || createdAt <= 0
+    || !Number.isFinite(reviewUntil) || reviewUntil < createdAt
+    || !rawQuestion || rawQuestion.length > questionLimit
+    || !rawOriginalQuestion || rawOriginalQuestion.length > questionLimit
+    || (status === 'confirmed' && (!Number.isFinite(confirmedAt) || confirmedAt <= 0))
+    || (editCount === 1 && (!Number.isFinite(editedAt) || editedAt <= 0))
+    || (existing.reviewEmailSentAt != null && (!Number.isFinite(reviewEmailSentAt) || reviewEmailSentAt <= 0))) {
+    return null;
+  }
+  return {
+    accessToken: String(existing.accessToken).toLowerCase(),
+    originalQuestion: rawOriginalQuestion,
+    question: rawQuestion,
+    status,
+    editCount,
+    missingQuestion: existing.missingQuestion === true,
+    createdAt,
+    reviewUntil,
+    ...(Number.isFinite(confirmedAt) && confirmedAt > 0 ? { confirmedAt } : {}),
+    ...(Number.isFinite(editedAt) && editedAt > 0 ? { editedAt } : {}),
+    ...(Number.isFinite(reviewEmailSentAt) && reviewEmailSentAt > 0 ? { reviewEmailSentAt } : {}),
+  };
+}
+
+function paidReadingAuthorityDraft(
+  context: PaidReadingAuthorityReceiptContext,
+  payload: JsonObject,
+  receipt: PaidReadingAuthorityReceipt,
+  existing: PaidDraft | null,
+  accessToken: string,
+  legacyReviewState: ReturnType<typeof legacyPaidDraftReviewState> = null,
+) {
+  if (existing?.orderId && existing.orderId !== context.orderId) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  const receiptBound = existing?.authorityReceiptVersion === PAID_READING_AUTHORITY_RECEIPT_VERSION
+    && existing?.authorityReceiptSignature === receipt.signature
+    && existing?.authorityReceiptKind === receipt.authorityKind
+    && existing?.authorityReceiptLineDigest === receipt.lineDigest;
+  if ((existing?.authorityReceiptVersion || existing?.authorityReceiptSignature
+    || existing?.authorityReceiptKind || existing?.authorityReceiptLineDigest) && !receiptBound) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+  }
+  const verifiedFields = {
+    ...(receiptBound ? existing?.verifiedFields || {} : {}),
+    ...paidReadingAuthorityVerifiedFields(receipt.authorities),
+  };
+  const reviewStateBound = receiptBound || Boolean(legacyReviewState);
+  const existingReviewState = receiptBound ? existing || {} : legacyReviewState || {};
+  const packageAuthority = paidPackageAuthority(context.line);
+  if (packageAuthority.variantId !== receipt.variantId || packageAuthority.sku !== receipt.sku) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_LINE_MISMATCH');
+  }
+  const createdAt = payloadCreatedAt(payload);
+  const questionLimit = paidQuestionLengthLimit(verifiedFields);
+  const verifiedQuestion = text(verifiedFields.question, questionLimit);
+  const lineQuestion = itemProperty(context.line, ['question', 'your question']);
+  const persistedQuestion = reviewStateBound ? text(existingReviewState.question, questionLimit) : '';
+  const question = persistedQuestion || verifiedQuestion || lineQuestion || 'General guidance for the path ahead';
+  const missingQuestion = !persistedQuestion && !verifiedQuestion && !lineQuestion;
+  const localeContext = customerLocaleContext({
+    locale: verifiedFields.locale || verifiedFields.lang || payload.customer_locale,
+    country: verifiedFields.country || orderCountryCode(payload),
+    currency: verifiedFields.currency || payload.presentment_currency || payload.currency,
+    market: verifiedFields.market,
+  });
+  const preserved = receiptBound ? existing || {} : existingReviewState;
+  return {
+    ...preserved,
+    schemaVersion: 2,
+    orderId: context.orderId,
+    orderName: text(payload.name, 40),
+    accessToken,
+    originalQuestion: reviewStateBound
+      ? text(existingReviewState.originalQuestion, questionLimit) || question
+      : question,
+    question,
+    name: text(verifiedFields.name, 80) || (receiptBound ? text(existing?.name, 80) : '')
+      || itemProperty(context.line, ['name', 'your name']),
+    lang: localeContext.language,
+    locale: localeContext.locale,
+    country: localeContext.country,
+    currency: localeContext.currency,
+    market: localeContext.market,
+    status: reviewStateBound ? text(existingReviewState.status, 32) || 'pending' : 'pending',
+    editCount: reviewStateBound ? Math.max(0, Math.min(Number(existingReviewState.editCount) || 0, 1)) : 0,
+    missingQuestion: reviewStateBound ? existingReviewState.missingQuestion === true : missingQuestion,
+    createdAt: reviewStateBound ? Number(existingReviewState.createdAt) || createdAt : createdAt,
+    reviewUntil: reviewStateBound ? Number(existingReviewState.reviewUntil) || createdAt + 40 * 60_000 : createdAt + 40 * 60_000,
+    ...(reviewStateBound && Number(existingReviewState.confirmedAt) > 0 ? { confirmedAt: Number(existingReviewState.confirmedAt) } : {}),
+    ...(reviewStateBound && Number(existingReviewState.editedAt) > 0 ? { editedAt: Number(existingReviewState.editedAt) } : {}),
+    tier: packageAuthority.tier,
+    shopifyVariantId: packageAuthority.variantId,
+    shopifySku: packageAuthority.sku,
+    verifiedFields,
+    ...(receipt.authorities.numerology ? { numerology: receipt.authorities.numerology } : {}),
+    authorityReceiptVersion: PAID_READING_AUTHORITY_RECEIPT_VERSION,
+    authorityReceiptSignature: receipt.signature,
+    authorityReceiptKind: receipt.authorityKind,
+    authorityReceiptLineDigest: receipt.lineDigest,
+    ...(legacyReviewState != null || (receiptBound && existing?.legacyReviewStatePreserved === true)
+      ? { legacyReviewStatePreserved: true }
+      : {}),
+  } satisfies PaidDraft;
+}
+
+async function persistPaidReadingAuthorityReceipt(
+  context: PaidReadingAuthorityReceiptContext,
+  row: WebhookQueueRow,
+  env: WorkerEnvironment,
+  verified: VerifiedPaidReadingAuthorities,
+  sourceGuards: PaidReadingAuthoritySourceGuard[] = [],
+) {
+  const secret = paidReadingAuthorityReceiptSecret(env);
+  const receiptKey = paidReadingAuthorityReceiptKey(context.orderId);
+  const draftKey = `paid-draft:${context.orderId}`;
+  const reservedKeys = new Set([receiptKey, draftKey]);
+  if (sourceGuards.length > 5 || sourceGuards.some((guard) => !guard
+    || !guard.key || reservedKeys.has(guard.key)
+    || !guard.expectedValue || guard.expectedValue !== guard.value
+    || !Number.isFinite(guard.options?.expiration))) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_GUARD_INVALID');
+  }
+  if (new Set(sourceGuards.map((guard) => guard.key)).size !== sourceGuards.length) {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_GUARD_INVALID');
+  }
+  const candidate = paidReadingAuthorityReceipt(context, row.payload || {}, verified, env);
+  const candidateBytes = JSON.stringify(candidate);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const receiptBytesValue = await env.READINGS_CACHE.get(receiptKey);
+    if (receiptBytesValue != null && typeof receiptBytesValue !== 'string') {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+    }
+    const receiptBytes = typeof receiptBytesValue === 'string' ? receiptBytesValue : '';
+    const restored = restoredPaidReadingAuthorities(
+      receiptBytes || candidateBytes,
+      context,
+      row.payload || {},
+      env,
+    );
+    const activeSourceGuards = receiptBytes ? [] : sourceGuards;
+    if (activeSourceGuards.some((guard) => guard.options.expiration * 1_000 <= Date.now())) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_CHANGED');
+    }
+
+    const draftBytesValue = await env.READINGS_CACHE.get(draftKey);
+    const draftBytes = typeof draftBytesValue === 'string' ? draftBytesValue : '';
+    const existingDraft = parsedStoredObject(draftBytesValue) as PaidDraft | null;
+    if (draftBytesValue != null && (!draftBytes || !existingDraft)) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+    }
+    const accessToken = paidReadingAuthorityAccessToken(context.orderId, existingDraft, secret);
+    const accessKey = `paid-access:${accessToken}`;
+    if (activeSourceGuards.some((guard) => guard.key === accessKey)) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_SOURCE_GUARD_INVALID');
+    }
+    const accessBytesValue = await env.READINGS_CACHE.get(accessKey);
+    const accessBytes = typeof accessBytesValue === 'string' ? accessBytesValue : '';
+    if (accessBytesValue != null && (!accessBytes || accessBytes !== context.orderId)) {
+      throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_INVALID');
+    }
+    const draft = paidReadingAuthorityDraft(
+      context,
+      row.payload || {},
+      restored.receipt,
+      existingDraft,
+      accessToken,
+      legacyPaidDraftReviewState(
+        context,
+        existingDraft,
+        accessBytes,
+        paidQuestionLengthLimit(paidReadingAuthorityVerifiedFields(restored.receipt.authorities)),
+      ),
+    );
+    const persisted = await env.READINGS_CACHE.compareAndSetMany([
+      ...activeSourceGuards,
+      {
+        key: receiptKey,
+        expectedValue: receiptBytes || null,
+        value: receiptBytes || candidateBytes,
+        options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
+      },
+      {
+        key: draftKey,
+        expectedValue: draftBytes || null,
+        value: JSON.stringify(draft),
+        options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
+      },
+      {
+        key: accessKey,
+        expectedValue: accessBytes || null,
+        value: context.orderId,
+        options: { expirationTtl: PAID_READING_AUTHORITY_RECEIPT_TTL_SECONDS },
+      },
+    ]);
+    if (persisted === true) return restored.authorities;
+  }
+  throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_CONFLICT');
+}
+
+export async function verifiedOrReceiptedPaidReadingAuthorities(
+  row: WebhookQueueRow,
+  env: WorkerEnvironment,
+  verifier: typeof verifyPaidReadingAuthorities = verifyPaidReadingAuthorities,
+  hooks: { afterVerify?: () => unknown | Promise<unknown> } = {},
+): Promise<VerifiedPaidReadingAuthorities> {
+  const context = paidReadingAuthorityReceiptContext(row);
+  if (!context) return verifier(row.payload || {}, env);
+  if (!env.READINGS_CACHE || typeof env.READINGS_CACHE.compareAndSetMany !== 'function') {
+    throw new QueueOperationError('PAID_READING_AUTHORITY_RECEIPT_STORE_UNAVAILABLE');
+  }
+  const receiptKey = paidReadingAuthorityReceiptKey(context.orderId);
+  const existingReceiptValue = await env.READINGS_CACHE.get(receiptKey);
+  if (existingReceiptValue != null) {
+    const existingReceipt = restoredPaidReadingAuthorities(existingReceiptValue, context, row.payload || {}, env);
+    return persistPaidReadingAuthorityReceipt(context, row, env, existingReceipt.authorities);
+  }
+
+  let publishedBeforeVerifierReturn = false;
+  const publish: PaidReadingAuthorityPublisher = async (verified, sourceGuards) => {
+    const persisted = await persistPaidReadingAuthorityReceipt(context, row, env, verified, sourceGuards);
+    publishedBeforeVerifierReturn = true;
+    return persisted;
+  };
+  let verified: VerifiedPaidReadingAuthorities;
+  try {
+    verified = await verifier(row.payload || {}, env, publish);
+  } catch (error) {
+    // A duplicate worker may have consumed the one-time intent and then
+    // atomically published the order receipt. Prefer that exact signed winner;
+    // never reconstruct authority from a mutable draft alone.
+    const winnerValue = await env.READINGS_CACHE.get(receiptKey);
+    if (winnerValue == null) throw error;
+    const winner = restoredPaidReadingAuthorities(winnerValue, context, row.payload || {}, env);
+    return persistPaidReadingAuthorityReceipt(context, row, env, winner.authorities);
+  }
+  if (hooks.afterVerify) await hooks.afterVerify();
+  if (publishedBeforeVerifierReturn) return verified;
+  // Test adapters and specialized verifiers may not implement the publisher
+  // callback. Production verification does, so its mutable source handoff is
+  // linearized before the verifier can return.
+  return persistPaidReadingAuthorityReceipt(context, row, env, verified);
+}
+
+type PaidReadingEnqueueOperations = {
+  persistPaidOrder?: typeof persistPaidOrder;
+  enqueuePostPurchase?: typeof funnelStore.enqueuePostPurchase;
+  recordEvents?: typeof funnelStore.recordEvents;
+  enqueueDelivery?: typeof deliveryRetry.enqueueDelivery;
+};
+
+async function enqueueReadingFromWebhook(
+  row: WebhookQueueRow,
+  env: WorkerEnvironment,
+  verifiedAuthorities: VerifiedPaidReadingAuthorities | null = null,
+  operations: PaidReadingEnqueueOperations = {},
+) {
+  const payload = row.payload || {};
+  const initialItems = verifiedAuthorities?.items || readingItems(payload);
+  if (!initialItems.length) return { queued: false };
 
   const orderId = text(payload.id, 96);
   if (!orderId || (row.order_id && row.order_id !== orderId)) {
@@ -2065,22 +3170,18 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
   if (!shopifyFinancialStatusAllowsReadingFulfillment(payload.financial_status)) {
     throw new QueueOperationError('SHOPIFY_PAYMENT_NOT_CAPTURED');
   }
-  const compatibilityNumerology = validateNumerologyCompatibilityOrder(payload, items) as JsonObject | null;
-  const lifePathNumerology = validateNumerologyLifePathOrder(payload, items) as JsonObject | null;
-  if (compatibilityNumerology && lifePathNumerology) throw new QueueOperationError('NUMEROLOGY_REPORT_TYPE_AMBIGUOUS');
-  const numerology = compatibilityNumerology || lifePathNumerology;
-  const checkout = await verifiedTarotCheckoutContext(items, env);
-  const intent = await verifiedReadingIntent(items, payload);
-  if (checkout && intent) throw new QueueOperationError('CHECKOUT_AUTHORITY_AMBIGUOUS');
-  const { draft } = await queueDraftForOrder(payload, items, env, numerology, checkout, intent);
+  const authorities = verifiedAuthorities || await verifyPaidReadingAuthorities(payload, env);
+  const { items, numerology, checkout, intent, preview } = authorities;
+  if (!items.length) return { queued: false };
+  const { draft } = await queueDraftForOrder(payload, items, env, numerology, checkout, intent, preview);
   const requestedNumerologyDelay = Number(numerology?.deliveryDelayMinutes);
   const delayMinutes = Number.isFinite(requestedNumerologyDelay) && requestedNumerologyDelay > 0
     ? requestedNumerologyDelay
     : readingDeliveryDelayMinutes(orderId, env);
   const reviewHoldMs = normalizedReviewStatus(draft) === 'pending' ? (Number(draft.reviewUntil) || 0) + 5 * 60_000 : 0;
   const dueAt = new Date(Math.max(payloadCreatedAt(payload) + delayMinutes * 60_000, reviewHoldMs));
-  await persistPaidOrder(payload, items, draft, dueAt, numerology, checkout, intent);
-  const verifiedVariantId = intent?.variantId || checkout?.variantId || '';
+  await (operations.persistPaidOrder || persistPaidOrder)(payload, items, draft, dueAt, numerology, checkout, intent, preview);
+  const verifiedVariantId = intent?.variantId || checkout?.variantId || preview?.variantId || text(numerology?.variantId, 64);
   const first = verifiedVariantId
     ? items.find((item) => text(item.variant_id, 64) === verifiedVariantId) || items[0] || {}
     : items[0] || {};
@@ -2094,7 +3195,7 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
   });
   const email = text(payload.email || payload.contact_email, 320).toLowerCase();
   if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    await funnelStore.enqueuePostPurchase({
+    await (operations.enqueuePostPurchase || ((input) => funnelStore.enqueuePostPurchase(input)))({
       orderId,
       email,
       emailHash: lifecycleEmailHash(email),
@@ -2110,6 +3211,8 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
         selectedPackage: packageAuthority.tier,
         checkoutContextVerified: Boolean(checkout),
         checkoutIntentVerified: Boolean(intent),
+        previewAuthorityVerified: Boolean(preview),
+        legacyAuthorityGrandfathered: authorities.legacyGrandfathered,
         experimentKey: attribution.experimentKey || '',
         experimentVariant: attribution.experimentVariant || '',
         locale: customerContext.locale,
@@ -2121,7 +3224,7 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
       },
     });
   }
-  await funnelStore.recordEvents(null, [{
+  await (operations.recordEvents || ((request, events) => funnelStore.recordEvents(request, events)))(null, [{
     eventId: deterministicUuid(`shopify-purchase:${orderId}`),
     eventName: attribution.page === LOVE_TAROT_PAGE
       ? 'love_purchase_completed'
@@ -2160,9 +3263,43 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
     metadata: { source: 'verified_shopify_webhook', answers_used: attribution.answersUsed },
     occurredAt: new Date(payloadCreatedAt(payload)).toISOString(),
   }]).catch((error) => safeQueueLog('purchase_attribution_record_failed', error, 'shopify_orders_paid'));
-  const job = await deliveryRetry.enqueueDelivery(paidReadingDeliveryJobInput(orderId, dueAt));
+  const job = await (operations.enqueueDelivery || ((input) => deliveryRetry.enqueueDelivery(input)))(
+    paidReadingDeliveryJobInput(orderId, dueAt),
+  );
   if (!job) throw new QueueOperationError('DELIVERY_ENQUEUE_FAILED');
   return { queued: true };
+}
+
+type PaidWebhookProcessingDependencies = {
+  verifyAuthorities?: typeof verifyPaidReadingAuthorities;
+  replay?: typeof replayShopifyWebhook;
+  validateMembership?: typeof validateMembershipActivation;
+  enqueue?: typeof enqueueReadingFromWebhook;
+  enqueueOperations?: PaidReadingEnqueueOperations;
+};
+
+export async function processUndeliveredPaidOrder(
+  row: WebhookQueueRow,
+  env: WorkerEnvironment,
+  dependencies: PaidWebhookProcessingDependencies = {},
+) {
+  const verifiedAuthorities = await verifiedOrReceiptedPaidReadingAuthorities(
+    row,
+    env,
+    dependencies.verifyAuthorities || verifyPaidReadingAuthorities,
+  );
+  const replay = await (dependencies.replay || replayShopifyWebhook)(row, env);
+  if (!replay.ignored) {
+    await (dependencies.validateMembership || validateMembershipActivation)(row.payload || {}, env);
+    await (dependencies.enqueue
+      || ((queuedRow, runtimeEnv, authorities) => enqueueReadingFromWebhook(
+        queuedRow,
+        runtimeEnv,
+        authorities,
+        dependencies.enqueueOperations,
+      )))(row, env, verifiedAuthorities);
+  }
+  return { replay, verifiedAuthorities };
 }
 
 async function updatePaidOrderBeforeDelivery(orderId: string, env: WorkerEnvironment) {
@@ -2366,12 +3503,16 @@ async function processWebhookClaim(row: WebhookQueueRow, env: WorkerEnvironment,
       // enqueue another paid-reading job for an authoritatively delivered order.
       state.ignored += 1;
     } else {
-      const replay = await replayShopifyWebhook(row, env);
+      // This gate must precede the legacy replay: that worker can create a
+      // paid draft from browser line properties, so replay is not an authority
+      // validator. Every current reading line is bound to server state here;
+      // only a signed Shopify order strictly before the configured cutoff can
+      // use the explicit legacy path.
+      const processed = topic === 'orders/paid'
+        ? await processUndeliveredPaidOrder(row, env)
+        : { replay: await replayShopifyWebhook(row, env) };
+      const replay = processed.replay;
       if (replay.ignored) state.ignored += 1;
-      else {
-        await validateMembershipActivation(row.payload || {}, env);
-        await enqueueReadingFromWebhook(row, env);
-      }
     }
     const completion = await deliveryRetry.completeShopifyWebhook(row.webhook_id, row.lease_token);
     if (completion.allowed === true) state.completed += 1;

@@ -545,7 +545,15 @@ test('exact browser payload creates one hash-bound localized intent and a redraw
     schemaVersion: 2,
     snapshotVersion: 'reading-snapshot-v2',
     readingId,
-    fields: { ...browserSnapshot, version: undefined },
+    fields: {
+      ...browserSnapshot,
+      version: undefined,
+      lang: 'en',
+      locale: 'en-US',
+      country: 'US',
+      currency: 'USD',
+      market: 'us',
+    },
     question: QUESTION,
     focus: '',
     ownerVisitorHash: visitorAuthority.visitorName,
@@ -564,9 +572,21 @@ test('exact browser payload creates one hash-bound localized intent and a redraw
     [visitorAuthority.sessionKey, JSON.stringify(currentSession)],
   ]);
   const inserts = [];
+  let injectSafetyBeforeIntentLock = false;
   const sql = async (strings, ...values) => {
     const query = strings.join(' ');
     if (query.includes('from deckaura.kv_store')) {
+      if (injectSafetyBeforeIntentLock
+        && query.includes('for update')
+        && String(values[0]) === visitorAuthority.sessionKey) {
+        injectSafetyBeforeIntentLock = false;
+        const blocked = JSON.parse(cache.get(visitorAuthority.sessionKey));
+        blocked.safety = true;
+        blocked.offerBlocked = true;
+        blocked.approvalStatus = 'blocked';
+        blocked.fields = { ...blocked.fields, safetyAction: 'danger' };
+        cache.set(visitorAuthority.sessionKey, JSON.stringify(blocked));
+      }
       const value = cache.get(String(values[0]));
       return value === undefined ? [] : [{ value }];
     }
@@ -577,6 +597,7 @@ test('exact browser payload creates one hash-bound localized intent and a redraw
     throw new Error(`Unexpected SQL in seven-card route test: ${query.slice(0, 80)}`);
   };
   sql.json = (value) => ({ __testJson: value });
+  sql.begin = async (callback) => callback(sql);
   globalThis.__deckauraSql = sql;
 
   const storefrontRequests = [];
@@ -648,6 +669,23 @@ test('exact browser payload creates one hash-bound localized intent and a redraw
   assert.equal(inserts[0].snapshot.signals, SIGNALS);
   assert.equal(inserts[0].snapshot.checkoutQuote.intentId, payload.intentId);
   assert.equal(inserts[0].snapshot.transportFallback, false);
+  assert.deepEqual(inserts[0].snapshot.localeContext, {
+    locale: 'en-US', language: 'en', country: 'US', currency: 'USD', market: 'us',
+  });
+
+  const marketMismatch = await POST(routeRequest({ country: 'DE', currency: 'EUR', market: 'de' }));
+  assert.equal(marketMismatch.status, 422, 'caller-supplied market drift replaced the saved preview market');
+  assert.equal(inserts.length, 1);
+  assert.equal(storefrontRequests.length, 1, 'market drift must fail before Shopify quote lookup');
+
+  currentSession.fields = { ...currentSession.fields, safetyAction: 'medical' };
+  cache.set(visitorAuthority.sessionKey, JSON.stringify(currentSession));
+  const sessionSafetyResponse = await POST(routeRequest());
+  assert.equal(sessionSafetyResponse.status, 422, 'session field safety action did not revoke paid authority');
+  assert.equal(inserts.length, 1);
+  assert.equal(storefrontRequests.length, 1, 'session safety must fail before Shopify quote lookup');
+  currentSession.fields = { ...currentSession.fields, safetyAction: '' };
+  cache.set(visitorAuthority.sessionKey, JSON.stringify(currentSession));
 
   currentSession.token = 'b'.repeat(32);
   cache.set(visitorAuthority.sessionKey, JSON.stringify(currentSession));
@@ -676,6 +714,26 @@ test('exact browser payload creates one hash-bound localized intent and a redraw
   }));
   assert.equal(unsafe.status, 422);
   assert.equal(inserts.length, 1, 'unsafe transport fallback must be rejected before DB persistence');
+
+  currentSession.token = previewToken;
+  currentSession.safety = false;
+  currentSession.offerBlocked = false;
+  currentSession.approvalStatus = 'approved';
+  currentSession.fields = { ...currentSession.fields, safetyAction: '' };
+  const safeSessionBeforeRace = JSON.stringify(currentSession);
+  cache.set(visitorAuthority.sessionKey, safeSessionBeforeRace);
+  const insertsBeforeRace = inserts.length;
+  const storefrontRequestsBeforeRace = storefrontRequests.length;
+  injectSafetyBeforeIntentLock = true;
+  const racedResponse = await POST(routeRequest());
+  const racedPayload = await racedResponse.json();
+  assert.equal(racedResponse.status, 422, JSON.stringify(racedPayload));
+  assert.equal(racedPayload.code, 'SHARED_SEVEN_CARD_PREVIEW_EXPIRED_OR_INVALID');
+  assert.equal(injectSafetyBeforeIntentLock, false, 'the transaction barrier did not run');
+  assert.equal(inserts.length, insertsBeforeRace, 'a concurrent safety winner still persisted a signed intent');
+  assert.equal(storefrontRequests.length, storefrontRequestsBeforeRace + 1,
+    'the race fixture did not cross the post-read, post-quote issuance boundary');
+  cache.set(visitorAuthority.sessionKey, safeSessionBeforeRace);
 });
 
 test('worker adapter never generates curiosity and deterministic generation remains plain text under hostile input', async () => {
