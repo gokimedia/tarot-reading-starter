@@ -673,6 +673,8 @@ function validatedFreeReadingBudgets(input: FreeReadingBudgetInput[]) {
   });
 }
 
+const STABLE_FREE_READING_CLAIM_CONTRACT = 'stable-replay-v1';
+
 export class PostgresFreeReadingBudgets {
   async claim(claimId: string, input: FreeReadingBudgetInput[]) {
     if (!validUuid(claimId)) throw new Error('Invalid free-reading claim ID');
@@ -682,10 +684,17 @@ export class PostgresFreeReadingBudgets {
       select deckaura.claim_free_reading_budgets(
         ${claimId}::uuid,
         ${sql.json(budgets as never)},
-        120
+        120,
+        ${STABLE_FREE_READING_CLAIM_CONTRACT}
       ) as result
     `;
-    return rows[0]?.result || { allowed: false, reason: 'limiter_unavailable' };
+    const result = rows[0]?.result || { allowed: false, reason: 'limiter_unavailable' };
+    // SQL must be promoted first. Without the recycle contract, a stable
+    // replay-derived claim could remain trapped behind a retained consumed row.
+    if (result.claimContract !== STABLE_FREE_READING_CLAIM_CONTRACT) {
+      throw new Error('Free-reading budget claim contract mismatch');
+    }
+    return result;
   }
 
   async settle(claimId: string, commit: boolean) {

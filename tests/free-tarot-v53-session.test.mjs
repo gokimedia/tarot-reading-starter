@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
   conciseDeterministicFreeTeaser,
   deterministicPrivateStateReservedRecovery,
   freePreviewPayload,
+  freeReservedThreeCardVerdictLeak,
+  freeReservedThreeCardYesNoMeaning,
   freeTeaserAudit,
   freeTeaserAssignsUnsupportedStateToName,
   handleFreeReading,
@@ -140,8 +143,8 @@ function sessionRequest(visitorId = VISITOR_ID, kind = 'last-approved', headers 
   });
 }
 
-async function createPreview(env, body) {
-  const response = await handleFreeReading(readingRequest(body), env);
+async function createPreview(env, body, headers = REQUEST_HEADERS) {
+  const response = await handleFreeReading(readingRequest(body, headers), env);
   return { response, payload: await response.json() };
 }
 
@@ -197,6 +200,22 @@ for (const fixture of [
     assert.equal(budget.commits, 1);
     assert.equal(budget.releases, 0);
   });
+}
+
+function approvedPointerFailureCache(kv, control) {
+  return {
+    get: (...args) => kv.binding.get(...args),
+    delete: (...args) => kv.binding.delete(...args),
+    put: async (key, value, options) => {
+      let parsed = null;
+      try { parsed = JSON.parse(value); } catch {}
+      const targetPrefix = control.target === 'current' ? 'preview-current:' : 'preview-last-approved:';
+      if (control.enabled && key.startsWith(targetPrefix) && parsed?.approvalStatus === 'approved') {
+        throw new Error(`simulated ${control.target} approved-pointer write failure`);
+      }
+      return kv.binding.put(key, value, options);
+    },
+  };
 }
 
 test('reserved runtime keeps exact compound questions opaque across no-whitespace clause boundaries', async (t) => {
@@ -269,26 +288,45 @@ test('a customer question at model-output tail stays opaque through stripping an
   assert.doesNotMatch(payload.preview.html, /[\uE000-\uF8FF]/u, 'structured HTML leaked its opaque sentinel');
 });
 
-test('an expired 24-hour replay rotates the deterministic claim for the same readingId', async (t) => {
+test('an expired stable claim recycles once across changed device and network budgets with one concurrent owner', async (t) => {
   const originalNow = Date.now;
   let now = Date.UTC(2026, 7, 17, 1, 0, 0);
   Date.now = () => now;
   t.after(() => { Date.now = originalNow; });
 
   const kv = jsonKv();
-  const claimed = new Set();
-  const consumed = new Set();
+  const claims = new Map();
   const claimIds = [];
+  const budgetSets = [];
+  let commits = 0;
+  let releaseMovedOwner;
+  let observeMovedOwner;
+  const movedOwnerObserved = new Promise((resolve) => { observeMovedOwner = resolve; });
+  const movedOwnerGate = new Promise((resolve) => { releaseMovedOwner = resolve; });
   const budget = {
     binding: {
-      claim: async (claimId) => {
+      claim: async (claimId, budgets) => {
         claimIds.push(claimId);
-        const idempotent = claimed.has(claimId) || consumed.has(claimId);
-        claimed.add(claimId);
-        return { allowed: true, idempotent, cap: 3, used: consumed.size, remaining: 2 };
+        budgetSets.push(budgets);
+        const existing = claims.get(claimId);
+        if (existing?.status === 'consumed' && existing.consumedAt <= now - 24 * 60 * 60 * 1000) {
+          claims.delete(claimId);
+        }
+        const idempotent = claims.has(claimId);
+        if (!idempotent) claims.set(claimId, { status: 'pending', consumedAt: 0 });
+        if (commits === 1 && !idempotent) {
+          observeMovedOwner();
+          await movedOwnerGate;
+        }
+        return { allowed: true, idempotent, cap: 3, used: commits, remaining: Math.max(0, 2 - commits) };
       },
       settle: async (claimId, consume) => {
-        if (consume) consumed.add(claimId);
+        if (consume) {
+          claims.set(claimId, { status: 'consumed', consumedAt: now });
+          commits += 1;
+        } else if (claims.get(claimId)?.status === 'pending') {
+          claims.delete(claimId);
+        }
         return { allowed: true };
       },
     },
@@ -299,12 +337,131 @@ test('an expired 24-hour replay rotates the deterministic claim for the same rea
   assert.equal(first.response.status, 200, JSON.stringify(first.payload));
 
   now += 24 * 60 * 60 * 1000 + 1;
-  const afterExpiry = await createPreview(env, body);
+  const movedHeaders = {
+    ...REQUEST_HEADERS,
+    'CF-Connecting-IP': '198.51.100.77',
+    'User-Agent': 'Deckaura moved-device stable claim test',
+  };
+  const ownerPromise = createPreview(env, body, movedHeaders);
+  await movedOwnerObserved;
+  const follower = await createPreview(env, body, movedHeaders);
+  releaseMovedOwner();
+  const afterExpiry = await ownerPromise;
+
   assert.equal(afterExpiry.response.status, 200, JSON.stringify(afterExpiry.payload));
   assert.notEqual(afterExpiry.payload.token, first.payload.token);
+  assert.equal(follower.response.status, 503, JSON.stringify(follower.payload));
+  assert.equal(follower.payload.reason, 'preview_in_progress');
+  assert.equal(follower.response.headers.get('Retry-After'), '1');
+  assert.equal(claimIds.length, 3);
+  assert.equal(new Set(claimIds).size, 1, 'one immutable replay must keep one stable claim across rolling windows and followers');
+  assert.equal(commits, 2, 'only one day-two owner may consume the recycled claim');
+
+  const byKind = (budgets, kind) => budgets.find((budgetEntry) => budgetEntry.kind === kind)?.name;
+  assert.equal(byKind(budgetSets[0], 'visitor'), byKind(budgetSets[1], 'visitor'), 'mobility changed visitor authority');
+  assert.equal(byKind(budgetSets[0], 'global'), byKind(budgetSets[1], 'global'), 'mobility changed global authority');
+  assert.notEqual(byKind(budgetSets[0], 'device'), byKind(budgetSets[1], 'device'), 'device budget did not rotate with the user agent');
+  assert.notEqual(byKind(budgetSets[0], 'network'), byKind(budgetSets[1], 'network'), 'network budget did not rotate with the IP');
+  assert.deepEqual(budgetSets[1], budgetSets[2], 'same moved request did not use one deterministic budget set');
+
+  const replay = await createPreview(env, body, movedHeaders);
+  assert.equal(replay.response.status, 200, JSON.stringify(replay.payload));
+  assert.equal(replay.payload.token, afterExpiry.payload.token);
+  assert.equal(replay.payload.replayed, true);
+  assert.equal(claimIds.length, 3, 'a committed day-two replay must not reserve again');
+});
+
+test('concurrent requests straddling the UTC epoch boundary keep one stable owner', async (t) => {
+  const originalNow = Date.now;
+  const boundary = Date.UTC(2026, 7, 18, 0, 0, 0);
+  let now = boundary - 1;
+  Date.now = () => now;
+  t.after(() => { Date.now = originalNow; });
+
+  let releaseFirstClaim;
+  let observeFirstClaim;
+  const firstClaimObserved = new Promise((resolve) => { observeFirstClaim = resolve; });
+  const firstClaimGate = new Promise((resolve) => { releaseFirstClaim = resolve; });
+  const claimed = new Set();
+  const claimIds = [];
+  let claimCalls = 0;
+  let commits = 0;
+  const budget = {
+    binding: {
+      claim: async (claimId) => {
+        claimCalls += 1;
+        claimIds.push(claimId);
+        const idempotent = claimed.has(claimId);
+        claimed.add(claimId);
+        if (claimCalls === 1) {
+          observeFirstClaim();
+          await firstClaimGate;
+        }
+        return { allowed: true, idempotent, cap: 3, used: commits, remaining: 2 };
+      },
+      settle: async (_claimId, consume) => {
+        if (consume) commits += 1;
+        return { allowed: true };
+      },
+    },
+  };
+  const env = workerEnv(jsonKv(), budget);
+  const body = readingBody('What pattern should I understand before changing careers?', 'utc_boundary_same_owner');
+
+  const ownerPromise = createPreview(env, body);
+  await firstClaimObserved;
+  now = boundary + 1;
+  const follower = await createPreview(env, body);
+  releaseFirstClaim();
+  const owner = await ownerPromise;
+
+  assert.equal(owner.response.status, 200, JSON.stringify(owner.payload));
+  assert.equal(follower.response.status, 503, JSON.stringify(follower.payload));
+  assert.equal(follower.payload.reason, 'preview_in_progress');
+  assert.equal(follower.response.headers.get('Retry-After'), '1');
   assert.equal(claimIds.length, 2);
-  assert.notEqual(claimIds[0], claimIds[1], 'a retained consumed DB claim must not trap an expired replay');
-  assert.equal(consumed.size, 2);
+  assert.equal(new Set(claimIds).size, 1, 'UTC midnight must not create a second immutable-preview claim');
+  assert.equal(commits, 1, 'only the pre-boundary owner may consume quota');
+});
+
+test('stable-claim SQL locks claim plus old-new budget union, recycles mobile visitors, and gates rollout before DML', async () => {
+  const migration = await readFile(new URL('../supabase/migrations/20260817055500_recycle_stable_free_preview_claims.sql', import.meta.url), 'utf8');
+  const workerEnvSource = await readFile(new URL('../lib/worker-env.ts', import.meta.url), 'utf8');
+  const fourArgumentFunctionAt = migration.indexOf('p_expected_contract text');
+  const contractValidationAt = migration.indexOf("if p_expected_contract is distinct from 'stable-replay-v1'");
+  const firstMutationAt = Math.min(
+    ...['delete from deckaura.free_reading_budget_events', 'insert into deckaura.free_reading_budget_events', 'update deckaura.free_reading_budget_events']
+      .map((statement) => migration.indexOf(statement))
+      .filter((index) => index >= 0),
+  );
+  const claimLockAt = migration.indexOf("'free-preview-claim:' || p_claim_id::text");
+  const unionLockAt = migration.indexOf('select event.budget_name as name');
+  const refreshedClockAt = migration.indexOf('v_now := clock_timestamp();', claimLockAt);
+  const ownershipAt = migration.indexOf('-- A deterministic claim is visitor-bound.');
+  const cleanupAt = migration.indexOf('delete from deckaura.free_reading_budget_events event');
+  const consistencyAt = migration.indexOf("raise exception 'claim_id has inconsistent budget status'");
+  const recycleAt = migration.indexOf('-- Recycle only when every retained row is consumed');
+  const recycleDeleteAt = migration.indexOf('delete from deckaura.free_reading_budget_events event', recycleAt);
+
+  assert.ok(fourArgumentFunctionAt >= 0, 'new workers require the four-argument contract overload');
+  assert.ok(contractValidationAt > fourArgumentFunctionAt && contractValidationAt < firstMutationAt, 'contract validation must precede every possible DML statement');
+  assert.match(migration, /raise exception 'unsupported free-reading claim contract'/);
+  assert.ok(claimLockAt >= 0 && claimLockAt < unionLockAt, 'stable claim lock must precede old-new budget inspection');
+  assert.ok(unionLockAt < refreshedClockAt && refreshedClockAt < cleanupAt, 'time must be refreshed only after every advisory lock and before expiry DML');
+  assert.ok(ownershipAt > unionLockAt && ownershipAt < cleanupAt, 'visitor ownership must be checked while the claim and union budgets are locked');
+  assert.match(migration, /event\.claim_id = p_claim_id[\s\S]+event\.budget_name in \([\s\S]+jsonb_array_elements\(p_budgets\)/, 'expired cleanup must cover retained claim rows and the new budget set');
+  assert.match(migration, /event\.budget_kind = 'visitor'[\s\S]+event\.budget_name = v_visitor_name[\s\S]+claim_id belongs to a different visitor/);
+  assert.ok(cleanupAt < consistencyAt && consistencyAt < recycleAt && recycleAt < recycleDeleteAt, 'cleanup, mixed-state rejection, and recycle order drifted');
+  assert.match(migration, /event\.status = 'pending'[\s\S]+event\.status = 'consumed'[\s\S]+claim_id has inconsistent budget status/);
+  assert.match(migration, /event\.status <> 'consumed'[\s\S]+event\.consumed_at is null[\s\S]+event\.consumed_at > v_window_start/);
+  assert.match(migration.slice(recycleDeleteAt), /where event\.claim_id = p_claim_id;[\s\S]+v_existing_count := 0;/);
+  assert.ok((migration.match(/'claimContract', 'stable-replay-v1'/g) || []).length >= 2, 'allowed and denied SQL results must expose the rollout marker');
+  assert.match(migration, /create or replace function deckaura\.claim_free_reading_budgets\(\s*p_claim_id uuid,\s*p_budgets jsonb,\s*p_reservation_seconds integer default 120\s*\)[\s\S]+select deckaura\.claim_free_reading_budgets\([\s\S]+p_reservation_seconds,\s*'stable-replay-v1'/, 'old three-argument workers must delegate to the guarded implementation');
+  assert.match(workerEnvSource, /select deckaura\.claim_free_reading_budgets\([\s\S]+120,\s*\$\{STABLE_FREE_READING_CLAIM_CONTRACT\}/, 'new workers must call only the pre-DML guarded overload');
+  assert.match(workerEnvSource, /result\.claimContract !== STABLE_FREE_READING_CLAIM_CONTRACT/);
+  assert.match(workerEnvSource, /throw new Error\('Free-reading budget claim contract mismatch'\)/);
+  assert.match(migration, /security invoker[\s\S]+set search_path = ''/);
+  assert.match(migration, /revoke all on function deckaura\.claim_free_reading_budgets\(uuid, jsonb, integer, text\)[\s\S]+from public, anon, authenticated/);
 });
 
 test('a failed committed marker remains recoverable from its durable snapshot without another quota consumption', async () => {
@@ -374,12 +531,121 @@ test('a failed committed marker remains recoverable from its durable snapshot wi
   assert.equal(committed.commitState, 'committed');
 });
 
-test('an idempotent follower uses bounded backoff and never exceeds the replay KV read cap', async () => {
+test('an idempotent follower repairs owner-death without erasing same-token history, offer, or safety state', async () => {
+  const kv = jsonKv();
+  const env = workerEnv(kv, rollingBudget({ limit: 3 }));
+  const body = readingBody('What pattern should I understand before changing careers?', 'pending_owner_death_repair');
+  const seeded = await createPreview(env, body);
+  assert.equal(seeded.response.status, 200, JSON.stringify(seeded.payload));
+
+  const replayKey = [...kv.values.keys()].find((key) => key.startsWith('preview-response:'));
+  const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+  const lastApprovedKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+  assert.ok(replayKey && currentKey && lastApprovedKey, 'seed preview did not persist all recovery records');
+
+  const pendingReplay = JSON.parse(kv.values.get(replayKey));
+  pendingReplay.commitState = 'pending';
+  delete pendingReplay.committedAt;
+  kv.values.set(replayKey, JSON.stringify(pendingReplay));
+
+  const priorCurrent = JSON.parse(kv.values.get(currentKey));
+  priorCurrent.messages = [{
+    id: 'preserved_followup_01',
+    question: 'What boundary can I control today?',
+    answerText: 'Keep the next step observable and reversible.',
+    answerHtml: '<p>Keep the next step observable and reversible.</p>',
+    createdAt: Date.now(),
+    safety: true,
+    safetyCategory: 'crisis',
+  }];
+  priorCurrent.followupsUsed = 1;
+  priorCurrent.offer = {
+    question: 'What boundary can I control today?',
+    headline: 'A grounded next step',
+    reason: 'The preserved conversation already established this scope.',
+    recommendedTier: 'medium',
+  };
+  priorCurrent.offerBlocked = true;
+  priorCurrent.safety = true;
+  priorCurrent.safetyCategory = 'crisis';
+  priorCurrent.approvalStatus = 'blocked';
+  priorCurrent.approvedAt = 0;
+  kv.values.set(currentKey, JSON.stringify(priorCurrent));
+
+  const priorLastApproved = JSON.parse(kv.values.get(lastApprovedKey));
+  priorLastApproved.messages = [{
+    id: 'preserved_approved_followup_01',
+    question: 'Which practical fact should I verify?',
+    answerText: 'Verify one external condition before choosing.',
+    answerHtml: '<p>Verify one external condition before choosing.</p>',
+    createdAt: Date.now() - 1,
+    safety: false,
+    safetyCategory: '',
+  }];
+  priorLastApproved.followupsUsed = 1;
+  priorLastApproved.offer = {
+    question: 'Which practical fact should I verify?',
+    headline: 'Keep the evidence visible',
+    reason: 'This approved state predates the later safety block.',
+    recommendedTier: 'standard',
+  };
+  kv.values.set(lastApprovedKey, JSON.stringify(priorLastApproved));
+  const priorLastApprovedBytes = kv.values.get(lastApprovedKey);
+
+  let repairCommits = 0;
+  env.FREE_READING_BUDGETS = {
+    claim: async () => ({ allowed: true, idempotent: true, cap: 3, used: 1, remaining: 1 }),
+    settle: async (_claimId, consume) => {
+      if (consume) repairCommits += 1;
+      return { allowed: true, idempotent: true };
+    },
+  };
+
+  const repaired = await createPreview(env, body);
+  assert.equal(repaired.response.status, 200, JSON.stringify(repaired.payload));
+  assert.equal(repaired.payload.replayed, true);
+  assert.equal(repaired.payload.token, seeded.payload.token);
+  assert.equal(repaired.payload.followupsUsed, 1, 'follower response advertised stale follow-up allowance');
+  assert.equal(repaired.payload.followupsRemaining, 2);
+  assert.ok(Number(repaired.payload.nextAt) > Date.now());
+  assert.equal(repairCommits, 1, 'the follower must settle the pending owner claim exactly once');
+
+  const finalizedCurrent = JSON.parse(kv.values.get(currentKey));
+  const finalizedLastApproved = JSON.parse(kv.values.get(lastApprovedKey));
+  assert.equal(finalizedCurrent.approvalStatus, 'blocked');
+  assert.equal(finalizedCurrent.approvedAt, 0);
+  assert.equal(finalizedCurrent.token, seeded.payload.token);
+  assert.equal(finalizedCurrent.followupsUsed, 1);
+  assert.equal(finalizedCurrent.messages[0].id, 'preserved_followup_01');
+  assert.equal(finalizedCurrent.offer.headline, 'A grounded next step');
+  assert.equal(finalizedCurrent.offerBlocked, true);
+  assert.equal(finalizedCurrent.safety, true);
+  assert.equal(finalizedCurrent.safetyCategory, 'crisis');
+  assert.equal(finalizedLastApproved.approvalStatus, 'approved');
+  assert.equal(finalizedLastApproved.token, seeded.payload.token);
+  assert.equal(kv.values.get(lastApprovedKey), priorLastApprovedBytes, 'blocked repair rewrote the last known approved session');
+
+  const restoredResponse = await handleFreeSession(sessionRequest(VISITOR_ID, 'last-approved'), env);
+  const restored = await restoredResponse.json();
+  assert.equal(restoredResponse.status, 200, JSON.stringify(restored));
+  assert.equal(restored.found, true);
+  assert.equal(restored.verified, true);
+  assert.equal(restored.session.approvalStatus, 'approved');
+  assert.equal(restored.session.token, seeded.payload.token);
+  assert.equal(restored.session.followupsUsed, 1);
+  assert.equal(restored.session.offer.headline, 'Keep the evidence visible');
+});
+
+test('an idempotent follower performs one post-claim replay read and returns immediately when the owner is not ready', async () => {
   let kvReads = 0;
+  let readsAtClaim = -1;
   const env = {
     ...workerEnv(jsonKv(), {
       binding: {
-        claim: async () => ({ allowed: true, idempotent: true, cap: 3, used: 0, remaining: 2 }),
+        claim: async () => {
+          readsAtClaim = kvReads;
+          return { allowed: true, idempotent: true, cap: 3, used: 0, remaining: 2 };
+        },
         settle: async () => ({ allowed: true }),
       },
     }),
@@ -388,13 +654,262 @@ test('an idempotent follower uses bounded backoff and never exceeds the replay K
       put: async () => {},
       delete: async () => {},
     },
-    FREE_PREVIEW_TOTAL_DEADLINE_MS: 300,
   };
   const result = await createPreview(env, readingBody('What pattern should I understand before changing careers?', 'bounded_poll_missing_owner'));
   assert.equal(result.response.status, 503, JSON.stringify(result.payload));
   assert.equal(result.payload.reason, 'preview_in_progress');
-  assert.ok(kvReads <= 8, `50→100→200ms backoff made too many reads: ${kvReads}`);
-  assert.ok(kvReads <= 40, 'hard replay KV read cap was exceeded');
+  assert.equal(result.response.headers.get('Retry-After'), '1');
+  assert.equal(readsAtClaim, 2, 'the handler must perform exactly one legacy and one authority-v2 lookup before claiming');
+  assert.equal(kvReads, 3, 'an idempotent follower may perform only one additional replay lookup');
+});
+
+test('owner, committed replay, and follower recovery all fail closed on either session-pointer write and recover the same token', async () => {
+  for (const branch of ['owner', 'committed-replay', 'follower']) {
+    for (const target of ['current', 'last-approved']) {
+      const kv = jsonKv();
+      const control = { enabled: false, target };
+      const budget = rollingBudget({ limit: 3 });
+      const env = {
+        ...workerEnv(kv, budget),
+        READINGS_CACHE: approvedPointerFailureCache(kv, control),
+      };
+      const body = readingBody(
+        `What pattern should I verify for the ${branch} ${target} pointer?`,
+        `pointer_${branch}_${target}`,
+        `pointer_visitor_${branch}_${target}`,
+      );
+      let token = '';
+      let repairCommits = 0;
+
+      if (branch !== 'owner') {
+        const seeded = await createPreview(env, body);
+        assert.equal(seeded.response.status, 200, `${branch}/${target}: ${JSON.stringify(seeded.payload)}`);
+        token = seeded.payload.token;
+      }
+      if (branch === 'follower') {
+        const replayKey = [...kv.values.keys()].find((key) => key.startsWith('preview-response:'));
+        const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+        const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+        const replay = JSON.parse(kv.values.get(replayKey));
+        replay.commitState = 'pending';
+        delete replay.committedAt;
+        kv.values.set(replayKey, JSON.stringify(replay));
+        const current = JSON.parse(kv.values.get(currentKey));
+        current.approvalStatus = 'pending';
+        current.approvedAt = 0;
+        kv.values.set(currentKey, JSON.stringify(current));
+        kv.values.delete(lastKey);
+        env.FREE_READING_BUDGETS = {
+          claim: async () => ({ allowed: true, idempotent: true, cap: 3, used: 1, remaining: 1 }),
+          settle: async (_claimId, consume) => {
+            if (consume) repairCommits += 1;
+            return { allowed: true, idempotent: true };
+          },
+        };
+      }
+
+      control.enabled = true;
+      const failed = await createPreview(env, body);
+      assert.equal(failed.response.status, 503, `${branch}/${target}: ${JSON.stringify(failed.payload)}`);
+      assert.equal(failed.payload.reason, 'preview_in_progress');
+      assert.equal(failed.response.headers.get('Retry-After'), '1');
+      assert.equal(failed.payload.token, undefined, `${branch}/${target}: token escaped before both pointers were durable`);
+      const durableReplay = [...kv.values.entries()]
+        .filter(([key]) => key.startsWith('preview-response:'))
+        .map(([, value]) => JSON.parse(value))[0];
+      assert.ok(durableReplay?.token, `${branch}/${target}: durable replay missing`);
+      token ||= durableReplay.token;
+      assert.equal(durableReplay.token, token);
+      assert.ok(kv.values.has(`preview:${token}`), `${branch}/${target}: durable snapshot missing`);
+
+      control.enabled = false;
+      const recovered = await createPreview(env, body);
+      assert.equal(recovered.response.status, 200, `${branch}/${target}: ${JSON.stringify(recovered.payload)}`);
+      assert.equal(recovered.payload.token, token);
+      assert.equal(recovered.payload.replayed, true);
+      const current = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+      const last = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+      assert.equal(JSON.parse(current[1]).approvalStatus, 'approved', `${branch}/${target}: current not approved`);
+      assert.equal(JSON.parse(current[1]).token, token);
+      assert.equal(JSON.parse(last[1]).approvalStatus, 'approved', `${branch}/${target}: last-approved missing`);
+      assert.equal(JSON.parse(last[1]).token, token);
+      if (branch === 'owner') assert.equal(budget.commits, 1, `${branch}/${target}: quota committed more than once`);
+      if (branch === 'follower') assert.equal(repairCommits, 1, `${branch}/${target}: follower repair committed more than once`);
+    }
+  }
+});
+
+test('committed replay never returns a token without an exact durable snapshot authority', async () => {
+  const cases = [
+    ['missing snapshot', (_snapshot, kv, token) => kv.values.delete(`preview:${token}`)],
+    ['invalid schema', (snapshot) => { snapshot.schemaVersion = 'reading-snapshot-v1'; }],
+    ['invalid snapshot version', (snapshot) => { snapshot.snapshotVersion = 'reading-snapshot-v1'; }],
+    ['wrong owner', (snapshot) => { snapshot.ownerVisitorHash = 'visitor:other'; }],
+    ['changed question', (snapshot) => { snapshot.question = `${snapshot.question} changed`; }],
+    ['changed reading id', (snapshot) => { snapshot.readingId = 'tampered-reading-id'; }],
+    ['changed spread contract', (snapshot) => { snapshot.fields.spread = 'One Card'; }],
+    ['changed date of birth', (snapshot) => { snapshot.fields.dob = '1990-01-01'; }],
+    ['changed locale', (snapshot) => { snapshot.fields.locale = 'tr-TR'; }],
+    ['changed country', (snapshot) => { snapshot.fields.country = 'CA'; }],
+    ['changed currency', (snapshot) => { snapshot.fields.currency = 'CAD'; }],
+    ['changed market', (snapshot) => { snapshot.fields.market = 'canada'; }],
+  ];
+  for (const [index, [label, mutate]] of cases.entries()) {
+    const kv = jsonKv();
+    const budget = rollingBudget({ limit: 3 });
+    const env = workerEnv(kv, budget);
+    const body = readingBody(
+      `What exact authority should this ${label} replay preserve?`,
+      `committed_replay_authority_${index}`,
+      `committed_replay_authority_visitor_${index}`,
+    );
+    const seeded = await createPreview(env, body);
+    assert.equal(seeded.response.status, 200, `${label}: ${JSON.stringify(seeded.payload)}`);
+    const token = seeded.payload.token;
+    const snapshot = JSON.parse(kv.values.get(`preview:${token}`));
+    mutate(snapshot, kv, token);
+    if (kv.values.has(`preview:${token}`)) kv.values.set(`preview:${token}`, JSON.stringify(snapshot));
+
+    const replayed = await createPreview(env, body);
+    assert.equal(replayed.response.status, 503, `${label}: ${JSON.stringify(replayed.payload)}`);
+    assert.equal(replayed.payload.reason, 'preview_in_progress', label);
+    assert.equal(replayed.payload.token, undefined, `${label}: unbacked replay token escaped`);
+    assert.equal(replayed.response.headers.get('Retry-After'), '1', label);
+    assert.equal(budget.claims, 1, `${label}: invalid replay must not reserve another quota claim`);
+    assert.equal(budget.commits, 1, `${label}: invalid replay changed quota settlement`);
+    assert.equal(budget.releases, 0, label);
+  }
+});
+
+test('pending follower replay rejects DOB and Markets authority tampering before quota repair', async () => {
+  const cases = [
+    ['date of birth', (snapshot) => { snapshot.fields.dob = '1990-01-01'; }],
+    ['locale', (snapshot) => { snapshot.fields.locale = 'de-DE'; }],
+    ['country', (snapshot) => { snapshot.fields.country = 'DE'; }],
+    ['currency', (snapshot) => { snapshot.fields.currency = 'EUR'; }],
+    ['market', (snapshot) => { snapshot.fields.market = 'europe'; }],
+  ];
+  for (const [index, [label, mutate]] of cases.entries()) {
+    const kv = jsonKv();
+    const env = workerEnv(kv, rollingBudget({ limit: 3 }));
+    const body = readingBody(
+      `Which exact condition should this pending ${label} replay preserve?`,
+      `pending_replay_authority_${index}`,
+      `pending_replay_authority_visitor_${index}`,
+    );
+    const seeded = await createPreview(env, body);
+    assert.equal(seeded.response.status, 200, `${label}: ${JSON.stringify(seeded.payload)}`);
+    const replayKey = [...kv.values.keys()].find((key) => key.startsWith('preview-response:'));
+    const replay = JSON.parse(kv.values.get(replayKey));
+    replay.commitState = 'pending';
+    delete replay.committedAt;
+    kv.values.set(replayKey, JSON.stringify(replay));
+    const snapshotKey = `preview:${seeded.payload.token}`;
+    const snapshot = JSON.parse(kv.values.get(snapshotKey));
+    mutate(snapshot);
+    kv.values.set(snapshotKey, JSON.stringify(snapshot));
+
+    let repairCommits = 0;
+    env.FREE_READING_BUDGETS = {
+      claim: async () => ({ allowed: true, idempotent: true, cap: 3, used: 1, remaining: 1 }),
+      settle: async (_claimId, consume) => {
+        if (consume) repairCommits += 1;
+        return { allowed: true, idempotent: true };
+      },
+    };
+    const follower = await createPreview(env, body);
+    assert.equal(follower.response.status, 503, `${label}: ${JSON.stringify(follower.payload)}`);
+    assert.equal(follower.payload.reason, 'preview_in_progress', label);
+    assert.equal(follower.payload.token, undefined, `${label}: tampered follower token escaped`);
+    assert.equal(follower.response.headers.get('Retry-After'), '1', label);
+    assert.equal(repairCommits, 0, `${label}: quota was repaired before snapshot authority verification`);
+  }
+});
+
+test('legacy three-card Yes/No replaces contaminated meanings across five locales and keeps the independent verdict audit strict', async () => {
+  const contaminated = [
+    ['en', 'answer: NO', 'upright'],
+    ['en', 'AnSwEr — no', 'reversed'],
+    ['en', 'direction — NOT YET', 'upright'],
+    ['en', 'verdict – IT DEPENDS', 'reversed'],
+    ['tr', 'yanıt: HENÜZ DEĞİL', 'upright'],
+    ['tr', 'yön — KOŞULLARA BAĞLI', 'reversed'],
+    ['de', 'Antwort — NEIN', 'upright'],
+    ['de', 'Richtung: NOCH NICHT', 'reversed'],
+    ['de', 'ES KOMMT DARAUF AN', 'upright'],
+    ['es', 'señal: SÍ', 'upright'],
+    ['es', 'señal — sí', 'reversed'],
+    ['es', 'respuesta — TODAVÍA NO', 'reversed'],
+    ['es', 'dirección: DEPENDE', 'upright'],
+    ['pt', 'sinal: NÃO', 'reversed'],
+    ['pt', 'sinal – não', 'upright'],
+    ['pt', 'resposta — AINDA NÃO', 'upright'],
+    ['pt', 'direção: DEPENDE', 'reversed'],
+  ];
+  for (const [locale, allowedMeaning, orientation] of contaminated) {
+    assert.equal(freeReservedThreeCardVerdictLeak(allowedMeaning, true), true, `${locale}: fixture must exercise the exact verdict predicate`);
+    const safe = freeReservedThreeCardYesNoMeaning({ card: 'The High Priestess', orientation, allowed_meaning: allowedMeaning }, 'general', locale);
+    assert.equal(freeReservedThreeCardVerdictLeak(safe, true), false, `${locale}: ${safe}`);
+    assert.notEqual(safe, allowedMeaning, `${locale}: contaminated meaning was not replaced as a whole`);
+  }
+
+  const fixtures = [
+    ['en', 'en-US', 'Will this plan move forward after the facts are checked?'],
+    ['tr', 'tr-TR', 'Gerçekler kontrol edilince bu plan ilerleyecek mi?'],
+    ['de', 'de-DE', 'Wird dieser Plan nach der Prüfung der Fakten vorankommen?'],
+    ['es', 'es-ES', '¿Avanzará este plan después de comprobar los hechos?'],
+    ['pt', 'pt-PT', 'Este plano avançará depois de verificar os factos?'],
+  ];
+  for (const [index, [lang, locale, question]] of fixtures.entries()) {
+    const kv = jsonKv();
+    const budget = rollingBudget({ limit: 3 });
+    const body = {
+      ...readingBody(question, `legacy_three_card_yes_no_verdict_guard_${lang}`, `legacy_three_card_yes_no_visitor_${index}`),
+      lang,
+      locale,
+      requestedLocale: locale,
+      type: 'Yes or No Tarot',
+      spread: 'Three Card Yes or No',
+      context: 'Three-card Yes or No spread. The answer direction, deciding condition, timing, and next step remain reserved.',
+      signals: 'Card 1: The High Priestess Upright · MAYBE; Card 2: The Star Upright · YES; Card 3: The Moon Reversed · NO; Overall Lean: MAYBE',
+      cards: 'The High Priestess Upright · MAYBE; The Star Upright · YES; The Moon Reversed · NO',
+    };
+    const result = await createPreview(workerEnv(kv, budget), body);
+
+    assert.equal(result.response.status, 200, `${locale}: ${JSON.stringify(result.payload)}`);
+    assert.equal(result.payload.servedSource, 'deterministic_reserved_fast_path');
+    assert.equal(result.payload.question, question, `${locale}: exact question changed`);
+    assert.equal(result.payload.lang, lang);
+    assert.match(result.payload.token, /^[a-f0-9]{32}$/i);
+    assert.equal(budget.claims, 1);
+    assert.equal(budget.commits, 1);
+    assert.equal(budget.releases, 0);
+    const audit = freeTeaserAudit(result.payload.teaser, body, 95);
+    assert.equal(audit.ok, true, `${locale}: ${audit.reason}`);
+    assert.equal(audit.mentionedEvidence, 3, `${locale}: identity/position/orientation coverage`);
+    const replay = [...kv.values.entries()].find(([key]) => key.startsWith('preview-response:'));
+    assert.ok(replay, `${locale}: durable replay missing`);
+    assert.equal(JSON.parse(replay[1]).commitState, 'committed');
+    const snapshot = kv.values.get(`preview:${result.payload.token}`);
+    assert.ok(snapshot, `${locale}: snapshot missing`);
+    const current = [...kv.values.entries()].find(([key]) => key.startsWith('preview-current:'));
+    const last = [...kv.values.entries()].find(([key]) => key.startsWith('preview-last-approved:'));
+    assert.equal(JSON.parse(current[1]).approvalStatus, 'approved');
+    assert.equal(JSON.parse(last[1]).token, result.payload.token);
+
+    const injectedVerdict = {
+      en: 'The independent answer is NO.',
+      tr: 'Bağımsız yanıt HAYIR.',
+      de: 'Die unabhängige Antwort ist NEIN.',
+      es: 'La respuesta independiente es SÍ.',
+      pt: 'A resposta independente é NÃO.',
+    }[lang];
+    assert.equal(freeReservedThreeCardVerdictLeak(injectedVerdict), true, `${locale}: injected label escaped the strict predicate`);
+    const injected = `${result.payload.teaser} ${injectedVerdict}`;
+    const rejected = freeTeaserAudit(injected, body, 95);
+    assert.equal(rejected.ok, false, `${locale}: an independent verdict outside allowed_meaning must remain blocked`);
+    assert.equal(rejected.reason, 'revealed the reserved verdict', locale);
+  }
 });
 
 test('reserved private-state recovery passes a 1/2/3-person seven-locale compound matrix without copying the question', async () => {

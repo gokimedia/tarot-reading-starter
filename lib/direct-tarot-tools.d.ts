@@ -50,6 +50,7 @@ export function yesNoDirectionalLeanForCard(cardName: unknown): '' | 'YES' | 'NO
 export function canonicalYesNoDirectEvidence(card: unknown): Readonly<Record<string, unknown>> | null;
 export function calculateTarotSchoolBirthCards(birthDate: unknown, now?: number): Readonly<Record<string, unknown>> | null;
 export function directTarotToolKind(value?: Record<string, unknown>): '' | 'yes_no' | 'love' | 'career' | 'birth';
+export function directTarotSupportedLocale(value: unknown): 'en' | 'tr' | 'de' | 'es' | 'pt';
 export function isDirectTarotCompactPreview(value?: Record<string, unknown>): boolean;
 export function directTarotSafetyCategory(value: unknown): '' | 'crisis' | 'missing' | 'medical' | 'death' | 'danger';
 export function directTarotQuestionPolicy(page: unknown, question: unknown, context?: unknown): Readonly<{

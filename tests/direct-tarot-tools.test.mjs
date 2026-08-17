@@ -37,15 +37,21 @@ import {
   canonicalizeDirectTarotSnapshot,
   deterministicDirectTarotCompactInsight,
   directTarotCheckoutSnapshotFromPreview,
+  directTarotPromptVersion,
   directTarotQuestionPolicy,
   directTarotSafetyCategory,
+  directTarotSupportedLocale,
+  directTarotToolKind,
   validateDirectTarotToolSnapshot,
   yesNoDirectionalLeanForCard,
 } from '../lib/direct-tarot-tools.mjs';
 import {
   freePreviewSnapshotTtlSeconds,
+  freeEntitlementIdentity,
   generateDirectTarotCompactInsight,
+  handleFreeChat,
   handleFreeReading,
+  handleFreeSession,
   validateReadingFields,
 } from '../lib/legacy-worker.mjs';
 import { verifySharedToolPaidOrder } from '../lib/shared-tool-order-contract.mjs';
@@ -127,6 +133,58 @@ function freeRequest(snapshot, overrides = {}) {
   };
   return new Request('https://reading.deckaura.com/free-reading', {
     method: 'POST', headers: FREE_HEADERS, body: JSON.stringify(body),
+  });
+}
+
+function freeSessionRequest(kind = 'last-approved') {
+  return new Request('https://reading.deckaura.com/free-session', {
+    method: 'POST', headers: FREE_HEADERS, body: JSON.stringify({ visitorId: 'direct-tool-visitor-20260816', kind }),
+  });
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(value)));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function legacyFreePreviewReplayKey(request, fields, env) {
+  const body = await request.clone().json();
+  const identity = await freeEntitlementIdentity(request, body, env);
+  const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const canonical = [
+    2,
+    fields.type,
+    fields.question,
+    fields.context,
+    fields.cards,
+    fields.spread,
+    fields.signals,
+    fields.scope,
+    fields.confidence,
+    fields.focus,
+    fields.tool,
+    fields.readingId,
+    fields.presentationVariant,
+    fields.checkoutContextId,
+    fields.clarifierCards,
+    fields.clarifierSpread,
+  ].map(normalize).join('\u001f');
+  const inputFingerprint = await sha256Hex(canonical);
+  const presentationContract = `free-preview-reserved-v23|${directTarotPromptVersion(directTarotToolKind(fields))}`;
+  const identityFingerprint = await sha256Hex(`${identity.strictNames.join('|')}|${presentationContract}|${inputFingerprint}`);
+  return `preview-response:${identityFingerprint}`;
+}
+
+function freeChatRequest(token, requestId) {
+  return new Request('https://reading.deckaura.com/free-chat', {
+    method: 'POST',
+    headers: FREE_HEADERS,
+    body: JSON.stringify({
+      visitorId: 'direct-tool-visitor-20260816',
+      token,
+      requestId,
+      message: 'What practical detail should I verify before deciding?',
+    }),
   });
 }
 
@@ -390,6 +448,381 @@ test('deterministic direct fallbacks pass the exact word, language, no-echo, cer
   assert.equal(auditDirectTarotCompactInsight('The Star reflects Should I contact this person again today. Justice adds context to the choice. The Sun suggests a grounded step you control.', base).ok, false);
 });
 
+test('unsupported French direct locale is normalized once and serves an audited English fallback instead of a language-mismatch 503', async () => {
+  assert.equal(directTarotSupportedLocale('fr-FR'), 'en');
+  const kv = jsonKv();
+  const quota = previewBudget();
+  const env = workerEnv(kv, quota);
+  const requestSnapshot = yesSnapshot('The Star', {
+    question: 'Dois-je accepter cette proposition maintenant?',
+    readingId: 'direct-fr-language-fallback',
+  });
+  const localeOverride = {
+    requestedLocale: 'fr-FR',
+    locale: 'fr-FR',
+  };
+  const response = await handleFreeReading(freeRequest(requestSnapshot, localeOverride), env);
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.compactInsightAuditStatus, 'passed_fallback');
+  assert.match(payload.compactInsight, /\b(?:YES|NO|NOT YET|IT DEPENDS)\b/u);
+  assert.match(payload.compactInsight, /\b(?:guarantee|observable condition|reversible step)\b/i);
+  assert.doesNotMatch(payload.compactInsight, /\b(?:garantie|condition observable|action réversible)\b/iu);
+  assert.equal(payload.lang, 'en');
+  assert.equal(payload.resolvedLanguage, 'en');
+  assert.equal(payload.requestedLocale, 'fr-FR');
+  assert.equal(payload.maxFollowups, 3);
+  const stored = JSON.parse(kv.values.get(`preview:${payload.token}`));
+  assert.equal(stored.fields.visibleLocale, 'en', 'unsupported locale must not survive into signed preview authority');
+  assert.equal(stored.fields.locale, 'fr-FR', 'raw requested locale remains provenance, not visible authority');
+  assert.equal(stored.fields.followupsAllowed, true);
+  const checkoutAuthority = directTarotCheckoutSnapshotFromPreview(stored, Date.now());
+  assert.equal(checkoutAuthority.ok, true, checkoutAuthority.reason);
+  assert.equal(checkoutAuthority.snapshot.presentationVariant, YES_NO_DIRECT_PRESENTATION_VARIANT);
+
+  const replayResponse = await handleFreeReading(freeRequest(requestSnapshot, localeOverride), env);
+  const replay = await replayResponse.json();
+  assert.equal(replayResponse.status, 200, JSON.stringify(replay));
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.token, payload.token);
+  assert.equal(replay.lang, 'en');
+  assert.equal(replay.resolvedLanguage, 'en');
+  assert.equal(replay.requestedLocale, 'fr-FR');
+
+  const sessionResponse = await handleFreeSession(freeSessionRequest(), env);
+  const session = await sessionResponse.json();
+  assert.equal(sessionResponse.status, 200, JSON.stringify(session));
+  assert.equal(session.found, true);
+  assert.equal(session.session.token, payload.token);
+  assert.equal(session.session.lang, 'en');
+  assert.equal(session.session.resolvedLanguage, 'en');
+  assert.equal(session.session.requestedLocale, 'fr-FR');
+  assert.equal(session.session.maxFollowups, 3);
+  assert.equal(quota.claims, 1);
+  assert.equal(quota.commits, 1);
+  assert.equal(quota.releases, 0);
+});
+
+test('an existing live legacy replay key remains byte-compatible after authority-v2 rollout', async () => {
+  const kv = jsonKv();
+  const quota = previewBudget();
+  const env = workerEnv(kv, quota);
+  const snapshot = yesSnapshot('The Star', {
+    question: 'Should I keep this exact verified plan today?',
+    readingId: 'direct-live-legacy-replay-compatibility',
+  });
+  const firstResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const first = await firstResponse.json();
+  assert.equal(firstResponse.status, 200, JSON.stringify(first));
+  const authorityKey = [...kv.values.keys()].find((key) => key.startsWith('preview-response:'));
+  const authorityRecord = JSON.parse(kv.values.get(authorityKey));
+  const stored = JSON.parse(kv.values.get(`preview:${first.token}`));
+  const legacyFields = {
+    ...stored.fields,
+    question: stored.question,
+    focus: stored.focus || '',
+  };
+  const legacyKey = await legacyFreePreviewReplayKey(freeRequest(snapshot), legacyFields, env);
+  assert.notEqual(legacyKey, authorityKey, 'new previews must not overwrite the legacy address space');
+  delete authorityRecord.replayKeyVersion;
+  kv.values.delete(authorityKey);
+  kv.values.set(legacyKey, JSON.stringify(authorityRecord));
+
+  const replayResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const replay = await replayResponse.json();
+  assert.equal(replayResponse.status, 200, JSON.stringify(replay));
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.token, first.token);
+  assert.equal(quota.claims, 1, 'legacy replay compatibility reserved a new claim');
+  assert.equal(quota.commits, 1);
+  assert.equal(quota.releases, 0);
+
+  const changedAuthority = {
+    requestedLocale: 'en-CA',
+    locale: 'en-CA',
+    country: 'CA',
+    currency: 'CAD',
+    market: 'canada',
+  };
+  const reboundResponse = await handleFreeReading(freeRequest(snapshot, changedAuthority), env);
+  const rebound = await reboundResponse.json();
+  assert.equal(reboundResponse.status, 200, JSON.stringify(rebound));
+  assert.notEqual(rebound.token, first.token, 'legacy market authority leaked into the successor snapshot');
+  assert.equal(quota.claims, 2, 'one market rebind must create exactly one v2 owner');
+  assert.equal(quota.commits, 2);
+
+  const reboundReplayResponse = await handleFreeReading(freeRequest(snapshot, changedAuthority), env);
+  const reboundReplay = await reboundReplayResponse.json();
+  assert.equal(reboundReplayResponse.status, 200, JSON.stringify(reboundReplay));
+  assert.equal(reboundReplay.replayed, true);
+  assert.equal(reboundReplay.token, rebound.token);
+  assert.equal(quota.claims, 2, 'exact authority-v2 replay reserved again');
+  assert.equal(quota.commits, 2);
+  assert.equal(quota.releases, 0);
+});
+
+test('a pending legacy owner with changed market remains the sole provider owner until it commits', async () => {
+  const kv = jsonKv();
+  const seedQuota = previewBudget();
+  const env = workerEnv(kv, seedQuota);
+  const snapshot = yesSnapshot('The Star', {
+    question: 'Should I wait for this exact result to finish before changing markets?',
+    readingId: 'direct-pending-legacy-market-owner',
+  });
+  const seededResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const seeded = await seededResponse.json();
+  assert.equal(seededResponse.status, 200, JSON.stringify(seeded));
+  const authorityKey = [...kv.values.keys()].find((key) => key.startsWith('preview-response:'));
+  const replay = JSON.parse(kv.values.get(authorityKey));
+  const stored = JSON.parse(kv.values.get(`preview:${seeded.token}`));
+  const legacyKey = await legacyFreePreviewReplayKey(freeRequest(snapshot), {
+    ...stored.fields,
+    question: stored.question,
+    focus: stored.focus || '',
+  }, env);
+  replay.commitState = 'pending';
+  delete replay.committedAt;
+  delete replay.replayKeyVersion;
+  kv.values.delete(authorityKey);
+  kv.values.set(legacyKey, JSON.stringify(replay));
+
+  let followerClaims = 0;
+  let followerSettles = 0;
+  env.FREE_READING_BUDGETS = {
+    claim: async () => {
+      followerClaims += 1;
+      throw new Error('legacy pending replay must fail before the successor stable claim UUID is created');
+    },
+    settle: async () => {
+      followerSettles += 1;
+      return { allowed: true, idempotent: true };
+    },
+  };
+  const changedAuthority = {
+    requestedLocale: 'en-CA',
+    locale: 'en-CA',
+    country: 'CA',
+    currency: 'CAD',
+    market: 'canada',
+  };
+  const exactFollowerResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const exactFollower = await exactFollowerResponse.json();
+  assert.equal(exactFollowerResponse.status, 503, JSON.stringify(exactFollower));
+  assert.equal(exactFollower.reason, 'preview_in_progress');
+  assert.equal(exactFollower.token, undefined);
+  assert.equal(exactFollowerResponse.headers.get('Retry-After'), '1');
+  const followerResponse = await handleFreeReading(freeRequest(snapshot, changedAuthority), env);
+  const follower = await followerResponse.json();
+  assert.equal(followerResponse.status, 503, JSON.stringify(follower));
+  assert.equal(follower.reason, 'preview_in_progress');
+  assert.equal(follower.token, undefined);
+  assert.equal(followerResponse.headers.get('Retry-After'), '1');
+  assert.equal(followerClaims, 0, 'successor claimed a second UUID beside the old epoch-derived owner');
+  assert.equal(followerSettles, 0, 'authority-mismatched follower repaired the legacy owner quota');
+  assert.equal([...kv.values.keys()].filter((key) => key.startsWith('preview-response:')).length, 1, 'follower created a second replay owner');
+  assert.equal([...kv.values.keys()].filter((key) => key.startsWith('preview:') && !key.startsWith('preview-response:')).length, 1, 'follower created a second provider snapshot');
+});
+
+test('locale, Markets, and DOB switches rebind to authority-v2 instead of poisoning one legacy replay key', async () => {
+  const kv = jsonKv();
+  const quota = previewBudget();
+  const env = workerEnv(kv, quota);
+  const snapshot = yesSnapshot('Justice', {
+    question: 'Should I verify the terms before accepting this proposal?',
+    readingId: 'direct-authority-v2-market-switch',
+  });
+  const baseResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const base = await baseResponse.json();
+  assert.equal(baseResponse.status, 200, JSON.stringify(base));
+
+  const ukAuthority = {
+    requestedLocale: 'en-GB',
+    locale: 'en-GB',
+    country: 'GB',
+    currency: 'GBP',
+    market: 'united-kingdom',
+  };
+  const switchedResponse = await handleFreeReading(freeRequest(snapshot, ukAuthority), env);
+  const switched = await switchedResponse.json();
+  assert.equal(switchedResponse.status, 200, JSON.stringify(switched));
+  assert.notEqual(switched.token, base.token);
+  const switchedStored = JSON.parse(kv.values.get(`preview:${switched.token}`));
+  assert.equal(switchedStored.fields.locale, 'en-GB');
+  assert.equal(switchedStored.fields.country, 'GB');
+  assert.equal(switchedStored.fields.currency, 'GBP');
+  assert.equal(switchedStored.fields.market, 'united-kingdom');
+
+  const switchedReplayResponse = await handleFreeReading(freeRequest(snapshot, ukAuthority), env);
+  const switchedReplay = await switchedReplayResponse.json();
+  assert.equal(switchedReplayResponse.status, 200, JSON.stringify(switchedReplay));
+  assert.equal(switchedReplay.replayed, true);
+  assert.equal(switchedReplay.token, switched.token);
+
+  const dobResponse = await handleFreeReading(freeRequest(snapshot, { ...ukAuthority, dob: '1990-01-01' }), env);
+  const dob = await dobResponse.json();
+  assert.equal(dobResponse.status, 200, JSON.stringify(dob));
+  assert.notEqual(dob.token, switched.token);
+  assert.equal(JSON.parse(kv.values.get(`preview:${dob.token}`)).fields.dob, '1990-01-01');
+
+  const baseReplayResponse = await handleFreeReading(freeRequest(snapshot), env);
+  const baseReplay = await baseReplayResponse.json();
+  assert.equal(baseReplayResponse.status, 200, JSON.stringify(baseReplay));
+  assert.equal(baseReplay.replayed, true);
+  assert.equal(baseReplay.token, base.token);
+  assert.equal(quota.claims, 3, 'exact v2 replays must not reserve additional quota');
+  assert.equal(quota.commits, 3);
+  assert.equal(quota.releases, 0);
+});
+
+test('unsupported-locale quota fallbacks keep English authority but cannot mint free-chat allowance per token', async () => {
+  const kv = jsonKv();
+  const quota = previewBudget({ allow: false });
+  let usageCalls = 0;
+  const env = workerEnv(kv, quota);
+  env.FREE_ENTITLEMENTS = {
+    getByName: () => ({
+      fetch: async () => {
+        usageCalls += 1;
+        return Response.json({ allowed: true, used: 0, remaining: 3 });
+      },
+    }),
+  };
+  const tokens = [];
+  for (let index = 0; index < 2; index += 1) {
+    const snapshot = yesSnapshot('The Star', {
+      question: index ? 'Dois-je accepter cette autre proposition maintenant?' : 'Dois-je accepter cette proposition maintenant?',
+      readingId: `direct-fr-quota-fallback-${index}`,
+    });
+    const localeOverride = { requestedLocale: 'fr-FR', locale: 'fr-FR' };
+    const response = await handleFreeReading(freeRequest(snapshot, localeOverride), env);
+    const payload = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    assert.equal(payload.quotaFallback, true);
+    assert.equal(payload.lang, 'en');
+    assert.equal(payload.resolvedLanguage, 'en');
+    assert.equal(payload.requestedLocale, 'fr-FR');
+    assert.equal(payload.followupsAllowed, false);
+    assert.equal(payload.maxFollowups, 0);
+    assert.equal(payload.followupsRemaining, 0);
+    assert.equal(payload.offerAllowed, true);
+    tokens.push(payload.token);
+
+    const stored = JSON.parse(kv.values.get(`preview:${payload.token}`));
+    assert.equal(stored.followupsAllowed, false);
+    assert.equal(stored.fields.followupsAllowed, false);
+    assert.equal(stored.fields.visibleLocale, 'en');
+    const replayResponse = await handleFreeReading(freeRequest(snapshot, localeOverride), env);
+    const replay = await replayResponse.json();
+    assert.equal(replayResponse.status, 200, JSON.stringify(replay));
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.token, payload.token);
+    assert.equal(replay.followupsAllowed, false);
+    assert.equal(replay.maxFollowups, 0);
+    assert.equal(replay.lang, 'en');
+    const chatResponse = await handleFreeChat(freeChatRequest(payload.token, `direct_fr_fallback_chat_${index}`), env);
+    const chat = await chatResponse.json();
+    assert.equal(chatResponse.status, 403, JSON.stringify(chat));
+    assert.equal(chat.reason, 'free_chat_not_authorized');
+    assert.equal(chat.maxFollowups, 0);
+    assert.equal(usageCalls, 0, 'fallback chat rejection must happen before any usage/model authority call');
+  }
+  assert.notEqual(tokens[0], tokens[1]);
+  assert.equal(quota.claims, 2);
+  assert.equal(quota.commits, 0);
+  assert.equal(quota.releases, 0);
+
+  const sessionResponse = await handleFreeSession(freeSessionRequest(), env);
+  const session = await sessionResponse.json();
+  assert.equal(sessionResponse.status, 200, JSON.stringify(session));
+  assert.equal(session.session.token, tokens[1]);
+  assert.equal(session.session.lang, 'en');
+  assert.equal(session.session.requestedLocale, 'fr-FR');
+  assert.equal(session.session.followupsAllowed, false);
+  assert.equal(session.session.maxFollowups, 0);
+  assert.equal(session.session.locked, true);
+});
+
+test('quota fallback pointer partial writes preserve the prior approved session and exact retry repairs the same token', async () => {
+  for (const target of ['current', 'last-approved']) {
+    const kv = jsonKv();
+    const initialBudget = previewBudget();
+    const env = workerEnv(kv, initialBudget);
+    const initialSnapshot = yesSnapshot('The Star', {
+      question: `Should I preserve the prior ${target} session?`,
+      readingId: `direct-quota-pointer-prior-${target}`,
+    });
+    const initialResponse = await handleFreeReading(freeRequest(initialSnapshot), env);
+    const initial = await initialResponse.json();
+    assert.equal(initialResponse.status, 200, `${target}: ${JSON.stringify(initial)}`);
+
+    const currentKey = [...kv.values.keys()].find((key) => key.startsWith('preview-current:'));
+    const lastKey = [...kv.values.keys()].find((key) => key.startsWith('preview-last-approved:'));
+    assert.ok(currentKey && lastKey, `${target}: initial pointers missing`);
+    assert.equal(JSON.parse(kv.values.get(currentKey)).token, initial.token);
+    assert.equal(JSON.parse(kv.values.get(lastKey)).token, initial.token);
+
+    const deniedBudget = previewBudget({ allow: false });
+    env.FREE_READING_BUDGETS = deniedBudget.binding;
+    const control = { enabled: true };
+    env.READINGS_CACHE = {
+      get: (...args) => kv.binding.get(...args),
+      delete: (...args) => kv.binding.delete(...args),
+      put: async (key, value, options) => {
+        let parsed = null;
+        try { parsed = JSON.parse(value); } catch {}
+        const targetPrefix = target === 'current' ? 'preview-current:' : 'preview-last-approved:';
+        if (control.enabled && key.startsWith(targetPrefix) && parsed?.approvalStatus === 'approved' && parsed.token !== initial.token) {
+          throw new Error(`simulated quota fallback ${target} pointer failure`);
+        }
+        return kv.binding.put(key, value, options);
+      },
+    };
+
+    const fallbackSnapshot = yesSnapshot('Justice', {
+      question: `Should I verify the new ${target} fallback before relying on it?`,
+      readingId: `direct-quota-pointer-fallback-${target}`,
+    });
+    const failedResponse = await handleFreeReading(freeRequest(fallbackSnapshot), env);
+    const failed = await failedResponse.json();
+    assert.equal(failedResponse.status, 429, `${target}: ${JSON.stringify(failed)}`);
+    assert.equal(failed.token, undefined, `${target}: token escaped without both pointers`);
+    assert.equal(JSON.parse(kv.values.get(currentKey)).token, initial.token, `${target}: prior current pointer changed`);
+    assert.equal(JSON.parse(kv.values.get(lastKey)).token, initial.token, `${target}: prior last-approved pointer changed`);
+
+    const durableReplay = [...kv.values.entries()]
+      .filter(([key]) => key.startsWith('preview-response:'))
+      .map(([, value]) => JSON.parse(value))
+      .find((record) => record.quotaFallback === true);
+    assert.ok(durableReplay?.token, `${target}: durable quota replay missing`);
+    assert.notEqual(durableReplay.token, initial.token);
+    assert.ok(kv.values.has(`preview:${durableReplay.token}`), `${target}: durable quota snapshot missing`);
+    assert.equal(durableReplay.followupsAllowed, false);
+    assert.equal(durableReplay.maxFollowups, 0);
+
+    control.enabled = false;
+    const recoveredResponse = await handleFreeReading(freeRequest(fallbackSnapshot), env);
+    const recovered = await recoveredResponse.json();
+    assert.equal(recoveredResponse.status, 200, `${target}: ${JSON.stringify(recovered)}`);
+    assert.equal(recovered.replayed, true);
+    assert.equal(recovered.token, durableReplay.token);
+    assert.equal(recovered.followupsAllowed, false);
+    assert.equal(recovered.maxFollowups, 0);
+    assert.equal(JSON.parse(kv.values.get(currentKey)).token, durableReplay.token);
+    assert.equal(JSON.parse(kv.values.get(lastKey)).token, durableReplay.token);
+
+    const sessionResponse = await handleFreeSession(freeSessionRequest(), env);
+    const session = await sessionResponse.json();
+    assert.equal(sessionResponse.status, 200, `${target}: ${JSON.stringify(session)}`);
+    assert.equal(session.session.token, durableReplay.token);
+    assert.equal(session.session.followupsAllowed, false);
+    assert.equal(session.session.maxFollowups, 0);
+    assert.equal(session.session.locked, true);
+    assert.equal(deniedBudget.claims, 1, `${target}: exact retry must not claim quota again`);
+    assert.equal(deniedBudget.commits, 0);
+    assert.equal(deniedBudget.releases, 0);
+  }
+});
+
 test('server-owned deterministic fallback survives incidental question-word overlap without weakening model audits', async () => {
   const question = 'Can I choose the next reversible step I control?';
   const snapshot = yesSnapshot('The Star', { question });
@@ -556,7 +989,7 @@ test('a direct preview commit is atomic: persistence failure releases the shared
   assert.equal([...kv.values.keys()].some((key) => key.startsWith('preview:')), false);
 });
 
-test('header-fast body hangs abort once, coalesce one Love readingId, and commit one deterministic preview before client retry', async (t) => {
+test('header-fast body hangs keep one Love owner while a concurrent duplicate fails fast and the later retry replays', async (t) => {
   const originalFetch = globalThis.fetch;
   const providerSignals = [];
   let modelCalls = 0;
@@ -625,7 +1058,10 @@ test('header-fast body hangs abort once, coalesce one Love readingId, and commit
   const [first, duplicate] = await Promise.all([firstResponse.json(), duplicateResponse.json()]);
 
   assert.equal(firstResponse.status, 200, JSON.stringify(first));
-  assert.equal(duplicateResponse.status, 200, JSON.stringify(duplicate));
+  assert.equal(duplicateResponse.status, 503, JSON.stringify(duplicate));
+  assert.equal(duplicate.reason, 'preview_in_progress');
+  assert.equal(duplicate.retryable, true);
+  assert.equal(duplicateResponse.headers.get('Retry-After'), '1');
   assert.ok(Date.now() - startedAt < 1_000, 'provider body escaped the server deadline');
   assert.equal(modelCalls, 1, 'same readingId must have one provider owner');
   assert.equal(providerSignals.length, 1);
@@ -641,13 +1077,11 @@ test('header-fast body hangs abort once, coalesce one Love readingId, and commit
     commit: true,
     costMicros: aiBudgetClaims[0].reserveMicros,
   }], 'header-200/body-timeout must consume the conservative model reservation');
-  assert.equal(first.token, duplicate.token);
   assert.match(first.token, /^[a-f0-9]{32}$/i);
   assert.equal(first.compactInsightSource, 'deterministic_timeout_fallback');
   assert.equal(first.compactInsightAuditStatus, 'passed_fallback');
   assert.equal(first.offerAllowed, true);
-  assert.equal(duplicate.offerAllowed, true);
-  assert.ok(first.replayed !== duplicate.replayed, 'one response should be the committed in-flight replay');
+  assert.equal(duplicate.token, undefined, 'an in-flight follower must not receive premature preview authority');
 
   const stored = JSON.parse(kv.values.get(`preview:${first.token}`));
   assert.equal(stored.readingId, READING_ID);
