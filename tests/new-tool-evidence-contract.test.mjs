@@ -46,6 +46,7 @@ const cases = [
   typedCase('I Ching', '/pages/i-ching-reading', 'I Ching Three-Coin Reading'),
   typedCase('Pendulum', '/pages/pendulum-reading', 'Digital Pendulum Reading'),
   typedCase('Lenormand', '/pages/lenormand-reading', 'Three-Card Lenormand Reading'),
+  typedCase('Attachment Style', '/pages/attachment-style-quiz', 'Attachment Style Quiz'),
 ];
 
 function validateCase(type, overrides = {}) {
@@ -99,6 +100,17 @@ test('post-purchase shared order verification repeats the typed evidence gate', 
   const tampered = structuredClone(baseOrder);
   tampered.snapshot.signals = tampered.snapshot.signals.replace('Life Path: 8', 'Life Path: 9');
   assert.equal(verifySharedToolPaidOrder(tampered).reason, 'SHARED_TYPED_EVIDENCE_MISMATCH');
+});
+
+test('attachment AS1 evidence recomputes dimension scores and bounds the optional conversation excerpt', () => {
+  const fixture = NEW_SHARED_TOOL_SMOKE_FIXTURES['/pages/attachment-style-quiz'];
+  assert.equal(validateCase('Attachment Style').ok, true);
+  const withConversation = `${fixture.resultContext} Conversation excerpt: Me: are we still on for Friday? Them: this week is a lot, can I let you know later.`;
+  assert.equal(validateCase('Attachment Style', { context: withConversation }).ok, true);
+  assert.equal(validateCase('Attachment Style', { context: `${fixture.resultContext} Conversation excerpt: too short` }).ok, false);
+  assert.equal(validateCase('Attachment Style', { signals: fixture.signals.replace('connection anxiety:24', 'connection anxiety:25') }).ok, false);
+  assert.equal(validateCase('Attachment Style', { signals: fixture.signals.replace('Relationship stage: dating', 'Relationship stage: situationship') }).ok, false);
+  assert.equal(validateCase('Attachment Style', { signals: fixture.signals.replace('16/16', '15/16') }).ok, false);
 });
 
 test('deterministic browser results are recalculated or schema-bound before intent creation', () => {

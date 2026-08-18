@@ -19,13 +19,14 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('generated shared-tool contract covers 61 live pages and 75 unique variants', () => {
-  assert.equal(SHARED_TOOL_PAGES.length, 61);
-  assert.equal(new Set(SHARED_TOOL_PAGES).size, 61);
+test('generated shared-tool contract covers 62 live pages and 78 unique variants', () => {
+  assert.equal(SHARED_TOOL_PAGES.length, 62);
+  assert.equal(new Set(SHARED_TOOL_PAGES).size, 62);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-reading'), false);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-tarot-reading'), true);
-  assert.equal(SHARED_TOOL_VARIANT_IDS.length, 75);
-  assert.equal(new Set(SHARED_TOOL_VARIANT_IDS).size, 75);
+  assert.equal(SHARED_TOOL_PAGES.includes('/pages/attachment-style-quiz'), true);
+  assert.equal(SHARED_TOOL_VARIANT_IDS.length, 78);
+  assert.equal(new Set(SHARED_TOOL_VARIANT_IDS).size, 78);
   assert.match(SHARED_TOOL_SOURCE_SHA256, /^[a-f0-9]{64}$/);
   assert.equal(SHARED_TOOL_FUNNEL_VERSION, 'enterprise-shared-tools-2026-08-v1');
   assert.ok(SHARED_TOOL_EVENT_NAMES.includes('package_defaulted'));
@@ -88,6 +89,7 @@ test('generated shared-tool contract covers 61 live pages and 75 unique variants
     ['/pages/love-tarot-reading', 'Love Tarot', ['53782500409617', '53782500442385', '53782500475153']],
     ['/pages/career-tarot-reading', 'Career Tarot', ['53675061838097', '53677128155409', '53705415098641']],
     ['/pages/tarot-birth-card-calculator', 'Tarot Birth Card', ['53782498509073', '53782498541841', '53782498574609']],
+    ['/pages/attachment-style-quiz', 'Attachment Style', ['54279722238225', '54279722991889', '54279723024657']],
   ]) {
     assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS[page], ['essential', 'deeper', 'indepth']);
     assert.equal(sharedToolContract(page, toolType, 'essential').variantId, variants[0]);

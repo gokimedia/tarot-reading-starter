@@ -121,4 +121,10 @@ export const NEW_SHARED_TOOL_SMOKE_FIXTURES = Object.freeze({
     'Three-card Lenormand line only; no factual claim about third parties or guaranteed outcome.',
     'Without-replacement cryptographic draw from canonical 36-card deck.',
   ),
+  '/pages/attachment-style-quiz': fixture(
+    'AS1 deterministic reflective quiz. Answer vector AS1:5-2-3-4-5-1-4-3-2-2-5-1-3-4-5-2. Relationship context current-relationship. Relationship stage dating. Score vector connection anxiety:24|distance response:8|secure base:19.',
+    'Attachment quiz version: AS1; Answer vector: AS1:5-2-3-4-5-1-4-3-2-2-5-1-3-4-5-2; Relationship context: current-relationship; Relationship stage: dating; Score vector: connection anxiety:24|distance response:8|secure base:19; Questions answered: 16/16',
+    "Reflect only on the supplied AS1 answer vector, its three dimension scores and the optional conversation excerpt for the selected relationship context. No diagnosis, no fixed attachment label as identity, no claim about the other person's hidden feelings, no prediction or guaranteed outcome.",
+    'Deterministic AS1 scoring from 16 canonical 1-5 answers; educational self-reflection, not a validated or clinical psychological assessment.',
+  ),
 });
