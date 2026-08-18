@@ -255,6 +255,21 @@ export async function GET(request: Request) {
     }
     leaseToken = String(lease.leaseToken || '');
 
+    // Hurry Up Hours: the Cloudflare executor converges the HURRY40 discount
+    // to its daily window on every tick (idempotent), standing in for a cron
+    // slot the Workers Free plan does not have. Failures must never block
+    // digital deliveries.
+    let hurry: JsonObject = { ok: false };
+    try {
+      const hurryResponse = await fetch('https://deckaura-hurry.gokimedia.workers.dev/ensure', {
+        signal: AbortSignal.timeout(8_000),
+      });
+      hurry = await hurryResponse.json().catch(() => ({ ok: false, error: 'invalid_json' })) as JsonObject;
+    } catch (error) {
+      hurry = { ok: false, error: operationalErrorCode(error, 'HURRY_ENSURE_UNREACHABLE') };
+      console.error({ event: 'hurry_ensure_unreachable', errorCode: String(hurry.error) });
+    }
+
     const deadlineMs = Date.now() + 100_000;
     const env = workerEnvironment();
     const origin = digitalDownloadOrigin(process.env);
@@ -322,6 +337,7 @@ export async function GET(request: Request) {
       alreadyDelivered,
       pending,
       failed,
+      hurry,
     }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     console.error({
