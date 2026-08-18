@@ -5,6 +5,10 @@
     {
       "path": "/api/cron/readings",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/digital",
+      "schedule": "*/5 * * * *"
     }
   ],
   "rewrites": [
