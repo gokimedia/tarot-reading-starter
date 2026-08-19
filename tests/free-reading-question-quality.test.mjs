@@ -108,7 +108,10 @@ test('Past Present Future preview reserves the verdict and ends with a concrete 
   assert.match(structured.lockLabel, /Future card's meaning/i);
   const feelings = { ...fields, question: 'What does Alex feel about me?' };
   assert.doesNotMatch(freeCuriosityQuestion(feelings, 'en'), /point open|leave open|deeper thread|unresolved/i);
-  assert.match(freeCuriosityQuestion(feelings, 'en'), /observable change|steadier communication|reciprocal effort|clearer boundaries/i);
+  // The curiosity block is a resolution promise now, not a survey question:
+  // it must state what the paid reading settles instead of offering options.
+  assert.match(freeCuriosityQuestion(feelings, 'en'), /^Your full reading settles /);
+  assert.doesNotMatch(freeCuriosityQuestion(feelings, 'en'), /steadier communication|reciprocal effort|clearer boundaries|\?$/i);
 });
 
 test('reserved Past Present Future preview keeps both career and relationship context outside the exact-question quote', async () => {
