@@ -99,10 +99,10 @@ test('script-heavy free previews receive a larger bounded output budget', () => 
   }), 620);
 });
 
-test('canonical reserved previews use the audited deterministic fast path without model latency', async (t) => {
+test('canonical reserved previews use the audited deterministic fast path when the model share is dialed to zero', async (t) => {
   const originalFetch = globalThis.fetch;
   let modelCalls = 0;
-  const environment = modelEnvironment();
+  const environment = { ...modelEnvironment(), FREE_RESERVED_LLM_SHARE: 0 };
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
@@ -154,6 +154,82 @@ test('canonical reserved previews use the audited deterministic fast path withou
   assert.equal(modelCalls, 0);
   assert.equal(environment.claims.length, 0, 'fast path must not claim model budget');
   assert.equal(environment.settlements.length, 0, 'fast path must not settle model usage');
+});
+
+const RESERVED_PPF_FIXTURE = {
+  question: 'Will Alex contact me again?',
+  spread: 'Three Card',
+  context: 'Past: Page of Cups upright. Present: The Hermit reversed. Future: Eight of Wands upright.',
+  signals: 'Past: Page of Cups Upright; Present: The Hermit Reversed; Future: Eight of Wands Upright',
+  cards: 'Page of Cups, The Hermit, Eight of Wands',
+  lang: 'en',
+  locale: 'en-US',
+  type: 'Three Card Tarot',
+  tool: '/pages/free-tarot-reading',
+};
+
+test('reserved past-present-future previews are model-first when credentials and share allow', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  const environment = modelEnvironment();
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const modelDraft = [
+    'Looking at "Will Alex contact me again?", the story opens well before this silence.',
+    'Page of Cups upright in the Past position shows how this connection first reached you, through small sincere gestures, playful messages, and an openness that taught you to expect warmth whenever Alex appeared.',
+    'That early sweetness set the emotional habit you still carry, and it is why the quiet days now feel louder than they should.',
+    'The Hermit reversed in the Present position names the live tension, a withdrawal that has hardened into isolation instead of honest reflection, leaving you to read meaning into every small signal.',
+    'It makes sense that this waiting feels heavy, because the heart that learned to expect warmth is now asked to sit with silence.',
+    'The one thing that truly hangs on this knot is whether the closeness you remember was a beginning that paused or an ending that never announced itself.',
+  ].join(' ');
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    return modelResponse(modelDraft, 'stop', 320);
+  };
+  const fields = {
+    ...RESERVED_PPF_FIXTURE,
+    readingId: 'reserved_llm_primary_ppf',
+    visitorId: 'reserved_llm_primary_visitor',
+  };
+  const html = await generateFreeTeaserHtml(fields, environment);
+  const visible = html.replace(/<[^>]+>/g, ' ').replace(/&#0*39;|&apos;/gi, "'").replace(/&quot;/gi, '"').replace(/\s+/g, ' ').trim();
+  const audit = freeTeaserAudit(html, fields, 180);
+  assert.equal(audit.ok, true, `${audit.reason}: ${html}`);
+  assert.ok(modelCalls >= 1, 'reserved preview must consult the model first');
+  assert.equal(fields.freePreviewReservedRoute, 'llm_primary');
+  assert.notEqual(fields.freePreviewServedModel, 'deterministic');
+  assert.match(String(fields.freePreviewServedSource), /^model_/);
+  assert.match(visible, /Page of Cups/);
+  assert.match(visible, /The Hermit/);
+  assert.match(visible, /Future position holds Eight of Wands upright, but its interpretation stays sealed/i);
+  assert.match(visible, /full reading reveals the Future card's meaning/i);
+});
+
+test('reserved previews fall back to the audited deterministic template when the model fails', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let modelCalls = 0;
+  const environment = modelEnvironment();
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => {
+    modelCalls += 1;
+    throw new Error('model provider unavailable');
+  };
+  const fields = {
+    ...RESERVED_PPF_FIXTURE,
+    readingId: 'reserved_llm_fallback_ppf',
+    visitorId: 'reserved_llm_fallback_visitor',
+  };
+  const html = await generateFreeTeaserHtml(fields, environment);
+  const audit = freeTeaserAudit(html, fields, 180);
+  assert.equal(audit.ok, true, `${audit.reason}: ${html}`);
+  assert.ok(modelCalls >= 1, 'model must be attempted before the deterministic fallback');
+  assert.equal(fields.freePreviewReservedRoute, 'llm_primary');
+  assert.equal(fields.freePreviewServedModel, 'deterministic');
+  assert.match(String(fields.freePreviewServedSource), /^deterministic_/);
+  assert.match(html, /stays sealed/i);
 });
 
 test('Hindi free preview rewrites once after finish_reason length and keeps the locale contract', async (t) => {
