@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   POSITIONS,
+  auditAnswer,
+  deterministicAnswer,
   SEVEN_CARD_FUNNEL_VERSION,
   auditInsights,
   deterministicInsights,
@@ -19,7 +21,8 @@ function modelResponse(content, finishReason = 'stop', outputTokens = 200) {
   }), { status: 200, headers: { 'content-type': 'application/json' } });
 }
 
-const GOOD_INSIGHTS = JSON.stringify([
+const GOOD_ANSWER = 'The spread leans yes if the pattern changes: Wheel of Fortune in the Likely Outcome favours movement, but only after the stop-start energy settles.';
+const GOOD_INSIGHTS = JSON.stringify({ answer: GOOD_ANSWER, insights: [
   {
     label: 'The core pattern',
     lead: 'Something from earlier still sets the terms.',
@@ -35,7 +38,7 @@ const GOOD_INSIGHTS = JSON.stringify([
     lead: 'Temperance points to pace, not pressure.',
     body: 'Temperance in the Advice position marks one measured, clearly worded exchange as the part of this that is genuinely yours to choose.',
   },
-]);
+]});
 
 test('parseSevenCards accepts the canonical signals string and rejects drift', () => {
   const cards = parseSevenCards(SIGNALS);
@@ -59,7 +62,7 @@ test('deterministic insights pass their own audit', () => {
 
 test('auditInsights rejects verdicts, foreign cards and band violations', () => {
   const cards = parseSevenCards(SIGNALS);
-  const good = JSON.parse(GOOD_INSIGHTS).map((block, index) => ({ n: `0${index + 1}`, ...block }));
+  const good = JSON.parse(GOOD_INSIGHTS).insights.map((block, index) => ({ n: `0${index + 1}`, ...block }));
   assert.equal(auditInsights(good, cards).ok, true);
   const verdict = structuredClone(good);
   verdict[1].body = 'He is thinking about you constantly and Wheel of Fortune in the Likely Outcome with Knight of Wands says the answer will definitely arrive soon for you.';
@@ -92,4 +95,19 @@ test('generateInsights serves the model draft first and falls back on garbage', 
 
 test('module exposes a version marker', () => {
   assert.match(SEVEN_CARD_FUNNEL_VERSION, /^seven-card-v2-/);
+});
+
+test('deterministicAnswer passes the answer audit', () => {
+  const cards = parseSevenCards(SIGNALS);
+  const answer = deterministicAnswer(cards);
+  const audit = auditAnswer(answer, cards);
+  assert.equal(audit.ok, true, audit.reason);
+  assert.match(answer, /Wheel of Fortune/);
+});
+
+test('auditAnswer rejects guarantees and foreign cards', () => {
+  const cards = parseSevenCards(SIGNALS);
+  assert.equal(auditAnswer('It will definitely work out for you and Wheel of Fortune guarantees the yes you want soon.', cards).ok, false);
+  assert.equal(auditAnswer('The spread leans yes: The Tower in the Likely Outcome favours movement if the current pattern finally changes now.', cards).ok, false);
+  assert.equal(auditAnswer(GOOD_ANSWER, cards).ok, true);
 });
