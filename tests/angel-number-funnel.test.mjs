@@ -93,7 +93,8 @@ test('auditPreview enforces anchors, bands and forbidden claims', () => {
   assert.equal(auditPreview(base, payload), '');
   assert.match(auditPreview({ ...base, situated: 'Short words only here now.' }, payload), /word count/);
   assert.match(auditPreview({ ...base, situated: base.situated + ' He still loves you and will definitely return soon.' }, payload), /guarantee or private-state/);
-  assert.match(auditPreview({ ...base, situated: base.situated.replace(/relationship|connection|consistency/gi, 'thing') }, payload), /anchor/);
+  const offTopic = 'You keep noticing 444 while thinking about many parts of life at once, and the theme feels broad. What you are watching is steadiness itself, the quality that does not depend on any single good day arriving on schedule.';
+  assert.match(auditPreview({ ...base, situated: offTopic }, payload), /anchor/);
   assert.match(auditPreview({ ...base, open: 'Trust the process and wait for a sign.' }, payload), /question mark/);
   assert.match(auditPreview({ ...base, open: 'Would upgrading to the $9.99 package help you decide faster today?' }, payload), /commerce/);
   assert.match(auditPreview({ ...base, situated: base.situated + ' Your 30-day alignment map will confirm it.' }, payload), /paid-tier/);
