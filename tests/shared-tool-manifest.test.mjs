@@ -19,8 +19,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('generated shared-tool contract covers 62 live pages and 78 unique variants', () => {
-  assert.equal(SHARED_TOOL_PAGES.length, 62);
+test('generated shared-tool contract covers 63 live pages and 78 unique variants', () => {
+  assert.equal(SHARED_TOOL_PAGES.length, 63);
   assert.equal(new Set(SHARED_TOOL_PAGES).size, 62);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-reading'), false);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-tarot-reading'), true);
