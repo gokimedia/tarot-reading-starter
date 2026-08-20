@@ -7,6 +7,7 @@ const EXPECTED_UNIQUE_VARIANT_COUNT = 78;
 const DEAD_PAGE_ALIASES = Object.freeze(['/pages/celtic-cross-reading']);
 const BACKEND_CANONICAL_PAGE_TYPES = Object.freeze({
   '/pages/yes-or-no-tarot': 'Yes or No Tarot',
+  '/pages/free-tarot-reading': 'Tarot',
 });
 const TIERS = Object.freeze([
   ['essential', 'e', 'standard', 'READING-DEEP', 5.99],

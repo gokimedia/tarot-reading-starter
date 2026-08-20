@@ -261,3 +261,39 @@ test('karmic compounds match the browser calculation for debt and long-name tota
     snapshot: { ...longName, signals: longName.signals.replace('Expression Compound: 145', 'Expression Compound: 10') },
   }).ok, false);
 });
+
+
+test('dream interpreter V2 evidence passes with rail mutations and rejects forgeries', () => {
+  const rawSignals = 'Dominant theme: Attachment & Unfinished Feeling; Emotion on waking: Anxious; Recurrence: Recurring; Detected symbols: Water, An ex-partner, A house with unknown rooms; Reading focus: Ex & closure; Approach: Balanced; Why it matters: Someone I love or an ex; Dream length: 64 words';
+  const scope = 'Relationship Dream Reading dream reading focused on ex & closure with a balanced approach.';
+  const confidence = 'Grounded dream reflection, not a prediction, diagnosis, or claim about another person.';
+  const meaning = 'Someone appearing this vividly usually stands for the feeling attached to them, not for what they are doing right now. The dream is working on something that was left open, and it chose the clearest face it had.';
+  const dreamText = 'I was in a house that was supposed to be mine, but the hallway kept going. Someone I used to be close to was calling me from downstairs and I could not get back to the stairs.';
+  const context = 'Dream Interpreter V2. ' + rawSignals + '. Free snapshot: ' + meaning
+    + ' Full dream text (customer chose to include it): "' + dreamText + '"'
+    + ' Reading scope: ' + scope + '. Calculation confidence: ' + confidence + '.';
+  const snapshot = {
+    type: 'Dream Interpretation',
+    context,
+    signals: 'Result signals: ' + rawSignals + '.',
+    scope,
+    confidence,
+  };
+  const run = (overrides = {}) => validateNewSharedToolSnapshot({
+    page: '/pages/dream-interpreter', toolType: 'Dream Interpretation', snapshot: { ...snapshot, ...overrides },
+  });
+  assert.equal(run().ok, true, JSON.stringify(run()));
+  const detailsContext = 'Dream Interpreter V2. ' + rawSignals + '. Free snapshot: ' + meaning
+    + ' Customer supplied only selected details: "A recurring hallway and a voice from downstairs."';
+  assert.equal(run({ context: detailsContext }).ok, true);
+  const noDreamContext = 'Dream Interpreter V2. ' + rawSignals + '. Free snapshot: ' + meaning
+    + ' Customer chose not to include the raw dream text; interpret from the structured signals above.';
+  assert.equal(run({ context: noDreamContext }).ok, true);
+  assert.equal(run({ signals: snapshot.signals.replace('Anxious', 'Terrified') }).ok, false, 'off-list emotion accepted');
+  assert.equal(run({ signals: snapshot.signals.replace('Water', 'Nightmare fuel') }).ok, false, 'off-list symbol accepted');
+  assert.equal(run({ scope: scope.replace('balanced', 'mystical') }).ok, false, 'off-list approach accepted');
+  assert.equal(run({ scope: 'Relationship Dream Reading dream reading focused on career or decision with a balanced approach.' }).ok, false, 'scope/signals focus mismatch accepted');
+  assert.equal(run({ context: context.replace(rawSignals, rawSignals.replace('Recurring', 'First time')) }).ok, false, 'context/signals divergence accepted');
+  assert.equal(run({ context: 'Dream Interpreter V2. ' + rawSignals + '. Free snapshot: ' + meaning + ' Full dream text (customer chose to include it): "cut off mid quote' }).ok, false, 'unterminated dream quote accepted');
+  assert.equal(run({ confidence: 'Symbolic reflection generated from allowlisted themes; personal meaning may differ.' }).ok, false, 'v1 confidence with v2 scope accepted');
+});

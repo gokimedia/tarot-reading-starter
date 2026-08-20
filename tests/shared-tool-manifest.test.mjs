@@ -51,7 +51,6 @@ test('generated shared-tool contract covers 63 live pages and 78 unique variants
     '/pages/aura-color-quiz',
     '/pages/destiny-matrix-calculator',
     '/pages/midheaven-calculator',
-    '/pages/dream-interpreter',
   ]) {
     const toolType = SHARED_TOOL_PAGE_TOOL_TYPES[page];
     assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS[page], ['deeper', 'indepth']);
@@ -86,6 +85,7 @@ test('generated shared-tool contract covers 63 live pages and 78 unique variants
 
   for (const [page, toolType, variants] of [
     ['/pages/yes-or-no-tarot', 'Yes or No Tarot', ['53675061838097', '53677128155409', '53705415098641']],
+    ['/pages/dream-interpreter', 'Dream Interpretation', ['53675061838097', '53677128155409', '53705415098641']],
     ['/pages/love-tarot-reading', 'Love Tarot', ['53782500409617', '53782500442385', '53782500475153']],
     ['/pages/career-tarot-reading', 'Career Tarot', ['53675061838097', '53677128155409', '53705415098641']],
     ['/pages/tarot-birth-card-calculator', 'Tarot Birth Card', ['53782498509073', '53782498541841', '53782498574609']],
