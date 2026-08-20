@@ -8,6 +8,7 @@ import freeTarotFunnel, {
   deterministicAnswer,
   generateAnswer,
   parsePick,
+  questionIsTurkish,
 } from '../lib/free-tarot-funnel.mjs';
 
 const CARDS3 = [
@@ -92,4 +93,13 @@ test('router rejects foreign origins and serves health', async () => {
   assert.equal(ok.status, 200);
   const data = await ok.json();
   assert.equal(data.module, FT_FUNNEL_VERSION);
+});
+
+test('Turkish questions get a Turkish deterministic answer that passes audit', () => {
+  const parsed = parsePick(body({ question: 'Selami bana geri döner mi acaba?' }));
+  assert.equal(questionIsTurkish(parsed.question), true);
+  const answer = deterministicAnswer(parsed.cards, parsed.question);
+  assert.match(answer, /eğilim|Açılım/i);
+  assert.equal(auditAnswer(answer, parsed.cards).ok, true, answer);
+  assert.equal(auditAnswer('Eğilim koşullu: The Moon önce değişmesi gereken tek şeyi işaret ediyor, dönüş buna bağlı görünüyor bu aralar.', parsed.cards).ok, true);
 });
