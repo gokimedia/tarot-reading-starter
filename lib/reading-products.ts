@@ -5,6 +5,10 @@ export type ReadingProductKey = 'yes_no_love' | 'yes_no_general' | 'daily_tarot'
 
 export const LOVE_TAROT_PAGE = '/pages/love-tarot-reading';
 export const LOVE_TAROT_FUNNEL_VERSION = 'love-intent-funnel-2026-08-v1';
+// The storefront's shipped love funnel (custom 93-card love oracle deck with
+// slug card ids). The v1 numeric 26-card contract stays for backward
+// compatibility; live pages submit this version.
+export const LOVE_TAROT_FUNNEL_VERSION_I18N = 'love-intent-funnel-2026-08-v2-i18n';
 
 export type LoveTarotIntent =
   | 'feelings'
@@ -31,6 +35,114 @@ export const LOVE_TAROT_CARD_TITLES = Object.freeze([
   'Outside Influences', 'Forgiveness', 'Distance', 'Returning Joy', 'A Crossroads',
   'Trust', 'Unequal Footing', 'Rekindled Spark', 'Gentle Closure', 'Devotion',
 ] as const);
+
+// Canonical 93-card love oracle deck shipped with the storefront love funnel
+// (theme assets: love-card-<slug>.webp). Array order is the persisted numeric
+// card id (offset +100 so it can never collide with the legacy 26-card ids).
+export const LOVE_ORACLE_CARDS = Object.freeze([
+  { slug: 'slow-burn', title: 'Slow Burn' },
+  { slug: 'moving-on', title: 'Moving On' },
+  { slug: 'choose-yourself', title: 'Choose Yourself' },
+  { slug: 'the-door-closed', title: 'The Door Closed' },
+  { slug: 'your-love-story', title: 'Your Love Story' },
+  { slug: 'love-needs-respect', title: 'Love Needs Respect' },
+  { slug: 'guarded-heart', title: 'Guarded Heart' },
+  { slug: 'hidden-tenderness', title: 'Hidden Tenderness' },
+  { slug: 'private-longing', title: 'Private Longing' },
+  { slug: 'hot-and-cold', title: 'Hot and Cold' },
+  { slug: 'safe-to-open', title: 'Safe to Open' },
+  { slug: 'heart-on-pause', title: 'Heart on Pause' },
+  { slug: 'truth-leaks-out', title: 'Truth Leaks Out' },
+  { slug: 'future-faking', title: 'Future Faking' },
+  { slug: 'triangle-energy', title: 'Triangle Energy' },
+  { slug: 'mutual-choice', title: 'Mutual Choice' },
+  { slug: 'change-of-heart', title: 'Change of Heart' },
+  { slug: 'softer-this-time', title: 'Softer This Time' },
+  { slug: 'deeper-than-shown', title: 'Deeper Than Shown' },
+  { slug: 'curious-about-you', title: 'Curious About You' },
+  { slug: 'unsent-words', title: 'Unsent Words' },
+  { slug: 'the-silent-line', title: 'The Silent Line' },
+  { slug: 'heal-before-return', title: 'Heal Before Return' },
+  { slug: 'reciprocal-love', title: 'Reciprocal Love' },
+  { slug: 'ask-the-question', title: 'Ask the Question' },
+  { slug: 'familiar-soul', title: 'Familiar Soul' },
+  { slug: 'match-the-energy', title: 'Match the Energy' },
+  { slug: 'growing-attraction', title: 'Growing Attraction' },
+  { slug: 'end-or-evolve', title: 'End or Evolve' },
+  { slug: 'magnetic-night', title: 'Magnetic Night' },
+  { slug: 'movement-at-last', title: 'Movement at Last' },
+  { slug: 'avoidant-dance', title: 'Avoidant Dance' },
+  { slug: 'repeating-pattern', title: 'Repeating Pattern' },
+  { slug: 'undeniable-chemistry', title: 'Undeniable Chemistry' },
+  { slug: 'different-paths', title: 'Different Paths' },
+  { slug: 'intimacy-needs-truth', title: 'Intimacy Needs Truth' },
+  { slug: 'an-honest-return', title: 'An Honest Return' },
+  { slug: 'read-between', title: 'Read Between' },
+  { slug: 'action-required', title: 'Action Required' },
+  { slug: 'touch-without-fear', title: 'Touch Without Fear' },
+  { slug: 'more-than-lust', title: 'More Than Lust' },
+  { slug: 'returning-energy', title: 'Returning Energy' },
+  { slug: 'emotional-tide', title: 'Emotional Tide' },
+  { slug: 'old-wound-open', title: 'Old Wound Open' },
+  { slug: 'trust-rebuilds-slowly', title: 'Trust Rebuilds Slowly' },
+  { slug: 'watch-the-actions', title: 'Watch the Actions' },
+  { slug: 'show-up-fully', title: 'Show Up Fully' },
+  { slug: 'choose-clarity', title: 'Choose Clarity' },
+  { slug: 'open-to-better', title: 'Open to Better' },
+  { slug: 'half-a-story', title: 'Half a Story' },
+  { slug: 'the-real-answer', title: 'The Real Answer' },
+  { slug: 'electric-pull', title: 'Electric Pull' },
+  { slug: 'mixed-signals', title: 'Mixed Signals' },
+  { slug: 'take-the-leap', title: 'Take the Leap' },
+  { slug: 'desire-rising', title: 'Desire Rising' },
+  { slug: 'a-new-chapter', title: 'A New Chapter' },
+  { slug: 'protect-your-peace', title: 'Protect Your Peace' },
+  { slug: 'future-building', title: 'Future Building' },
+  { slug: 'no-contact', title: 'No Contact' },
+  { slug: 'a-different-love', title: 'A Different Love' },
+  { slug: 'the-message-arrives', title: 'The Message Arrives' },
+  { slug: 'the-long-gap', title: 'The Long Gap' },
+  { slug: 'control-disguised', title: 'Control Disguised' },
+  { slug: 'the-next-season', title: 'The Next Season' },
+  { slug: 'closer-than-before', title: 'Closer Than Before' },
+  { slug: 'second-chance', title: 'Second Chance' },
+  { slug: 'cycle-complete', title: 'Cycle Complete' },
+  { slug: 'no-more-crumbs', title: 'No More Crumbs' },
+  { slug: 'jealous-eyes', title: 'Jealous Eyes' },
+  { slug: 'missing-you', title: 'Missing You' },
+  { slug: 'keep-your-center', title: 'Keep Your Center' },
+  { slug: 'make-the-move', title: 'Make the Move' },
+  { slug: 'ready-or-not', title: 'Ready or Not' },
+  { slug: 'slow-repair', title: 'Slow Repair' },
+  { slug: 'your-needs-count', title: 'Your Needs Count' },
+  { slug: 'not-yet', title: 'Not Yet' },
+  { slug: 'crossing-paths', title: 'Crossing Paths' },
+  { slug: 'lesson-in-love', title: 'Lesson in Love' },
+  { slug: 'wait-for-proof', title: 'Wait for Proof' },
+  { slug: 'the-crossroads', title: 'The Crossroads' },
+  { slug: 'still-connected', title: 'Still Connected' },
+  { slug: 'afraid-to-feel', title: 'Afraid to Feel' },
+  { slug: 'meet-halfway', title: 'Meet Halfway' },
+  { slug: 'forgive-yourself', title: 'Forgive Yourself' },
+  { slug: 'the-confession', title: 'The Confession' },
+  { slug: 'secret-agenda', title: 'Secret Agenda' },
+  { slug: 'the-body-remembers', title: 'The Body Remembers' },
+  { slug: 'uneven-effort', title: 'Uneven Effort' },
+  { slug: 'the-last-word', title: 'The Last Word' },
+  { slug: 'distance-clarifies', title: 'Distance Clarifies' },
+  { slug: 'space-is-speaking', title: 'Space Is Speaking' },
+  { slug: 'charm-without-depth', title: 'Charm Without Depth' },
+  { slug: 'divine-delay', title: 'Divine Delay' },
+] as const);
+
+const LOVE_ORACLE_BY_SLUG = new Map<string, { numericId: number; title: string }>(
+  LOVE_ORACLE_CARDS.map((card, index) => [card.slug, { numericId: 100 + index + 1, title: card.title }]),
+);
+
+export function loveOracleCardBySlug(slug: unknown) {
+  const normalized = String(slug ?? '').trim().toLowerCase();
+  return LOVE_ORACLE_BY_SLUG.get(normalized) ?? null;
+}
 
 export const LOVE_TAROT_DIRECTIONS = Object.freeze([
   'Open and developing',

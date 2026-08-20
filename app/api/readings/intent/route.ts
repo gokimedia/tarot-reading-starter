@@ -103,8 +103,10 @@ import {
 import {
   LOVE_TAROT_DIRECTIONS,
   LOVE_TAROT_FUNNEL_VERSION,
+  LOVE_TAROT_FUNNEL_VERSION_I18N,
   LOVE_TAROT_INTENTS,
   LOVE_TAROT_PAGE,
+  loveOracleCardBySlug,
   deckForCategory,
   isLoveRelationshipStatus,
   isLoveTarotIntent,
@@ -260,24 +262,32 @@ function safeLoveSnapshot(value: unknown, intent: LoveTarotIntent) {
     ? source.unresolved.slice(0, 3).map((entry) => clean(entry, 320)).filter(Boolean)
     : [];
   const positions = LOVE_TAROT_INTENTS[intent].positions;
+  // Two canonical decks share this contract: the legacy numeric 26-card deck
+  // (v1 funnel) and the shipped 93-card love oracle deck with slug ids
+  // (v2-i18n funnel). Card names must match the deck's canonical title.
   const cards = Array.isArray(source.cards)
     ? source.cards.slice(0, 3).map((entry, index) => {
       const card = record(entry);
-      const id = Number.parseInt(String(card.id || ''), 10);
+      const rawId = String(card.id ?? '').trim();
+      const legacy = /^\d+$/.test(rawId);
+      const oracle = legacy ? null : loveOracleCardBySlug(rawId);
+      const legacyId = legacy ? Number.parseInt(rawId, 10) : Number.NaN;
       return {
-        id,
+        id: legacy ? legacyId : rawId.toLowerCase(),
+        numericId: oracle ? oracle.numericId : legacyId,
         name: clean(card.name, 80),
         position: clean(card.position, 80),
         angle: clean(card.angle, 500),
-        expectedName: loveTarotCardTitle(id),
+        expectedName: oracle ? oracle.title : loveTarotCardTitle(legacyId),
         expectedPosition: positions[index],
       };
     })
     : [];
-  const cardIds = cards.map((card) => card.id);
+  const cardIds = cards.map((card) => String(card.id));
   const cardsValid = cards.length === 3
     && new Set(cardIds).size === 3
-    && cards.every((card) => card.expectedName === card.name
+    && cards.every((card) => Number.isInteger(card.numericId)
+      && card.expectedName === card.name
       && card.expectedPosition === card.position
       && card.angle.length >= 8);
 
@@ -296,6 +306,7 @@ function safeLoveSnapshot(value: unknown, intent: LoveTarotIntent) {
     synthesis,
     groundedStep,
     unresolved,
+    firstCardNumericId: cards[0].numericId,
     cards: cards.map(({ id, name, position, angle }) => ({ id, name, position, angle })),
   };
 }
@@ -542,20 +553,22 @@ export async function POST(request: Request) {
     snapshot = chartSnapshot;
   } else if (loveTarot) {
     const intentValue = clean(body.intent, 40).toLowerCase();
-    if (!isLoveTarotIntent(intentValue) || funnelVersion !== LOVE_TAROT_FUNNEL_VERSION) {
+    if (!isLoveTarotIntent(intentValue)
+      || ![LOVE_TAROT_FUNNEL_VERSION, LOVE_TAROT_FUNNEL_VERSION_I18N].includes(funnelVersion)) {
       return json({ error: 'invalid_checkout_intent' }, 422, origin);
     }
     const loveSnapshot = safeLoveSnapshot(body.snapshot, intentValue);
     if (!loveSnapshot) return json({ error: 'invalid_love_snapshot' }, 422, origin);
+    const { firstCardNumericId, ...persistedLoveSnapshot } = loveSnapshot;
     page = LOVE_TAROT_PAGE;
     readingType = 'Love Tarot';
     category = 'love';
     deck = 'love_oracle';
     answer = 'CONDITIONAL';
     cardName = loveSnapshot.cards[0].name;
-    cardId = loveSnapshot.cards[0].id;
+    cardId = firstCardNumericId;
     intentKind = 'love_tarot';
-    snapshot = loveSnapshot;
+    snapshot = persistedLoveSnapshot;
   } else if (dailyHoroscope) {
     const focus = clean(body.focus, 24).toLowerCase();
     const forecastDate = clean(body.dateKey, 16);
