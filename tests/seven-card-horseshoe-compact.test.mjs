@@ -701,4 +701,11 @@ test('worker adapter never generates curiosity and deterministic generation rema
     };
     assert.equal(auditSevenCardHorseshoeCompactInsight(localizedCompact, localizedContract).ok, true, `${lang}: ${localizedCompact}`);
   }
+
+  for (const locale of ['fr', 'ko']) {
+    const unsupported = fields({ question: QUESTION, lang: locale, locale, requestedLocale: locale });
+    const fallback = await generateSevenCardHorseshoeCompactInsight(unsupported, {}, { deterministicOnly: true });
+    assert.match(fallback, /Past The Fool and Present The Magician/i, locale);
+    assert.equal(unsupported.freePreviewCompactInsightAuditStatus, 'passed', locale);
+  }
 });

@@ -433,6 +433,15 @@ test('an invalid server fallback throws before a preview token can be treated as
   );
 });
 
+test('unsupported direct-tarot locales use the audited English fallback instead of returning 503', async () => {
+  for (const locale of ['fr', 'ko']) {
+    const fields = { ...yesSnapshot(), locale, lang: locale, requestedLocale: locale };
+    const compact = await generateDirectTarotCompactInsight(fields, {}, { deterministicOnly: true });
+    assert.match(compact, /symbolic tendency of the current pattern/i, locale);
+    assert.equal(fields.freePreviewCompactInsightAuditStatus, 'passed', locale);
+  }
+});
+
 test('direct preview authority lasts exactly 24 hours and reconstructs only canonical immutable evidence', () => {
   const snapshot = yesSnapshot();
   const preview = {
