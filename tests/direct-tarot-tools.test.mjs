@@ -464,6 +464,8 @@ test('a successful but audit-rejected direct compact draft receives one bounded 
   assert.match(calls[1].messages[0].content, /compact_insight_word_count/);
   assert.match(calls[1].messages[0].content, /exactly 55 whitespace-separated words/);
   assert.match(calls[1].messages[0].content, /Use exactly three periods total/);
+  assert.match(calls[1].messages[0].content, /The Fool.*The Magician.*The World/);
+  assert.match(calls[1].messages[0].content, /exact server-verified reference/);
   assert.match(calls[1].messages[1].content, /UNTRUSTED REJECTED DRAFT FOR REWRITE ONLY/);
   assert.match(calls[1].messages[1].content, /The Fool marks your position/);
 });
