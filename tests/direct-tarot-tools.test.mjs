@@ -108,13 +108,28 @@ function previewBudget({ allow = true } = {}) {
   };
 }
 
-function workerEnv(kv, quota) {
+function workerEnv(kv, quota, overrides = {}) {
   return {
     ENTITLEMENT_PEPPER: 'direct-preview-test-pepper',
     READINGS_CACHE: kv.binding,
     FREE_READING_BUDGETS: quota.binding,
     FREE_ENTITLEMENTS: { getByName: () => ({ fetch: async () => Response.json({ allowed: true, used: 1 }) }) },
+    ...overrides,
   };
+}
+
+function aiBudget() {
+  return {
+    claim: async ({ claimId }) => ({ allowed: true, claimId }),
+    settle: async () => ({ allowed: true }),
+  };
+}
+
+function modelResponse(text) {
+  return Response.json({
+    choices: [{ message: { content: text }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 120, completion_tokens: String(text).split(/\s+/u).filter(Boolean).length },
+  });
 }
 
 function freeRequest(snapshot, overrides = {}) {
@@ -417,6 +432,62 @@ test('server-owned deterministic fallback survives incidental question-word over
   assert.equal(quota.claims, 1);
   assert.equal(quota.commits, 1);
   assert.equal(quota.releases, 0);
+});
+
+test('a successful but audit-rejected direct compact draft receives one bounded corrective rewrite', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  const rejectedDraft = 'The Fool marks your position. The Magician suggests a condition. The World supports a measurable next step.';
+  const repairedDraft = deterministicDirectTarotCompactInsight({
+    kind: 'career',
+    locale: 'en',
+    question: CAREER_QUESTION,
+    cards: [{ card: 'The Fool' }, { card: 'The Magician' }, { card: 'The World' }],
+  });
+  globalThis.fetch = async (_url, init = {}) => {
+    calls.push(JSON.parse(String(init.body)));
+    return modelResponse(calls.length === 1 ? rejectedDraft : repairedDraft);
+  };
+  const fields = careerSnapshot({ locale: 'en-US', lang: 'en' });
+  const compact = await generateDirectTarotCompactInsight(fields, {
+    DEEPSEEK_DIRECT_API_KEY: 'test-key',
+    AI_BUDGETS: aiBudget(),
+  });
+
+  assert.equal(calls.length, 2, 'quality repair must be limited to one additional model call');
+  assert.equal(compact, repairedDraft);
+  assert.equal(fields.freePreviewCompactInsightSource, 'deepseek_flash_quality_retry');
+  assert.equal(fields.freePreviewCompactInsightAuditStatus, 'passed');
+  assert.equal(fields.freePreviewCompactInsightAuditReason, '');
+  assert.equal(fields.freePreviewCompactInsightPromptVersion, 'career-three-card-compact-v2');
+  assert.match(calls[1].messages[0].content, /compact_insight_word_count/);
+  assert.match(calls[1].messages[0].content, /exactly 55 whitespace-separated words/);
+  assert.match(calls[1].messages[1].content, /UNTRUSTED REJECTED DRAFT FOR REWRITE ONLY/);
+  assert.match(calls[1].messages[1].content, /The Fool marks your position/);
+});
+
+test('provider failures use the deterministic fallback without triggering the quality rewrite', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: 'rate limited' }), {
+      status: 429,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const fields = careerSnapshot({ locale: 'en-US', lang: 'en' });
+  const compact = await generateDirectTarotCompactInsight(fields, {
+    DEEPSEEK_DIRECT_API_KEY: 'test-key',
+    AI_BUDGETS: aiBudget(),
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(compact, fields.freePreviewCompactInsight);
+  assert.equal(fields.freePreviewCompactInsightSource, 'deterministic_rate_limit_fallback');
+  assert.equal(fields.freePreviewCompactInsightAuditStatus, 'passed_fallback');
 });
 
 test('an invalid server fallback throws before a preview token can be treated as successful', async () => {
