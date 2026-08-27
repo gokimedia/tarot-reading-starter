@@ -58,8 +58,13 @@ next.config.ts         # Next.js configuration
 This starter ships with 5 sample cards. For the complete 78-card dataset:
 
 - **Hugging Face:** https://huggingface.co/datasets/Blacik/deckaura-tarot-card-meanings
+- **Permanent DOI:** https://doi.org/10.5281/zenodo.19475329
+- **Live explorer:** https://gokimedia.github.io/tarot-dataset-explorer/
+- **Developer docs:** https://gokimedia.github.io/deckaura-developer-docs/
+- **Open data hub:** https://deckaura.com/pages/ai-data-sources
 - **npm:** `npm install tarot-card-meanings`
 - **MCP server:** `npm install @deckaura/tarot-mcp-server`
+- **Official MCP Registry:** https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.gokimedia%2Ftarot-mcp-server
 - **Full guides:** https://deckaura.com/blogs/guide/tarot-card-meanings
 
 ## Deploy
