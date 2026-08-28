@@ -26,6 +26,10 @@ import {
 import { validateNumerologyCompatibilityOrder } from '@/lib/numerology-compatibility-order.mjs';
 import { validateNumerologyLifePathOrder } from '@/lib/numerology-life-path-order.mjs';
 import {
+  runeCheckoutContractForItems,
+  type RuneCheckoutContract,
+} from '@/lib/rune-reading';
+import {
   checkoutIntentSignatureMatches,
   hashCheckoutIntentSnapshot,
   signCheckoutIntent,
@@ -1696,6 +1700,7 @@ async function queueDraftForOrder(
   numerology: JsonObject | null = null,
   checkout: VerifiedCheckoutContext | null = null,
   intent: VerifiedReadingIntent | null = null,
+  rune: RuneCheckoutContract | null = null,
 ) {
   const orderId = text(payload.id, 96);
   const existing = await paidDraftForOrder(orderId, env);
@@ -1715,6 +1720,7 @@ async function queueDraftForOrder(
     // The HMAC-bound server snapshot is the highest-authority source when a
     // numerology order also passes the legacy line-property validator.
     ...(intent?.verifiedFields || {}),
+    ...(rune?.ok ? rune.verifiedFields : {}),
   };
   if (existing && validAccessToken(existing.accessToken)) {
     const verifiedFields = Object.keys(mergedVerifiedFields).length ? mergedVerifiedFields : existing.verifiedFields;
@@ -1836,7 +1842,9 @@ async function persistPaidOrder(
   numerology: JsonObject | null = null,
   checkout: VerifiedCheckoutContext | null = null,
   intent: VerifiedReadingIntent | null = null,
+  rune: RuneCheckoutContract | null = null,
 ) {
+  const manualReviewRequired = Boolean(rune?.active && !rune.ok);
   const orderId = text(payload.id, 96);
   const verifiedVariantId = intent?.variantId || checkout?.variantId || '';
   const first = verifiedVariantId
@@ -1937,7 +1945,8 @@ async function persistPaidOrder(
       order_id, order_name, access_token, email, customer_name,
       financial_status, sku, tier, quantity, original_question,
       confirmed_question, source_context, promised_deliverables,
-      review_status, edit_count, review_until, confirmed_at, due_at, status
+      review_status, edit_count, review_until, confirmed_at, due_at, status,
+      manual_review_reason, manual_review_at
     ) values (
       ${orderId}, ${text(payload.name, 40) || null}, ${String(draft.accessToken)},
       ${text(payload.email || payload.contact_email, 320) || null}, ${text(draft.name, 80) || null},
@@ -2025,7 +2034,9 @@ async function persistPaidOrder(
       } as never)},
       ${reviewStatus}, ${Math.max(0, Math.min(Number(draft.editCount) || 0, 1))},
       ${new Date(reviewUntilMs)}, ${confirmedAtMs ? new Date(confirmedAtMs) : null},
-      ${dueAt}, ${reviewStatus === 'pending' ? 'review_pending' : 'queued'}
+      ${dueAt}, ${manualReviewRequired ? 'manual_review' : reviewStatus === 'pending' ? 'review_pending' : 'queued'},
+      ${manualReviewRequired ? rune?.code || 'RUNE_CHECKOUT_CONTRACT_INVALID' : null},
+      ${manualReviewRequired ? new Date() : null}
     )
     on conflict (order_id) do update
       set order_name = coalesce(excluded.order_name, deckaura.paid_orders.order_name),
@@ -2049,8 +2060,45 @@ async function persistPaidOrder(
               then deckaura.paid_orders.status
             else excluded.status
           end,
+          manual_review_reason = case
+            when deckaura.paid_orders.status in ('generating', 'generated', 'delivering', 'delivered')
+              then deckaura.paid_orders.manual_review_reason
+            when excluded.status = 'manual_review'
+              then ${manualReviewRequired ? rune?.code || 'RUNE_CHECKOUT_CONTRACT_INVALID' : null}
+            else null
+          end,
+          manual_review_at = case
+            when deckaura.paid_orders.status in ('generating', 'generated', 'delivering', 'delivered')
+              then deckaura.paid_orders.manual_review_at
+            when excluded.status = 'manual_review'
+              then coalesce(deckaura.paid_orders.manual_review_at, clock_timestamp())
+            else null
+          end,
           updated_at = clock_timestamp()
   `;
+}
+
+async function recordRuneManualReview(orderId: string, rune: RuneCheckoutContract, env: WorkerEnvironment) {
+  const record = {
+    event: 'reading_input_rejected',
+    schemaVersion: 'rune-checkout-v1',
+    orderId,
+    code: rune.code,
+    missing: rune.missing,
+    type: 'Rune Reading',
+    tool: 'https://deckaura.com/pages/rune-reading',
+    createdAt: new Date().toISOString(),
+    manualReview: true,
+  };
+  await env.READINGS_CACHE.put(`reading-error:${orderId}`, JSON.stringify(record), {
+    expirationTtl: 60 * 60 * 24 * 365,
+  });
+  console.warn({
+    event: 'rune_reading_manual_review_queued',
+    orderId,
+    code: rune.code,
+    missing: rune.missing,
+  });
 }
 
 async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnvironment) {
@@ -2072,14 +2120,15 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
   const checkout = await verifiedTarotCheckoutContext(items, env);
   const intent = await verifiedReadingIntent(items, payload);
   if (checkout && intent) throw new QueueOperationError('CHECKOUT_AUTHORITY_AMBIGUOUS');
-  const { draft } = await queueDraftForOrder(payload, items, env, numerology, checkout, intent);
+  const rune = runeCheckoutContractForItems(items);
+  const { draft } = await queueDraftForOrder(payload, items, env, numerology, checkout, intent, rune);
   const requestedNumerologyDelay = Number(numerology?.deliveryDelayMinutes);
   const delayMinutes = Number.isFinite(requestedNumerologyDelay) && requestedNumerologyDelay > 0
     ? requestedNumerologyDelay
     : readingDeliveryDelayMinutes(orderId, env);
   const reviewHoldMs = normalizedReviewStatus(draft) === 'pending' ? (Number(draft.reviewUntil) || 0) + 5 * 60_000 : 0;
   const dueAt = new Date(Math.max(payloadCreatedAt(payload) + delayMinutes * 60_000, reviewHoldMs));
-  await persistPaidOrder(payload, items, draft, dueAt, numerology, checkout, intent);
+  await persistPaidOrder(payload, items, draft, dueAt, numerology, checkout, intent, rune);
   const verifiedVariantId = intent?.variantId || checkout?.variantId || '';
   const first = verifiedVariantId
     ? items.find((item) => text(item.variant_id, 64) === verifiedVariantId) || items[0] || {}
@@ -2160,6 +2209,11 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
     metadata: { source: 'verified_shopify_webhook', answers_used: attribution.answersUsed },
     occurredAt: new Date(payloadCreatedAt(payload)).toISOString(),
   }]).catch((error) => safeQueueLog('purchase_attribution_record_failed', error, 'shopify_orders_paid'));
+  if (rune?.active && !rune.ok) {
+    const manualReview = await paidOrderRequiresManualReview(orderId);
+    if (manualReview) await recordRuneManualReview(orderId, rune, env);
+    return { queued: false, manualReview, code: rune.code };
+  }
   const job = await deliveryRetry.enqueueDelivery(paidReadingDeliveryJobInput(orderId, dueAt));
   if (!job) throw new QueueOperationError('DELIVERY_ENQUEUE_FAILED');
   return { queued: true };
@@ -2186,6 +2240,17 @@ async function updatePaidOrderBeforeDelivery(orderId: string, env: WorkerEnviron
   if (!rows[0]) {
     throw new QueueOperationError(draftTier ? 'PAID_ORDER_TIER_MISMATCH' : 'PAID_ORDER_NOT_FOUND');
   }
+}
+
+async function paidOrderRequiresManualReview(orderId: string) {
+  const sql = db();
+  const rows = await sql<Array<{ status: string }>>`
+    select status
+      from deckaura.paid_orders
+     where order_id = ${orderId}
+     limit 1
+  `;
+  return rows[0]?.status === 'manual_review';
 }
 
 async function updatePaidOrderAfterDelivery(orderId: string, fulfillmentId = '') {
@@ -2333,6 +2398,7 @@ function legacyDeliveryFailureCode(value: unknown, explicitCode?: unknown) {
 }
 
 async function processPaidReading(job: DeliveryJobRow, env: WorkerEnvironment) {
+  if (await paidOrderRequiresManualReview(job.order_id)) return 'manual_review';
   await updatePaidOrderBeforeDelivery(job.order_id, env);
   const results = await deliverDueReadings(env, { onlyOrderId: job.order_id });
   const result = Array.isArray(results) ? results[0] as JsonObject | undefined : undefined;
@@ -2342,6 +2408,7 @@ async function processPaidReading(job: DeliveryJobRow, env: WorkerEnvironment) {
     throw new QueueOperationError('PAID_READING_FULFILLMENT_EVIDENCE_MISSING');
   }
   const delivered = await updatePaidOrderAfterDelivery(job.order_id, text(result.fulfillmentId, 160));
+  await env.READINGS_CACHE.delete(`reading-error:${job.order_id}`);
   await recordDeliverySlaEvent(job.order_id, delivered).catch((error) => {
     safeQueueLog('delivery_sla_event_record_failed', error, job.job_type);
   });
@@ -2764,6 +2831,7 @@ export async function readingSlaHealth() {
     open_70: number;
     open_85: number;
     open_90: number;
+    manual_review_open: number;
     delivered_late_24h: number;
     orphaned_webhook_orders: number;
   }>>`
@@ -2774,6 +2842,7 @@ export async function readingSlaHealth() {
         (count(*) filter (where status <> 'delivered' and created_at <= clock_timestamp() - interval '70 minutes'))::integer as open_70,
         (count(*) filter (where status <> 'delivered' and created_at <= clock_timestamp() - interval '85 minutes'))::integer as open_85,
         (count(*) filter (where status <> 'delivered' and created_at <= clock_timestamp() - interval '90 minutes'))::integer as open_90,
+        (count(*) filter (where status = 'manual_review'))::integer as manual_review_open,
         (count(*) filter (
           where status = 'delivered'
             and delivered_at >= clock_timestamp() - interval '24 hours'
@@ -2811,6 +2880,7 @@ export async function readingSlaHealth() {
     openAt70Minutes: Number(row.open_70) || 0,
     openAt85Minutes: Number(row.open_85) || 0,
     openPast90Minutes: Number(row.open_90) || 0,
+    manualReviewOpen: Number(row.manual_review_open) || 0,
     deliveredLateLast24Hours: Number(row.delivered_late_24h) || 0,
     orphanedWebhookOrders: Number(row.orphaned_webhook_orders) || 0,
   };

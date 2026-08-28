@@ -81,10 +81,13 @@ export async function GET(request: Request) {
     } else if (sla.openAt45Minutes > 0) {
       console.warn({ event: sla.openAt70Minutes > 0 ? 'reading_delivery_sla_warning' : 'reading_delivery_sla_watch', ...sla });
     }
+    if (sla.manualReviewOpen > 0) {
+      console.warn({ event: 'reading_manual_review_action_required', ...sla });
+    }
     return Response.json({
       ...health,
       degraded: health.degraded || cleanupSkipped || reconciliationDegraded
-        || sla.openAt45Minutes > 0 || sla.orphanedWebhookOrders > 0,
+        || sla.openAt45Minutes > 0 || sla.manualReviewOpen > 0 || sla.orphanedWebhookOrders > 0,
       reconciliation,
       ...result,
       cleanup,
