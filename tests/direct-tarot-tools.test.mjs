@@ -419,18 +419,21 @@ test('server-owned deterministic fallback survives incidental question-word over
   assert.equal(quota.releases, 0);
 });
 
-test('an invalid server fallback throws before a preview token can be treated as successful', async () => {
-  await assert.rejects(
-    generateDirectTarotCompactInsight({
-      tool: YES_NO_DIRECT_PAGE,
-      type: YES_NO_DIRECT_TYPE,
-      presentationVariant: YES_NO_DIRECT_PRESENTATION_VARIANT,
-      question: YES_QUESTION,
-      readingId: READING_ID,
-      locale: 'en-US',
-    }, {}),
-    (error) => error && error.status === 503 && error.code === 'DIRECT_TAROT_COMPACT_FALLBACK_INVALID',
-  );
+test('an invalid optional compact fallback degrades without a customer-facing 503', async () => {
+  const fields = {
+    tool: YES_NO_DIRECT_PAGE,
+    type: YES_NO_DIRECT_TYPE,
+    presentationVariant: YES_NO_DIRECT_PRESENTATION_VARIANT,
+    question: YES_QUESTION,
+    readingId: READING_ID,
+    locale: 'en-US',
+  };
+  const compact = await generateDirectTarotCompactInsight(fields, {});
+  assert.equal(compact, '');
+  assert.equal(fields.freePreviewCompactInsight, '');
+  assert.equal(fields.freePreviewCompactInsightSource, 'unavailable');
+  assert.equal(fields.freePreviewCompactInsightAuditStatus, 'failed_nonblocking');
+  assert.ok(fields.freePreviewCompactInsightAuditReason);
 });
 
 test('unsupported direct-tarot locales use the audited English fallback instead of returning 503', async () => {
