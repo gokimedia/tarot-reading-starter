@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const EXPECTED_LIVE_PAGE_COUNT = 61;
+const EXPECTED_LIVE_PAGE_COUNT = 62;
 const EXPECTED_UNIQUE_VARIANT_COUNT = 78;
 const DEAD_PAGE_ALIASES = Object.freeze(['/pages/celtic-cross-reading']);
 const BACKEND_CANONICAL_PAGE_TYPES = Object.freeze({

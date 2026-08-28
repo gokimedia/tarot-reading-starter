@@ -19,9 +19,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('generated shared-tool contract covers 63 live pages and 78 unique variants', () => {
-  assert.equal(SHARED_TOOL_PAGES.length, 63);
-  assert.equal(new Set(SHARED_TOOL_PAGES).size, 63);
+test('generated shared-tool contract covers 64 canonical pages and 78 unique variants', () => {
+  assert.equal(SHARED_TOOL_PAGES.length, 64);
+  assert.equal(new Set(SHARED_TOOL_PAGES).size, 64);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-reading'), false);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-tarot-reading'), true);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/attachment-style-quiz'), true);
@@ -87,6 +87,7 @@ test('generated shared-tool contract covers 63 live pages and 78 unique variants
     ['/pages/yes-or-no-tarot', 'Yes or No Tarot', ['53675061838097', '53677128155409', '53705415098641']],
     ['/pages/dream-interpreter', 'Dream Interpretation', ['53675061838097', '53677128155409', '53705415098641']],
     ['/pages/love-tarot-reading', 'Love Tarot', ['53782500409617', '53782500442385', '53782500475153']],
+    ['/pages/love-calculator', 'Love Calculator', ['53782499164433', '53782499197201', '53782499229969']],
     ['/pages/career-tarot-reading', 'Career Tarot', ['53675061838097', '53677128155409', '53705415098641']],
     ['/pages/tarot-birth-card-calculator', 'Tarot Birth Card', ['53782498509073', '53782498541841', '53782498574609']],
     ['/pages/attachment-style-quiz', 'Attachment Style', ['54279722238225', '54279722991889', '54279723024657']],
