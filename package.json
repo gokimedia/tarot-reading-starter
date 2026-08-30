@@ -9,6 +9,8 @@
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "shared-manifest:generate": "node scripts/generate-shared-tool-manifest.mjs",
     "shared-manifest:check": "node scripts/generate-shared-tool-manifest.mjs --check",
+    "free-tarot-v2-contract:generate": "node scripts/generate-free-tarot-v2-funnel-contract.mjs",
+    "free-tarot-v2-contract:check": "node scripts/generate-free-tarot-v2-funnel-contract.mjs --check",
     "lead-magnet:upload": "node scripts/setup-lead-magnet-storage.mjs",
     "start": "next start",
     "lint": "next lint"

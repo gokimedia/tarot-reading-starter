@@ -18,6 +18,7 @@ export const SHARED_TOOL_OFFER_VARIANT: string;
 export const SHARED_TOOL_PRODUCTS: Readonly<Record<string, Readonly<{ label: string; e: string; d: string; i: string }>>>;
 export const SHARED_TOOL_PAGE_TOOL_TYPES: Readonly<Record<string, string>>;
 export const SHARED_TOOL_PAGE_ALLOWED_TIERS: Readonly<Record<string, readonly SharedToolStorefrontTier[]>>;
+export const SHARED_TOOL_PAGE_ID_PAGES: Readonly<Record<string, string>>;
 export const SHARED_TOOL_PAGES: readonly string[];
 export const SHARED_TOOL_VARIANT_IDS: readonly string[];
 export const SHARED_TOOL_EVENT_NAMES: readonly string[];

@@ -1,13 +1,32 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
-const EXPECTED_LIVE_PAGE_COUNT = 61;
+const EXPECTED_CANONICAL_PAGE_COUNT = 64;
+const EXPECTED_STABLE_PAGE_ID_COUNT = 63;
 const EXPECTED_UNIQUE_VARIANT_COUNT = 78;
-const DEAD_PAGE_ALIASES = Object.freeze(['/pages/celtic-cross-reading']);
-const BACKEND_CANONICAL_PAGE_TYPES = Object.freeze({
-  '/pages/yes-or-no-tarot': 'Yes or No Tarot',
-  '/pages/free-tarot-reading': 'Tarot',
+const REDIRECT_ONLY_CANONICAL_PAGES = Object.freeze(['/pages/lilith-calculator']);
+const REQUIRED_CANONICAL_CONTRACTS = Object.freeze({
+  '/pages/free-tarot-reading': Object.freeze({
+    toolType: 'Tarot',
+    allowedTiers: Object.freeze(['essential', 'deeper', 'indepth']),
+    variants: Object.freeze(['53675061838097', '53677128155409', '53705415098641']),
+  }),
+  '/pages/yes-or-no-tarot': Object.freeze({
+    toolType: 'Yes or No Tarot',
+    allowedTiers: Object.freeze(['essential', 'deeper', 'indepth']),
+    variants: Object.freeze(['53675061838097', '53677128155409', '53705415098641']),
+  }),
+  '/pages/birth-chart-calculator': Object.freeze({
+    toolType: 'Astrology Birth Chart',
+    allowedTiers: Object.freeze(['essential', 'deeper', 'indepth']),
+    variants: Object.freeze(['53782500606225', '53782500638993', '53782500671761']),
+  }),
+  '/pages/astrocartography-calculator': Object.freeze({
+    toolType: 'Astrocartography',
+    allowedTiers: Object.freeze(['essential', 'deeper', 'indepth']),
+    variants: Object.freeze(['53782498312465', '53782498345233', '53782498378001']),
+  }),
 });
 const TIERS = Object.freeze([
   ['essential', 'e', 'standard', 'READING-DEEP', 5.99],
@@ -78,6 +97,23 @@ function parseAllowedTiers(source, pages) {
   return policies;
 }
 
+function parseStablePageIds(source) {
+  const caseMatch = /^\s*case\s+page_id\s*$([\s\S]*?)^\s*endcase\s*$/m.exec(source);
+  if (!caseMatch) fail('PAGE_ID_CASE_MISSING');
+  const body = caseMatch[1];
+  const entries = {};
+  const entryPattern = /^\s*when\s+(\d{8,20})\s*\r?\n\s*echo\s+'([/]pages[/][a-z0-9-]{3,80})'\s*$/gm;
+  for (const match of body.matchAll(entryPattern)) {
+    const [, pageId, page] = match;
+    if (Object.hasOwn(entries, pageId)) fail('PAGE_ID_DUPLICATE');
+    if (Object.values(entries).includes(page)) fail('PAGE_ID_PAGE_DUPLICATE');
+    entries[pageId] = page;
+  }
+  const whenCount = [...body.matchAll(/^\s*when\s+/gm)].length;
+  if (whenCount !== Object.keys(entries).length) fail('PAGE_ID_ENTRY_INVALID');
+  return entries;
+}
+
 function parseFlagObject(source, variableName) {
   const body = objectBody(source, variableName).trim();
   if (!body) fail(`${variableName}_EMPTY`);
@@ -107,10 +143,17 @@ function priceArray(source, variableName) {
   return prices;
 }
 
-function validate(products, pages, allowedTiers, sharedEvents, commerceEvents) {
+function validate(products, pages, allowedTiers, stablePageIds, sharedEvents, commerceEvents) {
   const pageCount = Object.keys(pages).length;
-  if (pageCount !== EXPECTED_LIVE_PAGE_COUNT && pageCount !== EXPECTED_LIVE_PAGE_COUNT + DEAD_PAGE_ALIASES.length) {
-    fail('PAGE_COUNT_MISMATCH');
+  if (pageCount !== EXPECTED_CANONICAL_PAGE_COUNT) fail('PAGE_COUNT_MISMATCH');
+  if (Object.hasOwn(pages, '/pages/celtic-cross-reading')) fail('DEAD_PAGE_ALIAS_PRESENT');
+  if (Object.keys(stablePageIds).length !== EXPECTED_STABLE_PAGE_ID_COUNT) fail('PAGE_ID_COUNT_MISMATCH');
+  for (const page of Object.values(stablePageIds)) {
+    if (!Object.hasOwn(pages, page)) fail('PAGE_ID_PAGE_UNKNOWN');
+  }
+  const pagesWithoutStableIds = Object.keys(pages).filter((page) => !Object.values(stablePageIds).includes(page));
+  if (JSON.stringify(pagesWithoutStableIds) !== JSON.stringify(REDIRECT_ONLY_CANONICAL_PAGES)) {
+    fail('PAGE_ID_COVERAGE_MISMATCH');
   }
   for (const toolType of Object.values(pages)) {
     if (!Object.hasOwn(products, toolType)) fail('PAGE_PRODUCT_MISSING');
@@ -122,13 +165,23 @@ function validate(products, pages, allowedTiers, sharedEvents, commerceEvents) {
   const variants = Object.values(products).flatMap((product) => [product.e, product.d, product.i]);
   if (new Set(variants).size !== EXPECTED_UNIQUE_VARIANT_COUNT) fail('VARIANT_COUNT_MISMATCH');
   if (commerceEvents.some((event) => !sharedEvents.includes(event))) fail('COMMERCE_EVENT_NOT_SHARED');
+  for (const [page, required] of Object.entries(REQUIRED_CANONICAL_CONTRACTS)) {
+    if (pages[page] !== required.toolType) fail('REQUIRED_CANONICAL_PAGE_MISMATCH');
+    if (JSON.stringify(allowedTiers[page]) !== JSON.stringify(required.allowedTiers)) {
+      fail('REQUIRED_CANONICAL_TIERS_MISMATCH');
+    }
+    const product = products[required.toolType];
+    if (!product || JSON.stringify([product.e, product.d, product.i]) !== JSON.stringify(required.variants)) {
+      fail('REQUIRED_CANONICAL_VARIANTS_MISMATCH');
+    }
+  }
 }
 
 function literal(value) {
   return JSON.stringify(value, null, 2);
 }
 
-function render({ products, pages, allowedTiers, sharedEvents, commerceEvents, funnelVersion, offerVariant, sourceDigest }) {
+function render({ products, pages, allowedTiers, stablePageIds, sharedEvents, commerceEvents, funnelVersion, offerVariant, sourceDigest }) {
   return `// Generated by scripts/generate-shared-tool-manifest.mjs. Do not hand-edit.\n` +
 `// Source contract SHA-256: ${sourceDigest}\n` +
 `export const SHARED_TOOL_SOURCE_SHA256 = ${JSON.stringify(sourceDigest)};\n` +
@@ -138,6 +191,7 @@ function render({ products, pages, allowedTiers, sharedEvents, commerceEvents, f
 `export const SHARED_TOOL_PRODUCTS = deepFreeze(${literal(products)});\n` +
 `export const SHARED_TOOL_PAGE_TOOL_TYPES = Object.freeze(${literal(pages)});\n` +
 `export const SHARED_TOOL_PAGE_ALLOWED_TIERS = deepFreeze(${literal(allowedTiers)});\n` +
+`export const SHARED_TOOL_PAGE_ID_PAGES = Object.freeze(${literal(stablePageIds)});\n` +
 `export const SHARED_TOOL_PAGES = Object.freeze(Object.keys(SHARED_TOOL_PAGE_TOOL_TYPES));\n` +
 `export const SHARED_TOOL_VARIANT_IDS = Object.freeze([...new Set(Object.values(SHARED_TOOL_PRODUCTS).flatMap((product) => [product.e, product.d, product.i]))]);\n` +
 `export const SHARED_TOOL_EVENT_NAMES = Object.freeze(${literal(sharedEvents)});\n` +
@@ -168,20 +222,16 @@ function render({ products, pages, allowedTiers, sharedEvents, commerceEvents, f
 }
 
 const themePath = resolve(argument('--theme') || process.env.DECKAURA_THEME_CONTRACT_SOURCE || '');
+const pageContractPath = resolve(argument('--page-contract') || process.env.DECKAURA_THEME_PAGE_CONTRACT_SOURCE || dirname(themePath), argument('--page-contract') || process.env.DECKAURA_THEME_PAGE_CONTRACT_SOURCE ? '' : 'deep-reading-page-contract.liquid');
 const outputPath = resolve(argument('--out') || 'lib/generated/shared-tool-manifest.mjs');
 if (!argument('--theme') && !process.env.DECKAURA_THEME_CONTRACT_SOURCE) fail('THEME_PATH_REQUIRED');
 const source = await readFile(themePath, 'utf8');
+const pageContractSource = await readFile(pageContractPath, 'utf8');
+if (!/render\s+'deep-reading-page-contract'\s*,\s*page_id:\s*page\.id/.test(source)) fail('PAGE_ID_RENDER_MISSING');
 const products = parseProducts(source);
-const themePages = parsePages(source);
-const pages = {
-  ...Object.fromEntries(Object.entries(themePages).filter(([page]) => !DEAD_PAGE_ALIASES.includes(page))),
-  ...BACKEND_CANONICAL_PAGE_TYPES,
-};
-const themeAllowedTiers = parseAllowedTiers(source, themePages);
-const allowedTiers = {
-  ...Object.fromEntries(Object.entries(themeAllowedTiers).filter(([page]) => !DEAD_PAGE_ALIASES.includes(page))),
-  ...Object.fromEntries(Object.keys(BACKEND_CANONICAL_PAGE_TYPES).map((page) => [page, ['essential', 'deeper', 'indepth']])),
-};
+const pages = parsePages(source);
+const allowedTiers = parseAllowedTiers(source, pages);
+const stablePageIds = parseStablePageIds(pageContractSource);
 const sharedEvents = parseFlagObject(source, 'DDR_SHARED_EVENTS');
 const commerceEvents = parseFlagObject(source, 'DDR_COMMERCE_EVENTS');
 const defaultPrices = priceArray(source, 'DEF_PRICES');
@@ -190,12 +240,12 @@ if (defaultPrices.some((price, index) => Math.abs(price - TIERS[index][4]) > 0.0
   || premiumPrices.some((price, index) => Math.abs(price - TIERS[index][4]) > 0.001)) {
   fail('PRICE_CONTRACT_MISMATCH');
 }
-validate(products, themePages, themeAllowedTiers, sharedEvents, commerceEvents);
-if (Object.keys(pages).length !== EXPECTED_LIVE_PAGE_COUNT + Object.keys(BACKEND_CANONICAL_PAGE_TYPES).length) fail('LIVE_PAGE_COUNT_MISMATCH');
+validate(products, pages, allowedTiers, stablePageIds, sharedEvents, commerceEvents);
 const sourceDigest = createHash('sha256').update([
   objectBody(source, 'DDR_PRODUCTS'),
   objectBody(source, 'DDR_PAGE_TOOL_TYPES'),
   objectBody(source, 'DDR_PAGE_ALLOWED_TIERS'),
+  JSON.stringify(stablePageIds),
   objectBody(source, 'DDR_SHARED_EVENTS'),
   objectBody(source, 'DDR_COMMERCE_EVENTS'),
   defaultPrices.join(','),
@@ -205,6 +255,7 @@ const output = render({
   products,
   pages,
   allowedTiers,
+  stablePageIds,
   sharedEvents,
   commerceEvents,
   funnelVersion: quotedConstant(source, 'DDR_FUNNEL_VERSION'),

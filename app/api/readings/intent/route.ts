@@ -363,7 +363,7 @@ export async function POST(request: Request) {
   const funnelVersion = clean(body.funnelVersion, 128);
   if (!storefrontTier
     || (!requestedBirthCardDirect && question.length < 6)
-    || !/^[a-z0-9-]{8,80}$/i.test(readingId)) {
+    || !/^[a-z0-9_-]{8,80}$/i.test(readingId)) {
     if (requestedPersonalDirect) {
       const publicCode = !storefrontTier
         ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.tierUnsupported

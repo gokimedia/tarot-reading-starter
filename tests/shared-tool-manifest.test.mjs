@@ -8,8 +8,10 @@ import {
   SHARED_TOOL_EVENT_NAMES,
   SHARED_TOOL_FUNNEL_VERSION,
   SHARED_TOOL_PAGE_ALLOWED_TIERS,
+  SHARED_TOOL_PAGE_ID_PAGES,
   SHARED_TOOL_PAGE_TOOL_TYPES,
   SHARED_TOOL_PAGES,
+  SHARED_TOOL_PRODUCTS,
   SHARED_TOOL_SOURCE_SHA256,
   SHARED_TOOL_VARIANT_IDS,
   sharedToolContract,
@@ -19,12 +21,23 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('generated shared-tool contract covers 63 live pages and 78 unique variants', () => {
-  assert.equal(SHARED_TOOL_PAGES.length, 63);
-  assert.equal(new Set(SHARED_TOOL_PAGES).size, 63);
+test('generated shared-tool contract covers the exact 64 canonical pages and 78 unique variants', () => {
+  assert.equal(SHARED_TOOL_PAGES.length, 64);
+  assert.equal(new Set(SHARED_TOOL_PAGES).size, 64);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-reading'), false);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/celtic-cross-tarot-reading'), true);
   assert.equal(SHARED_TOOL_PAGES.includes('/pages/attachment-style-quiz'), true);
+  assert.equal(Object.keys(SHARED_TOOL_PAGE_ID_PAGES).length, 63);
+  assert.equal(new Set(Object.values(SHARED_TOOL_PAGE_ID_PAGES)).size, 63);
+  assert.equal(SHARED_TOOL_PAGE_ID_PAGES['154194444561'], '/pages/free-tarot-reading');
+  assert.deepEqual(
+    SHARED_TOOL_PAGES.filter((page) => !Object.values(SHARED_TOOL_PAGE_ID_PAGES).includes(page)),
+    ['/pages/lilith-calculator'],
+  );
+  for (const [pageId, page] of Object.entries(SHARED_TOOL_PAGE_ID_PAGES)) {
+    assert.match(pageId, /^\d{8,20}$/);
+    assert.ok(SHARED_TOOL_PAGE_TOOL_TYPES[page], `${pageId} must resolve to a manifest page`);
+  }
   assert.equal(SHARED_TOOL_VARIANT_IDS.length, 78);
   assert.equal(new Set(SHARED_TOOL_VARIANT_IDS).size, 78);
   assert.match(SHARED_TOOL_SOURCE_SHA256, /^[a-f0-9]{64}$/);
@@ -32,6 +45,23 @@ test('generated shared-tool contract covers 63 live pages and 78 unique variants
   assert.ok(SHARED_TOOL_EVENT_NAMES.includes('package_defaulted'));
   assert.ok(SHARED_TOOL_EVENT_NAMES.includes('localized_price_unavailable'));
   assert.ok(SHARED_TOOL_COMMERCE_EVENT_NAMES.every((name) => SHARED_TOOL_EVENT_NAMES.includes(name)));
+
+  assert.deepEqual(SHARED_TOOL_PRODUCTS['Astrology Birth Chart'], {
+    label: 'Birth Chart Astrology',
+    e: '53782500606225',
+    d: '53782500638993',
+    i: '53782500671761',
+  });
+  assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS['/pages/astrocartography-calculator'], ['essential', 'deeper', 'indepth']);
+  assert.equal(
+    sharedToolContract('/pages/astrocartography-calculator', 'Astrocartography', 'essential').variantId,
+    '53782498312465',
+  );
+  assert.equal(SHARED_TOOL_PAGE_TOOL_TYPES['/pages/free-tarot-reading'], 'Tarot');
+  assert.equal(
+    sharedToolContract('/pages/free-tarot-reading', 'Tarot', 'essential').variantId,
+    '53675061838097',
+  );
 
   for (const page of SHARED_TOOL_PAGES) {
     const toolType = SHARED_TOOL_PAGE_TOOL_TYPES[page];

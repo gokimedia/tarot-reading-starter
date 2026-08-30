@@ -37,7 +37,7 @@ import { sevenCardHorseshoeVisitorAuthority } from '../lib/seven-card-horseshoe-
 
 const root = new URL('../', import.meta.url);
 const rootPath = fileURLToPath(root);
-const READING_ID = 'direct-route-reading-20260816';
+const READING_ID = 'direct_route_reading_20260816';
 const VISITOR_ID = 'direct-route-visitor-20260816';
 const INTENT_TTL_MS = 86_400_000;
 const PRODUCTS = Object.freeze({
@@ -196,7 +196,7 @@ function storefrontResponse(requestBody, quote = {}) {
   });
 }
 
-test('direct route allows only bounded preview transport failures, fails policy before quote, and creates 24h immutable intents', async (t) => {
+test('direct route accepts canonical underscore reading IDs, allows only bounded preview transport failures, fails policy before quote, and creates 24h immutable intents', async (t) => {
   const originalFetch = globalThis.fetch;
   const originalSql = globalThis.__deckauraSql;
   const originalWarn = console.warn;
