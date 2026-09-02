@@ -5,6 +5,7 @@
   "description": "Minimal Next.js 16 tarot reading starter template. Draw cards, display meanings, and deploy to Vercel in one click. Data from Deckaura (deckaura.com).",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node --test --test-concurrency=1 tests/checkout-intent-reading-id-validation.test.mjs",
     "build": "next build",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "shared-manifest:generate": "node scripts/generate-shared-tool-manifest.mjs",

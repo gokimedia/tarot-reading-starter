@@ -237,6 +237,11 @@ function clean(value: unknown, maximum: number) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 }
 
+// Storefront reading sessions use both legacy hyphen-only identifiers and
+// prefixed identifiers such as `r_<uuid>`. Keep this shared boundary explicit:
+// removing `_` breaks checkout before a cart can be created.
+const READING_ID_PATTERN = /^[a-z0-9_-]{8,80}$/i;
+
 function record(value: unknown) {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -363,7 +368,7 @@ export async function POST(request: Request) {
   const funnelVersion = clean(body.funnelVersion, 128);
   if (!storefrontTier
     || (!requestedBirthCardDirect && question.length < 6)
-    || !/^[a-z0-9-]{8,80}$/i.test(readingId)) {
+    || !READING_ID_PATTERN.test(readingId)) {
     if (requestedPersonalDirect) {
       const publicCode = !storefrontTier
         ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.tierUnsupported

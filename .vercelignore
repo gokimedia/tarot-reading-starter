@@ -6,7 +6,10 @@ node_modules
 .env*
 supabase/.temp
 qa
-tests
+# Keep the critical checkout ID regression test in remote builds while
+# excluding the rest of the test suite from the deployment bundle.
+tests/*
+!tests/checkout-intent-reading-id-validation.test.mjs
 scripts
 tmp
 tsconfig.tsbuildinfo
