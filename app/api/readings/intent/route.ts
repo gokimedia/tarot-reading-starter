@@ -1135,7 +1135,13 @@ export async function POST(request: Request) {
         variantId: expectedVariantValue,
       });
     }
-    if (exactSevenCardPage || exactPersonalDirectPage || directTarotValidation.applies) {
+    // Storefront rails that render a live Shopify quote (rune, human-design style
+    // funnels, future shared tools) send the quote they displayed. They require a
+    // signed checkoutQuote in the response, so run the same verified-quote path as
+    // the direct tarot pages instead of silently omitting the quote.
+    const signedQuoteRequested = !exactSevenCardPage && !exactPersonalDirectPage && !directTarotValidation.applies
+      && clean(record(body.displayedQuote).variantId, 24).length > 0;
+    if (exactSevenCardPage || exactPersonalDirectPage || directTarotValidation.applies || signedQuoteRequested) {
       const quoteLookup = await verifyShopifyReadingVariantQuote({
         variantId: sharedProduct.variantId,
         expectedSku: sharedProduct.sku,
@@ -1184,7 +1190,7 @@ export async function POST(request: Request) {
           return personalDirectQuoteChanged(origin, quoteLookup.quote, storefrontTier);
         }
       }
-      if (directTarotValidation.applies) {
+      if (directTarotValidation.applies || signedQuoteRequested) {
         const displayedQuote = record(body.displayedQuote);
         const displayedVariantId = clean(displayedQuote.variantId, 24);
         const displayedSku = clean(displayedQuote.sku, 80).toUpperCase();
