@@ -271,6 +271,14 @@ function clean(value: unknown, maximum: number) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
 }
 
+// PostgreSQL char_length counts Unicode code points, while JavaScript's
+// String.length counts UTF-16 code units. Use the database's semantics at the
+// minimum-length boundary so emoji or astral characters cannot pass request
+// validation and then fail as a checkout_intents constraint error.
+export function databaseCharacterLength(value: string) {
+  return Array.from(value).length;
+}
+
 // Storefront reading sessions use both legacy hyphen-only identifiers and
 // prefixed identifiers such as `r_<uuid>`. Keep this shared boundary explicit:
 // removing `_` breaks checkout before a cart can be created.
@@ -404,12 +412,12 @@ export async function POST(request: Request) {
   const readingId = clean(body.readingId, 80);
   const funnelVersion = clean(body.funnelVersion, 128);
   if (!storefrontTier
-    || (!requestedBirthCardDirect && question.length < 6)
+    || (!requestedBirthCardDirect && databaseCharacterLength(question) < 6)
     || !READING_ID_PATTERN.test(readingId)) {
     if (requestedPersonalDirect) {
       const publicCode = !storefrontTier
         ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.tierUnsupported
-        : question.length < 6
+        : databaseCharacterLength(question) < 6
           ? PERSONAL_DIRECT_PUBLIC_ERROR_CODES.questionInvalid
           : PERSONAL_DIRECT_PUBLIC_ERROR_CODES.requestInvalid;
       return sharedCheckoutRejection(422, publicCode, origin, {
@@ -481,7 +489,7 @@ export async function POST(request: Request) {
     const focus = clean(body.focus, 40).toLowerCase();
     if (funnelVersion !== MOON_LUNAR_FUNNEL_VERSION
       || !isMoonLunarFocus(focus)
-      || question.length < 12) {
+      || databaseCharacterLength(question) < 12) {
       return json({ error: 'invalid_moon_lunar_intent' }, 422, origin);
     }
     if (!moonLunarTimezoneConfirmation(body.snapshot)) {
@@ -685,7 +693,7 @@ export async function POST(request: Request) {
     if (funnelVersion !== DAILY_TAROT_FUNNEL_VERSION
       || !isDailyTarotFocus(focus)
       || !dailyDateIsCurrent(dateKey)
-      || question.length < 12
+      || databaseCharacterLength(question) < 12
       || !sharedCard
       || sharedCard.id !== submittedCardId
       || sharedCard.name !== submittedCardName
@@ -1159,7 +1167,7 @@ export async function POST(request: Request) {
       || snapshotType !== toolType
       || snapshotQuestion !== question
       || clean(sharedSnapshot.readingId, 80) !== readingId
-      || (exactSevenCardPage && question.length < 8)
+      || (exactSevenCardPage && databaseCharacterLength(question) < 8)
       || (!snapshotSignals && !snapshotCards)
       || !snapshotScope
       || !snapshotConfidence

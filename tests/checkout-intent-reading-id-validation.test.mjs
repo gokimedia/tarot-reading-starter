@@ -28,7 +28,7 @@ function loadRoute() {
   return routePromise;
 }
 
-function request(readingId) {
+function request(readingId, question = 'What should I understand about this situation?') {
   return new Request('https://reading.deckaura.com/api/readings/intent', {
     method: 'POST',
     headers: {
@@ -40,7 +40,7 @@ function request(readingId) {
       page: '/pages/free-tarot-reading',
       toolType: 'Tarot',
       tier: 'essential',
-      question: 'What should I understand about this situation?',
+      question,
       readingId,
     }),
   });
@@ -93,4 +93,17 @@ test('checkout intent rejects non-JSON bodies before parsing', async () => {
 
   assert.equal(response.status, 415);
   assert.deepEqual(await response.json(), { error: 'content_type_not_supported' });
+});
+
+test('checkout question minimum uses PostgreSQL Unicode character semantics', async () => {
+  const { POST, databaseCharacterLength } = await loadRoute();
+  assert.equal(databaseCharacterLength('abc😀'), 4);
+  assert.equal(databaseCharacterLength('😀😀😀'), 3);
+
+  const response = await POST(request(
+    'r_123e4567-e89b-12d3-a456-426614174000',
+    '😀😀😀',
+  ));
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), { error: 'invalid_checkout_intent' });
 });
