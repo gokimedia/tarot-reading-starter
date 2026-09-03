@@ -150,11 +150,11 @@ test('Twin Flame page, type, tier and variant are an exact fail-closed contract'
 });
 
 const themePath = process.env.DECKAURA_THEME_CONTRACT_SOURCE;
-test('generated manifest has no drift from the supplied authoritative theme', { skip: !themePath }, async () => {
-  await execFileAsync(process.execPath, [
+test('generated manifest has no drift from the authoritative theme or its isolated-build pin', async () => {
+  const argv = [
     'scripts/generate-shared-tool-manifest.mjs',
     '--check',
-    '--theme',
-    themePath,
-  ], { cwd: new URL('../', import.meta.url) });
+  ];
+  if (themePath) argv.push('--theme', themePath);
+  await execFileAsync(process.execPath, argv, { cwd: new URL('../', import.meta.url) });
 });
