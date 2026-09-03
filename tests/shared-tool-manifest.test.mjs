@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
@@ -18,6 +21,34 @@ import {
 } from '../lib/generated/shared-tool-manifest.mjs';
 
 const execFileAsync = promisify(execFile);
+
+test('isolated release builds accept only the pinned generated manifest', async () => {
+  const cwd = new URL('../', import.meta.url);
+  const env = { ...process.env };
+  delete env.DECKAURA_THEME_CONTRACT_SOURCE;
+  await execFileAsync(process.execPath, [
+    'scripts/generate-shared-tool-manifest.mjs',
+    '--check',
+  ], { cwd, env });
+
+  const scratch = await mkdtemp(join(tmpdir(), 'deckaura-manifest-pin-'));
+  const alteredPath = join(scratch, 'shared-tool-manifest.mjs');
+  try {
+    const current = await readFile(new URL('../lib/generated/shared-tool-manifest.mjs', import.meta.url), 'utf8');
+    await writeFile(alteredPath, `${current}\n// drift\n`, 'utf8');
+    await assert.rejects(
+      execFileAsync(process.execPath, [
+        'scripts/generate-shared-tool-manifest.mjs',
+        '--check',
+        '--out',
+        alteredPath,
+      ], { cwd, env }),
+      /PINNED_MANIFEST_DRIFT_DETECTED/,
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
 test('generated shared-tool contract covers 64 canonical pages and 78 unique variants', () => {
   assert.equal(SHARED_TOOL_PAGES.length, 64);

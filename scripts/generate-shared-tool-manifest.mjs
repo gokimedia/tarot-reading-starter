@@ -5,6 +5,11 @@ import { resolve } from 'node:path';
 const EXPECTED_LIVE_PAGE_COUNT = 64;
 const EXPECTED_CANONICAL_PAGE_COUNT = 64;
 const EXPECTED_UNIQUE_VARIANT_COUNT = 78;
+// Vercel cannot read the separately deployed Shopify theme during an isolated
+// build. Pin the complete generated release artifact so CI still fails closed;
+// local release checks supply DECKAURA_THEME_CONTRACT_SOURCE and additionally
+// prove this artifact was generated from the authoritative theme runtime.
+const PINNED_GENERATED_MANIFEST_SHA256 = 'b9be60d5d0f8441be3432b6fb4ef4903a106e5348df4a076c542361729b4d0ec';
 const DEAD_PAGE_ALIASES = Object.freeze(['/pages/celtic-cross-reading']);
 const BACKEND_CANONICAL_PAGE_TYPES = Object.freeze({
   '/pages/yes-or-no-tarot': 'Yes or No Tarot',
@@ -168,9 +173,16 @@ function render({ products, pages, allowedTiers, sharedEvents, commerceEvents, f
 `}\n`;
 }
 
-const themePath = resolve(argument('--theme') || process.env.DECKAURA_THEME_CONTRACT_SOURCE || '');
 const outputPath = resolve(argument('--out') || 'lib/generated/shared-tool-manifest.mjs');
-if (!argument('--theme') && !process.env.DECKAURA_THEME_CONTRACT_SOURCE) fail('THEME_PATH_REQUIRED');
+const themeInput = argument('--theme') || process.env.DECKAURA_THEME_CONTRACT_SOURCE || '';
+if (!themeInput) {
+  if (!process.argv.includes('--check')) fail('THEME_PATH_REQUIRED');
+  const current = await readFile(outputPath, 'utf8').catch(() => '');
+  const currentDigest = createHash('sha256').update(current).digest('hex');
+  if (currentDigest !== PINNED_GENERATED_MANIFEST_SHA256) fail('PINNED_MANIFEST_DRIFT_DETECTED');
+  process.exit(0);
+}
+const themePath = resolve(themeInput);
 const source = await readFile(themePath, 'utf8');
 const products = parseProducts(source);
 const themePages = parsePages(source);
