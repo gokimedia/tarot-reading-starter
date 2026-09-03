@@ -1,4 +1,5 @@
 export const NEW_SHARED_TOOL_PAGE_TYPES: Readonly<Record<string, string>>;
+export const STOREFRONT_TYPED_EVIDENCE_CONTRACTS: readonly string[];
 
 export function newSharedToolPageForType(type: unknown): string;
 export function isNewSharedToolPage(page: unknown): boolean;
