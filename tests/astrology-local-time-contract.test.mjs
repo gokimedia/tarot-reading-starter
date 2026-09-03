@@ -33,6 +33,11 @@ function normalize(value) {
   return ((value % 360) + 360) % 360;
 }
 
+function angularSeparation(left, right) {
+  const difference = Math.abs(normalize(left) - normalize(right));
+  return Math.min(difference, 360 - difference);
+}
+
 function ascendant(date, latitude, longitudeEast) {
   const julian = date.getTime() / 86_400_000 + 2_440_587.5;
   const t = (julian - 2_451_545) / 36_525;
@@ -40,8 +45,8 @@ function ascendant(date, latitude, longitudeEast) {
   const obliquity = (23.4392911 - 0.0130042 * t) * Math.PI / 180;
   const latitudeRadians = latitude * Math.PI / 180;
   return normalize(Math.atan2(
-    -Math.cos(ramc),
-    Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity),
+    Math.cos(ramc),
+    -(Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity)),
   ) * 180 / Math.PI);
 }
 
@@ -168,8 +173,16 @@ test('Big Three requires unique round-trip instants while preserving ordinary UT
     latitude: 40.7128,
     longitude: -74.006,
   });
-  assert.ok(Math.abs(newYork.placements.rising.longitude - 94.6404426) < 0.0001);
-  assert.ok(safeBigThreeSnapshot(newYork), 'backend must accept the live theme ascendant, not its 180-degree opposite');
+  assert.ok(Math.abs(newYork.placements.rising.longitude - 274.6404426) < 0.0001);
+  assert.ok(safeBigThreeSnapshot(newYork), 'backend must accept the astronomical Ascendant, not its 180-degree Descendant');
+
+  const newYorkSunrise = new Date('1990-01-01T12:20:08.000Z');
+  const sunriseAscendant = ascendant(newYorkSunrise, 40.7128, -74.006);
+  const sunriseSun = normalize(SunPosition(newYorkSunrise).elon);
+  assert.ok(
+    angularSeparation(sunriseAscendant, sunriseSun) < 2,
+    'at sunrise the Ascendant must be near the Sun; the opposite-sign formula returns the Descendant',
+  );
 });
 
 test('Birth Chart fails closed for crafted gap/fold times and keeps a normal UTC contract valid', () => {

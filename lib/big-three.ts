@@ -151,8 +151,8 @@ function ascendant(date: Date, latitude: number, longitudeEast: number) {
   const obliquity = (23.4392911 - 0.0130042 * t) * Math.PI / 180;
   const latitudeRadians = latitude * Math.PI / 180;
   return normalizeLongitude(Math.atan2(
-    -Math.cos(ramc),
-    Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity),
+    Math.cos(ramc),
+    -(Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity)),
   ) * 180 / Math.PI);
 }
 
