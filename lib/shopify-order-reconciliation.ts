@@ -7,7 +7,7 @@ import { isSupportedBirthChartFunnelVersion } from '@/lib/birth-chart';
 import { BIG_THREE_FUNNEL_VERSION } from '@/lib/big-three';
 import { ANGEL_NUMBER_FUNNEL_VERSION, PERSONAL_777_FUNNEL_VERSION } from '@/lib/angel-number';
 import { ZODIAC_COMPATIBILITY_FUNNEL_VERSION } from '@/lib/zodiac-compatibility';
-import { MOON_LUNAR_FUNNEL_VERSION } from '@/lib/moon-lunar';
+import { isSupportedMoonLunarFunnelVersion } from '@/lib/moon-lunar';
 import { NUMEROLOGY_COMPATIBILITY_FUNNEL_VERSION } from '@/lib/numerology-compatibility';
 import {
   assertReconciliationPageFetched,
@@ -107,7 +107,7 @@ function signedIntentVariantId(attributes: JsonObject[], funnelVersion: string, 
   if (funnelVersion === ZODIAC_COMPATIBILITY_FUNNEL_VERSION) {
     return readingPackage('zodiac_compatibility', tier)?.variantId || '';
   }
-  if (funnelVersion === MOON_LUNAR_FUNNEL_VERSION) {
+  if (isSupportedMoonLunarFunnelVersion(funnelVersion)) {
     return readingPackage('moon_lunar', tier)?.variantId || '';
   }
   if (funnelVersion === NUMEROLOGY_COMPATIBILITY_FUNNEL_VERSION) {

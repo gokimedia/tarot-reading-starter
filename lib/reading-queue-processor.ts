@@ -108,12 +108,15 @@ import {
 } from '@/lib/zodiac-compatibility';
 import {
   MOON_LUNAR_FUNNEL_VERSION,
+  MOON_LUNAR_LEGACY_REVIEW_REQUIRED,
   MOON_LUNAR_PACKAGE_SCOPE,
   MOON_LUNAR_PAGE,
   MOON_LUNAR_SNAPSHOT_VERSION,
+  isLegacyMoonLunarFunnelVersion,
   moonLunarEvidence,
   safeMoonLunarSnapshot,
   validateMoonLunarPaidQuote,
+  validateMoonLunarPaidTimezone,
 } from '@/lib/moon-lunar';
 import {
   NUMEROLOGY_COMPATIBILITY_FUNNEL_VERSION,
@@ -347,6 +350,14 @@ function itemProperty(item: JsonObject, wanted: string[]) {
   return '';
 }
 
+function claimsLegacyMoonLunarConfirmationReview(items: JsonObject[]) {
+  return items.some((item) => isLegacyMoonLunarFunnelVersion(itemProperty(item, ['funnel version']))
+    && itemProperty(item, ['intent kind']).toLowerCase() === 'moon_lunar'
+    && itemProperty(item, ['tool page']) === MOON_LUNAR_PAGE
+    && /^[0-9a-f-]{36}$/i.test(itemProperty(item, ['checkout intent']))
+    && /^[a-f0-9]{64}$/i.test(itemProperty(item, ['checkout signature'])));
+}
+
 function linePresentmentMoney(item: JsonObject, payload: JsonObject) {
   const priceSet = item.price_set && typeof item.price_set === 'object' && !Array.isArray(item.price_set)
     ? item.price_set as JsonObject
@@ -518,9 +529,7 @@ async function verifiedReadingIntent(
     throw new QueueOperationError('CHECKOUT_INTENT_VERSION_INVALID');
   }
   const expiresAt = new Date(String(row.expires_at || '')).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    throw new QueueOperationError('CHECKOUT_INTENT_EXPIRED');
-  }
+  const intentExpired = !Number.isFinite(expiresAt) || expiresAt <= Date.now();
 
   const secret = text(
     process.env.ENTITLEMENT_PEPPER
@@ -555,6 +564,11 @@ async function verifiedReadingIntent(
     && checkoutIntentSignatureMatches(text(row.signature, 64), suppliedSignature);
   if (!persistedIntentSignatureVerified) {
     throw new QueueOperationError('CHECKOUT_INTENT_SIGNATURE_INVALID');
+  }
+  const legacyMoonLunarIntent = intentKind === 'moon_lunar'
+    && isLegacyMoonLunarFunnelVersion(row.funnel_version);
+  if (intentExpired && !legacyMoonLunarIntent) {
+    throw new QueueOperationError('CHECKOUT_INTENT_EXPIRED');
   }
 
   const sharedOrderVerification = intentKind === 'shared_tool'
@@ -699,6 +713,12 @@ async function verifiedReadingIntent(
     },
   })) {
     throw new QueueOperationError('CHECKOUT_INTENT_READING_MISMATCH');
+  }
+  if (legacyMoonLunarIntent) {
+    // V1 never captured an explicit birthplace-timezone confirmation. Preserve
+    // its signed evidence for support, but never synthesize customer consent or
+    // allow the legacy replay path to generate a reading from it.
+    throw new QueueOperationError(MOON_LUNAR_LEGACY_REVIEW_REQUIRED);
   }
 
   let loveVerifiedFields: JsonObject = {};
@@ -1236,6 +1256,15 @@ async function verifiedReadingIntent(
   let moonLunarVerifiedFields: JsonObject = {};
   if (intentKind === 'moon_lunar') {
     const lunarSnapshot = safeMoonLunarSnapshot(snapshot);
+    const timezoneValidation = validateMoonLunarPaidTimezone({
+      snapshot: lunarSnapshot,
+      line: {
+        birthPlace: itemProperty(item, ['birth place']),
+        birthTimezone: itemProperty(item, ['birth timezone']),
+        confirmationVersion: itemProperty(item, ['timezone confirmation version']),
+      },
+    });
+    if (!timezoneValidation.ok) throw new QueueOperationError(timezoneValidation.reason);
     const presentmentMoney = linePresentmentMoney(item, payload);
     const quoteValidation = validateMoonLunarPaidQuote({
       snapshot,
@@ -1303,6 +1332,9 @@ async function verifiedReadingIntent(
       moonSign: lunarSnapshot.current.moonSign,
       natalMoon: expectedNatalMoon,
       birthTimeStatus: lunarSnapshot.birth.status,
+      birthPlace: timezoneValidation.confirmation.birthPlace,
+      birthTimezone: timezoneValidation.confirmation.timezone,
+      timezoneConfirmationVersion: timezoneValidation.confirmation.version,
       packageTitle: scope.title,
       deliveryWindowMinutes: 90,
       coverageDays: scope.days,
@@ -2128,6 +2160,28 @@ async function recordRuneManualReview(orderId: string, rune: RuneCheckoutContrac
   });
 }
 
+async function recordLegacyMoonLunarManualReview(orderId: string, env: WorkerEnvironment) {
+  const record = {
+    event: 'reading_input_confirmation_required',
+    schemaVersion: 'moon-lunar-legacy-review-v1',
+    orderId,
+    code: MOON_LUNAR_LEGACY_REVIEW_REQUIRED,
+    type: 'Moon & Lunar Reading',
+    tool: 'https://deckaura.com/pages/moon-phase-today',
+    createdAt: new Date().toISOString(),
+    manualReview: true,
+    fulfillmentHeld: true,
+  };
+  await env.READINGS_CACHE.put(`reading-error:${orderId}`, JSON.stringify(record), {
+    expirationTtl: 60 * 60 * 24 * 365,
+  });
+  console.warn({
+    event: 'moon_lunar_legacy_manual_review_required',
+    orderId,
+    code: MOON_LUNAR_LEGACY_REVIEW_REQUIRED,
+  });
+}
+
 async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnvironment) {
   const payload = row.payload || {};
   const items = readingItems(payload);
@@ -2460,17 +2514,36 @@ async function processWebhookClaim(row: WebhookQueueRow, env: WorkerEnvironment,
       // enqueue another paid-reading job for an authoritatively delivered order.
       state.ignored += 1;
     } else {
-      const replay = await replayShopifyWebhook(row, env);
-      if (replay.ignored) state.ignored += 1;
-      else {
+      // A signed-looking V1 Moon order must reach the strict intent verifier,
+      // not the legacy generator. The verifier will hold it for explicit
+      // customer-confirmation review after authenticating the persisted row.
+      const legacyMoonLunarReviewClaimed = claimsLegacyMoonLunarConfirmationReview(
+        readingItems(row.payload || {}),
+      );
+      if (legacyMoonLunarReviewClaimed) {
         await validateMembershipActivation(row.payload || {}, env);
         await enqueueReadingFromWebhook(row, env);
+      } else {
+        const replay = await replayShopifyWebhook(row, env);
+        if (replay.ignored) state.ignored += 1;
+        else {
+          await validateMembershipActivation(row.payload || {}, env);
+          await enqueueReadingFromWebhook(row, env);
+        }
       }
     }
     const completion = await deliveryRetry.completeShopifyWebhook(row.webhook_id, row.lease_token);
     if (completion.allowed === true) state.completed += 1;
     else state.completionRejected += 1;
   } catch (error) {
+    const errorCode = operationalErrorCode(error);
+    if (errorCode === MOON_LUNAR_LEGACY_REVIEW_REQUIRED) {
+      await recordLegacyMoonLunarManualReview(text(row.payload?.id || row.order_id, 96), env)
+        .catch((reviewError) => safeQueueLog('moon_lunar_legacy_manual_review_record_failed', reviewError, undefined, {
+          orderId: row.order_id,
+          webhookId: row.webhook_id,
+        }));
+    }
     safeQueueLog('reading_webhook_processing_failed', error, undefined, {
       orderId: row.order_id,
       webhookId: row.webhook_id,
@@ -2484,7 +2557,15 @@ async function processWebhookClaim(row: WebhookQueueRow, env: WorkerEnvironment,
         webhookId: row.webhook_id,
       });
     }
-    else state.retryScheduled += 1;
+    else {
+      if (errorCode === MOON_LUNAR_LEGACY_REVIEW_REQUIRED) {
+        safeQueueLog('reading_webhook_manual_review_required', error, undefined, {
+          orderId: row.order_id,
+          webhookId: row.webhook_id,
+        });
+      }
+      state.retryScheduled += 1;
+    }
   }
 }
 

@@ -211,6 +211,7 @@ export function isSupportedCheckoutFunnelVersion(value: unknown) {
     || version === 'angel-situational-funnel-2026-08-v1'
     || version === '777-personal-answer-2026-08-v1'
     || version === 'zodiac-context-checkout-2026-08-v1'
+    || version === 'moon-lunar-intent-checkout-2026-09-v2'
     || version === 'moon-lunar-intent-checkout-2026-08-v1'
     || version === 'numerology-compatibility-v4-20260805'
     || isSupportedYesNoFunnelVersion(version);

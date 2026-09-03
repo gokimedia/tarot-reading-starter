@@ -1,8 +1,15 @@
 import { EclipticGeoMoon, SunPosition } from 'astronomy-engine';
+import {
+  resolveIanaLocalDateBounds,
+  resolveIanaLocalDateTime,
+  uniqueIanaLocalInstant,
+} from './iana-local-time.mjs';
 
 export const BIG_THREE_PAGE = '/pages/sun-moon-rising-calculator';
 export const BIG_THREE_FUNNEL_VERSION = 'big-three-synthesis-checkout-2026-08-v1';
 export const BIG_THREE_SNAPSHOT_VERSION = 'big-three-snapshot-v1';
+export const BIG_THREE_LOCAL_TIME_NONEXISTENT = 'BIG_THREE_LOCAL_TIME_NONEXISTENT';
+export const BIG_THREE_LOCAL_TIME_AMBIGUOUS = 'BIG_THREE_LOCAL_TIME_AMBIGUOUS';
 
 export const BIG_THREE_FOCUSES = Object.freeze({
   self: Object.freeze({ label: 'Understand myself', category: 'personal' as const }),
@@ -126,39 +133,6 @@ function validBirthDate(value: string) {
     && timestamp <= Date.now() + 86_400_000;
 }
 
-function timeZoneOffsetHours(timezone: string, year: number, month: number, day: number, hour: number, minute: number) {
-  try {
-    let guess = Date.UTC(year, month - 1, day, hour, minute);
-    let offset: number | null = null;
-    for (let iteration = 0; iteration < 3; iteration += 1) {
-      const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone,
-        timeZoneName: 'longOffset',
-      }).formatToParts(new Date(guess));
-      const zone = parts.find((part) => part.type === 'timeZoneName')?.value || '';
-      if (zone === 'GMT' || zone === 'UTC') offset = 0;
-      else {
-        const match = zone.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
-        if (!match) return null;
-        offset = (match[1] === '-' ? -1 : 1)
-          * (Number.parseInt(match[2], 10) + Number.parseInt(match[3] || '0', 10) / 60);
-      }
-      guess = Date.UTC(year, month - 1, day, hour, minute) - offset * 3_600_000;
-    }
-    return offset;
-  } catch {
-    return null;
-  }
-}
-
-function utcFromLocal(date: string, time: string, timezone: string) {
-  const [year, month, day] = date.split('-').map(Number);
-  const [hour, minute] = time.split(':').map(Number);
-  const offset = timeZoneOffsetHours(timezone, year, month, day, hour, minute);
-  if (offset == null) return null;
-  return new Date(Date.UTC(year, month - 1, day, hour, minute) - offset * 3_600_000);
-}
-
 function bodyLongitudes(date: Date) {
   return {
     sun: normalizeLongitude(SunPosition(date).elon),
@@ -195,6 +169,29 @@ export function isBigThreeFocus(value: unknown): value is BigThreeFocus {
   return Object.hasOwn(BIG_THREE_FOCUSES, clean(value, 40).toLowerCase());
 }
 
+export function bigThreeBirthTimeIssue(value: unknown) {
+  const source = record(value);
+  const birth = record(source.birth);
+  const status = clean(birth.status, 20);
+  const date = clean(birth.date, 16);
+  const submittedTime = clean(birth.time, 8);
+  const timezone = clean(record(birth.place).timezone, 80);
+  if (!['exact', 'approximate', 'unknown'].includes(status)
+    || !validBirthDate(date)
+    || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_.+\-]+)+)$/.test(timezone)
+    || (status === 'unknown' ? Boolean(submittedTime) : !/^([01]\d|2[0-3]):[0-5]\d$/.test(submittedTime))) return '';
+  const representativeTime = status === 'unknown' ? '12:00' : submittedTime;
+  const resolution = resolveIanaLocalDateTime(date, representativeTime, timezone);
+  if (resolution?.status === 'ambiguous') {
+    return BIG_THREE_LOCAL_TIME_AMBIGUOUS;
+  }
+  if (resolution?.status === 'nonexistent'
+    || resolveIanaLocalDateBounds(date, timezone)?.status === 'nonexistent') {
+    return BIG_THREE_LOCAL_TIME_NONEXISTENT;
+  }
+  return '';
+}
+
 export function safeBigThreeSnapshot(value: unknown): SafeBigThreeSnapshot | null {
   const source = record(value);
   const version = clean(source.version, 64);
@@ -220,9 +217,10 @@ export function safeBigThreeSnapshot(value: unknown): SafeBigThreeSnapshot | nul
     || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_+\-]+)+)$/.test(timezone)) return null;
 
   const time = status === 'unknown' ? '12:00' : submittedTime;
-  const birthInstant = utcFromLocal(date, time, timezone);
-  const dayStart = utcFromLocal(date, '00:00', timezone);
-  const dayEnd = utcFromLocal(date, '23:59', timezone);
+  const birthInstant = uniqueIanaLocalInstant(date, time, timezone);
+  const dateBounds = resolveIanaLocalDateBounds(date, timezone);
+  const dayStart = dateBounds?.status === 'valid' ? new Date(dateBounds.start) : null;
+  const dayEnd = dateBounds?.status === 'valid' ? new Date(dateBounds.end) : null;
   if (!birthInstant || !dayStart || !dayEnd) return null;
 
   const calculated = bodyLongitudes(birthInstant);

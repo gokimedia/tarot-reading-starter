@@ -5,11 +5,14 @@ import {
   GeoVector,
   SunPosition,
 } from 'astronomy-engine';
+import { resolveIanaLocalDateTime, uniqueIanaLocalInstant } from './iana-local-time.mjs';
 import type { ReadingTier } from '@/lib/reading-products';
 
 export const DAILY_HOROSCOPE_PAGE = '/pages/daily-horoscope';
 export const DAILY_HOROSCOPE_FUNNEL_VERSION = 'daily-horoscope-transit-checkout-2026-08-v1';
 export const DAILY_HOROSCOPE_SNAPSHOT_VERSION = 'daily-horoscope-transit-v1';
+export const DAILY_HOROSCOPE_LOCAL_TIME_NONEXISTENT = 'DAILY_HOROSCOPE_LOCAL_TIME_NONEXISTENT';
+export const DAILY_HOROSCOPE_LOCAL_TIME_AMBIGUOUS = 'DAILY_HOROSCOPE_LOCAL_TIME_AMBIGUOUS';
 
 export const DAILY_HOROSCOPE_FOCUSES = Object.freeze({
   overall: Object.freeze({ label: 'Today', category: 'general' as const, lifeArea: 'Overall direction' }),
@@ -165,27 +168,10 @@ function timezoneIsValid(timezone: string) {
   }
 }
 
-function timezoneOffsetMs(timezone: string, date: Date) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return Date.UTC(
-    Number(values.year), Number(values.month) - 1, Number(values.day),
-    Number(values.hour), Number(values.minute), Number(values.second),
-  ) - date.getTime();
-}
-
 function localDateTimeToUtc(input: { year: number; month: number; day: number; hour: number; minute: number; timezone: string }) {
-  const base = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0);
-  let result = new Date(base);
-  for (let pass = 0; pass < 3; pass += 1) {
-    result = new Date(base - timezoneOffsetMs(input.timezone, result));
-  }
-  return result;
+  const date = `${input.year}-${String(input.month).padStart(2, '0')}-${String(input.day).padStart(2, '0')}`;
+  const time = `${String(input.hour).padStart(2, '0')}:${String(input.minute).padStart(2, '0')}`;
+  return uniqueIanaLocalInstant(date, time, input.timezone);
 }
 
 function planetLongitude(planet: PlanetName, date: Date) {
@@ -226,6 +212,8 @@ function parseBirth(value: unknown) {
     && Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
   if (status !== 'unknown' && (!name || !hasCoordinates || !timezoneIsValid(timezone))) return null;
   if (status === 'unknown' && timezone && !timezoneIsValid(timezone)) return null;
+  const representativeTime = status === 'unknown' ? '12:00' : time;
+  if (timezone && resolveIanaLocalDateTime(birth.key, representativeTime, timezone)?.status !== 'unique') return null;
   return {
     date: birth,
     time: status === 'unknown' ? null : time,
@@ -239,6 +227,28 @@ function parseBirth(value: unknown) {
       timezone: timezone || null,
     },
   };
+}
+
+export function dailyHoroscopeBirthTimeIssue(value: unknown) {
+  const source = record(value);
+  const birth = record(source.birth);
+  const parsedDate = validDateKey(birth.date);
+  const status = clean(birth.status, 20).toLowerCase();
+  const submittedTime = clean(birth.time, 8);
+  const timezone = clean(record(birth.place).timezone, 80);
+  if (!parsedDate
+    || !isBirthStatus(status)
+    || !timezone
+    || !timezoneIsValid(timezone)
+    || (status === 'unknown' ? Boolean(submittedTime) : !/^([01]\d|2[0-3]):[0-5]\d$/.test(submittedTime))) return '';
+  const resolution = resolveIanaLocalDateTime(
+    parsedDate.key,
+    status === 'unknown' ? '12:00' : submittedTime,
+    timezone,
+  );
+  if (resolution?.status === 'ambiguous') return DAILY_HOROSCOPE_LOCAL_TIME_AMBIGUOUS;
+  if (resolution?.status === 'nonexistent') return DAILY_HOROSCOPE_LOCAL_TIME_NONEXISTENT;
+  return '';
 }
 
 function strongestTransits(input: {
@@ -309,6 +319,7 @@ export function buildDailyHoroscopeSnapshot(input: {
   const birthMoment = birth.place.timezone
     ? localDateTimeToUtc({ ...birth.date, hour, minute, timezone: birth.place.timezone })
     : new Date(Date.UTC(birth.date.year, birth.date.month - 1, birth.date.day, 12, 0, 0));
+  if (!birthMoment) return null;
   const planets = birth.status === 'unknown' ? NATAL_PLANETS.filter((planet) => planet !== 'Moon') : NATAL_PLANETS;
   const natalPlacements = planets.map((planet) => {
     const longitude = round(planetLongitude(planet, birthMoment), 4);

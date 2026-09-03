@@ -54,12 +54,14 @@ import {
   BIG_THREE_FOCUSES,
   BIG_THREE_FUNNEL_VERSION,
   BIG_THREE_PAGE,
+  bigThreeBirthTimeIssue,
   isBigThreeFocus,
   safeBigThreeSnapshot,
 } from '@/lib/big-three';
 import {
   BIRTH_CHART_INTENTS,
   BIRTH_CHART_PAGE,
+  birthChartBirthTimeIssue,
   isBirthChartIntent,
   isSupportedBirthChartFunnelVersion,
   safeBirthChartSnapshot,
@@ -79,6 +81,7 @@ import {
   DAILY_HOROSCOPE_FUNNEL_VERSION,
   DAILY_HOROSCOPE_PAGE,
   buildDailyHoroscopeSnapshot,
+  dailyHoroscopeBirthTimeIssue,
   dailyHoroscopeDateIsCurrent,
   isDailyHoroscopeFocus,
 } from '@/lib/daily-horoscope';
@@ -94,6 +97,8 @@ import {
   MOON_LUNAR_PAGE,
   buildMoonLunarSnapshot,
   isMoonLunarFocus,
+  moonLunarBirthTimeIssue,
+  moonLunarTimezoneConfirmation,
 } from '@/lib/moon-lunar';
 import {
   NUMEROLOGY_COMPATIBILITY_FUNNEL_VERSION,
@@ -132,6 +137,7 @@ const DIRECT_TAROT_DISPLAYED_QUOTE_INVALID = 'DIRECT_TAROT_DISPLAYED_QUOTE_INVAL
 const DIRECT_TAROT_QUOTE_CHANGED = 'DIRECT_TAROT_QUOTE_CHANGED';
 const MOON_LUNAR_DISPLAYED_QUOTE_INVALID = 'MOON_LUNAR_DISPLAYED_QUOTE_INVALID';
 const MOON_LUNAR_QUOTE_CHANGED = 'MOON_LUNAR_QUOTE_CHANGED';
+const MOON_LUNAR_TIMEZONE_CONFIRMATION_REQUIRED = 'MOON_LUNAR_TIMEZONE_CONFIRMATION_REQUIRED';
 const DIRECT_TAROT_TRANSPORT_FAILURES = new Set(['timeout', 'http_408', 'http_429', 'http_5xx']);
 
 const allowedOrigins = new Set([
@@ -471,6 +477,21 @@ export async function POST(request: Request) {
       || question.length < 12) {
       return json({ error: 'invalid_moon_lunar_intent' }, 422, origin);
     }
+    if (!moonLunarTimezoneConfirmation(body.snapshot)) {
+      return json({
+        error: 'moon_lunar_timezone_confirmation_required',
+        code: MOON_LUNAR_TIMEZONE_CONFIRMATION_REQUIRED,
+        confirmationRequired: true,
+      }, 422, origin);
+    }
+    const birthTimeIssue = moonLunarBirthTimeIssue(body.snapshot);
+    if (birthTimeIssue) {
+      return json({
+        error: 'moon_lunar_birth_time_invalid',
+        code: birthTimeIssue,
+        correctionRequired: true,
+      }, 422, origin);
+    }
     const lunarSnapshot = buildMoonLunarSnapshot({
       value: body.snapshot,
       focus,
@@ -549,6 +570,14 @@ export async function POST(request: Request) {
     if (funnelVersion !== BIG_THREE_FUNNEL_VERSION || !isBigThreeFocus(focus)) {
       return json({ error: 'invalid_big_three_intent' }, 422, origin);
     }
+    const birthTimeIssue = bigThreeBirthTimeIssue(body.snapshot);
+    if (birthTimeIssue) {
+      return json({
+        error: 'big_three_birth_time_invalid',
+        code: birthTimeIssue,
+        correctionRequired: true,
+      }, 422, origin);
+    }
     const bigThreeSnapshot = safeBigThreeSnapshot(body.snapshot);
     if (!bigThreeSnapshot || bigThreeSnapshot.focus !== focus) {
       return json({ error: 'invalid_big_three_snapshot' }, 422, origin);
@@ -566,6 +595,14 @@ export async function POST(request: Request) {
     const focus = clean(body.intent, 40).toLowerCase();
     if (!isSupportedBirthChartFunnelVersion(funnelVersion) || !isBirthChartIntent(focus)) {
       return json({ error: 'invalid_birth_chart_intent' }, 422, origin);
+    }
+    const birthTimeIssue = birthChartBirthTimeIssue(body.snapshot);
+    if (birthTimeIssue) {
+      return json({
+        error: 'birth_chart_birth_time_invalid',
+        code: birthTimeIssue,
+        correctionRequired: true,
+      }, 422, origin);
     }
     const chartSnapshot = safeBirthChartSnapshot(body.snapshot);
     if (!chartSnapshot || chartSnapshot.focus !== focus) {
@@ -606,6 +643,14 @@ export async function POST(request: Request) {
       || !isDailyHoroscopeFocus(focus)
       || !dailyHoroscopeDateIsCurrent(forecastDate)) {
       return json({ error: 'invalid_daily_horoscope_intent' }, 422, origin);
+    }
+    const birthTimeIssue = dailyHoroscopeBirthTimeIssue(body.snapshot);
+    if (birthTimeIssue) {
+      return json({
+        error: 'daily_horoscope_birth_time_invalid',
+        code: birthTimeIssue,
+        correctionRequired: true,
+      }, 422, origin);
     }
     const transitSnapshot = buildDailyHoroscopeSnapshot({
       snapshot: body.snapshot,
@@ -1512,6 +1557,7 @@ export async function POST(request: Request) {
     readingType,
     snapshotHash,
     localeContext: intentLocaleContext,
+    ...(moonLunar ? { timezoneConfirmation: record(snapshot).timezoneConfirmation } : {}),
     ...(page === BIRTH_CARD_DIRECT_PAGE ? { checkoutQuestion: question } : {}),
     ...(sharedCheckoutQuote ? {
       checkoutQuote: {

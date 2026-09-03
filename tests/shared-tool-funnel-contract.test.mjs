@@ -56,6 +56,42 @@ test('shared telemetry fails closed on unknown event, wrong page/type or tier/va
   assert.equal(canonicalSharedToolFunnelMetadata({ ...valid.metadata, email: 'not-allowed@example.test' }, valid.eventName).ok, false);
 });
 
+test('funnel telemetry accepts the sendBeacon JSON media type without weakening origin or envelope checks', async () => {
+  const event = { ...sharedEvent(), eventId: '12345678-1234-4234-9234-123456789abe' };
+  const recorded = [];
+  const environment = {
+    ENTITLEMENT_PEPPER: 'send-beacon-telemetry-pepper',
+    FUNNEL_STORE: {
+      recordEvents: async (_visitorHash, events) => {
+        recorded.push(...events);
+        return { accepted: events.length };
+      },
+    },
+  };
+  const request = (contentType, origin = 'https://deckaura.com') => new Request('https://reading.deckaura.com/funnel-events', {
+    method: 'POST',
+    headers: {
+      Origin: origin,
+      'Content-Type': contentType,
+      'CF-Connecting-IP': '203.0.113.55',
+      'User-Agent': 'Deckaura sendBeacon telemetry test',
+    },
+    body: JSON.stringify({ visitorId: 'send-beacon-visitor-20260903', events: [event] }),
+  });
+
+  const accepted = await handleFunnelEvents(request('text/plain;charset=UTF-8'), environment);
+  assert.equal(accepted.status, 200, await accepted.text());
+  assert.equal(recorded.length, 1);
+
+  const wrongOrigin = await handleFunnelEvents(request('text/plain;charset=UTF-8', 'https://evil.example'), environment);
+  assert.equal(wrongOrigin.status, 403);
+  const bareText = await handleFunnelEvents(request('text/plain'), environment);
+  assert.equal(bareText.status, 415);
+  const form = await handleFunnelEvents(request('application/x-www-form-urlencoded'), environment);
+  assert.equal(form.status, 415);
+  assert.equal(recorded.length, 1, 'rejected requests must never reach the telemetry store');
+});
+
 test('checkout preparation errors preserve only a bounded operational reason', async () => {
   const base = sharedEvent();
   const event = sharedEvent({
@@ -156,7 +192,7 @@ test('moon page telemetry is allowlisted under its own strict mode/version contr
     page: '/pages/moon-phase-today',
     readingId: flowId,
     readingMode: 'moon_lunar',
-    funnelVersion: 'moon-lunar-intent-checkout-2026-08-v1',
+    funnelVersion: 'moon-lunar-intent-checkout-2026-09-v2',
     recommendedTier: 'premium',
     selectedTier: '',
     shopifyVariantId: '',
@@ -173,6 +209,14 @@ test('moon page telemetry is allowlisted under its own strict mode/version contr
   const metadata = canonicalMoonFunnelMetadata(source.metadata, source.eventName);
   assert.equal(metadata.ok, true);
   assert.equal(canonicalMoonFunnelEvent(source, source.eventName, metadata.value), true);
+  assert.equal(canonicalMoonFunnelEvent({
+    ...source,
+    funnelVersion: 'moon-lunar-intent-checkout-2026-08-v1',
+  }, source.eventName, metadata.value), true, 'legacy telemetry remains recognizable during the pending-intent TTL');
+  assert.equal(canonicalMoonFunnelEvent({
+    ...source,
+    funnelVersion: 'moon-lunar-intent-checkout-2026-07-v0',
+  }, source.eventName, metadata.value), false);
   assert.equal(canonicalMoonFunnelEvent({ ...source, readingMode: 'shared_tool' }, source.eventName, metadata.value), false);
   assert.equal(isAllowedFunnelPage('/pages/moon-phase-today'), true);
 });

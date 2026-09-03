@@ -6,12 +6,25 @@ import {
   SearchMoonPhase,
   SearchMoonQuarter,
 } from 'astronomy-engine';
+import {
+  resolveIanaLocalDateBounds,
+  resolveIanaLocalDateTime,
+  uniqueIanaLocalInstant,
+} from './iana-local-time.mjs';
 import type { ReadingTier, YesNoCategory } from '@/lib/reading-products';
 
 export const MOON_LUNAR_PAGE = '/pages/moon-phase-today';
-export const MOON_LUNAR_FUNNEL_VERSION = 'moon-lunar-intent-checkout-2026-08-v1';
-export const MOON_LUNAR_SNAPSHOT_VERSION = 'moon-lunar-snapshot-v1';
+export const MOON_LUNAR_FUNNEL_VERSION = 'moon-lunar-intent-checkout-2026-09-v2';
+export const MOON_LUNAR_LEGACY_FUNNEL_VERSIONS = Object.freeze([
+  'moon-lunar-intent-checkout-2026-08-v1',
+] as const);
+export const MOON_LUNAR_SNAPSHOT_VERSION = 'moon-lunar-snapshot-v2';
+export const MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION = 'moon-timezone-confirmation-v1';
 export const MOON_LUNAR_QUOTE_MISMATCH = 'CHECKOUT_INTENT_MOON_LUNAR_QUOTE_MISMATCH';
+export const MOON_LUNAR_TIMEZONE_MISMATCH = 'CHECKOUT_INTENT_MOON_LUNAR_TIMEZONE_MISMATCH';
+export const MOON_LUNAR_LEGACY_REVIEW_REQUIRED = 'CHECKOUT_INTENT_MOON_LUNAR_LEGACY_CONFIRMATION_REQUIRED';
+export const MOON_LUNAR_LOCAL_TIME_NONEXISTENT = 'MOON_LUNAR_LOCAL_TIME_NONEXISTENT';
+export const MOON_LUNAR_LOCAL_TIME_AMBIGUOUS = 'MOON_LUNAR_LOCAL_TIME_AMBIGUOUS';
 
 export const MOON_LUNAR_FOCUSES = Object.freeze({
   love_relationships: Object.freeze({ label: 'Love & Relationships', category: 'love' as const }),
@@ -126,6 +139,12 @@ export type SafeMoonLunarSnapshot = {
     place: string;
     timezone: string;
   };
+  timezoneConfirmation: {
+    version: typeof MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION;
+    confirmed: true;
+    timezone: string;
+    birthPlace: string;
+  };
   natalMoon: {
     longitude: number;
     sign: typeof SIGNS[number];
@@ -149,6 +168,18 @@ function clean(value: unknown, maximum: number) {
 function finite(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+export function isSupportedMoonLunarFunnelVersion(value: unknown) {
+  const version = clean(value, 128);
+  return version === MOON_LUNAR_FUNNEL_VERSION
+    || isLegacyMoonLunarFunnelVersion(version);
+}
+
+export function isLegacyMoonLunarFunnelVersion(value: unknown) {
+  return MOON_LUNAR_LEGACY_FUNNEL_VERSIONS.includes(
+    clean(value, 128) as typeof MOON_LUNAR_LEGACY_FUNNEL_VERSIONS[number],
+  );
 }
 
 function moneyCents(value: unknown) {
@@ -224,38 +255,43 @@ function validDate(value: string) {
     && parsed <= Date.now() + 86_400_000;
 }
 
-function timezoneOffsetHours(timezone: string, date: string, time: string) {
-  try {
-    const [year, month, day] = date.split('-').map(Number);
-    const [hour, minute] = time.split(':').map(Number);
-    let guess = Date.UTC(year, month - 1, day, hour, minute);
-    let offset: number | null = null;
-    for (let iteration = 0; iteration < 3; iteration += 1) {
-      const zone = new Intl.DateTimeFormat('en-US', {
-        timeZone: timezone,
-        timeZoneName: 'longOffset',
-      }).formatToParts(new Date(guess)).find((part) => part.type === 'timeZoneName')?.value || '';
-      if (zone === 'GMT' || zone === 'UTC') offset = 0;
-      else {
-        const match = zone.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
-        if (!match) return null;
-        offset = (match[1] === '-' ? -1 : 1)
-          * (Number.parseInt(match[2], 10) + Number.parseInt(match[3] || '0', 10) / 60);
-      }
-      guess = Date.UTC(year, month - 1, day, hour, minute) - offset * 3_600_000;
-    }
-    return offset;
-  } catch {
-    return null;
-  }
+export function resolveMoonLunarLocalDateTime(dateValue: unknown, timeValue: unknown, timezoneValue: unknown) {
+  const date = clean(dateValue, 16);
+  const time = clean(timeValue, 8);
+  const timezone = clean(timezoneValue, 80);
+  if (!validDate(date)
+    || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)
+    || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_+\-]+)+)$/.test(timezone)) return null;
+  return resolveIanaLocalDateTime(date, time, timezone);
 }
 
-function utcFromLocal(date: string, time: string, timezone: string) {
-  const [year, month, day] = date.split('-').map(Number);
-  const [hour, minute] = time.split(':').map(Number);
-  const offset = timezoneOffsetHours(timezone, date, time);
-  if (offset == null) return null;
-  return new Date(Date.UTC(year, month - 1, day, hour, minute) - offset * 3_600_000);
+function uniqueLocalInstant(date: string, time: string, timezone: string) {
+  return uniqueIanaLocalInstant(date, time, timezone);
+}
+
+export function moonLunarBirthTimeIssue(value: unknown) {
+  const snapshot = record(value);
+  const birth = record(snapshot.birth);
+  const date = clean(birth.date, 16);
+  const status = clean(birth.status, 20);
+  const submittedTime = clean(birth.time, 8);
+  const timezone = clean(birth.timezone, 80);
+  if (!validDate(date)
+    || !['exact', 'approximate', 'unknown'].includes(status)
+    || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_+\-]+)+)$/.test(timezone)
+    || (status === 'unknown' ? Boolean(submittedTime) : !/^([01]\d|2[0-3]):[0-5]\d$/.test(submittedTime))) return '';
+  const time = status === 'unknown' ? '12:00' : submittedTime;
+  const resolution = resolveMoonLunarLocalDateTime(date, time, timezone);
+  if (resolution?.status === 'ambiguous') {
+    return MOON_LUNAR_LOCAL_TIME_AMBIGUOUS;
+  }
+  if (resolution?.status === 'nonexistent') {
+    return MOON_LUNAR_LOCAL_TIME_NONEXISTENT;
+  }
+  if (status !== 'exact' && resolveIanaLocalDateBounds(date, timezone)?.status === 'nonexistent') {
+    return MOON_LUNAR_LOCAL_TIME_NONEXISTENT;
+  }
+  return '';
 }
 
 export function moonLunarCurrentSnapshot(capturedAt: Date) {
@@ -280,37 +316,72 @@ export function moonLunarCurrentSnapshot(capturedAt: Date) {
   };
 }
 
-function natalMoon(value: unknown) {
+function timezoneConfirmation(value: unknown, birthPlace: string, timezone: string) {
+  const source = record(value);
+  if (source.version !== MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION
+    || source.confirmed !== true
+    || source.timezone !== timezone
+    || source.birthPlace !== birthPlace) return null;
+  return Object.freeze({
+    version: MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION,
+    confirmed: true as const,
+    timezone,
+    birthPlace,
+  });
+}
+
+export function moonLunarTimezoneConfirmation(value: unknown) {
+  const snapshot = record(value);
+  const birth = record(snapshot.birth);
+  const birthPlace = clean(birth.place, 100);
+  const timezone = clean(birth.timezone, 80);
+  if (birthPlace.length < 2
+    || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_+\-]+)+)$/.test(timezone)
+    || !resolveMoonLunarLocalDateTime('2000-01-01', '12:00', timezone)) return null;
+  return timezoneConfirmation(snapshot.timezoneConfirmation, birthPlace, timezone);
+}
+
+function natalMoon(value: unknown, confirmationValue: unknown) {
   const source = record(value);
   const date = clean(source.date, 16);
   const status = clean(source.status, 20) as 'exact' | 'approximate' | 'unknown';
   const submittedTime = clean(source.time, 8);
   const place = clean(source.place, 100);
   const timezone = clean(source.timezone, 80);
+  const confirmedTimezone = timezoneConfirmation(confirmationValue, place, timezone);
   if (!validDate(date)
     || !['exact', 'approximate', 'unknown'].includes(status)
-    || !place
+    || place.length < 2
     || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_+\-]+)+)$/.test(timezone)
+    || !confirmedTimezone
     || (status === 'unknown' ? Boolean(submittedTime) : !/^([01]\d|2[0-3]):[0-5]\d$/.test(submittedTime))) return null;
 
   const time = status === 'unknown' ? '12:00' : submittedTime;
-  const instant = utcFromLocal(date, time, timezone);
-  const start = utcFromLocal(date, '00:00', timezone);
-  const end = utcFromLocal(date, '23:59', timezone);
-  if (!instant || !start || !end) return null;
+  const instant = uniqueLocalInstant(date, time, timezone);
+  if (!instant) return null;
+  const bounds = status === 'exact' ? null : resolveIanaLocalDateBounds(date, timezone);
+  const start = status === 'exact' ? instant : bounds?.status === 'valid' ? new Date(bounds.start) : null;
+  const end = status === 'exact' ? instant : bounds?.status === 'valid' ? new Date(bounds.end) : null;
+  if (!start || !end) return null;
   const longitude = normalizeAngle(EclipticGeoMoon(instant).lon);
   const startLongitude = normalizeAngle(EclipticGeoMoon(start).lon);
   const endLongitude = normalizeAngle(EclipticGeoMoon(end).lon);
   const sign = signForLongitude(longitude);
-  const possibleSigns = [...new Set([signForLongitude(startLongitude), signForLongitude(endLongitude)])];
-  const ambiguous = status === 'unknown' && possibleSigns.length > 1;
+  const possibleSigns = [...new Set([
+    signForLongitude(startLongitude),
+    sign,
+    signForLongitude(endLongitude),
+  ])];
+  const ambiguous = status !== 'exact' && possibleSigns.length > 1;
   const confidence = status === 'exact'
-    ? 'Exact birth time and timezone supplied; natal Moon sign and degree are calculated for that instant.'
+    ? 'Exact birth time and customer-confirmed birthplace timezone supplied; natal Moon sign and degree are calculated for that instant.'
     : status === 'approximate'
-      ? 'Approximate birth time supplied; use the natal Moon sign while treating its exact degree and timing as approximate.'
+      ? ambiguous
+        ? `Birth time is approximate and the Moon changed signs that date; preserve ${possibleSigns.join(' or ')} as the possible natal Moon range instead of asserting one sign or degree. The birthplace timezone was customer-confirmed.`
+        : `Birth time is approximate, but the Moon stayed in ${sign} throughout that date; the sign is stable while the exact degree and timing remain approximate. The birthplace timezone was customer-confirmed.`
       : ambiguous
-        ? `Birth time is unknown and the Moon changed signs that date; preserve ${possibleSigns.join(' or ')} as the possible natal Moon range.`
-        : `Birth time is unknown, but the Moon stayed in ${sign} throughout that date; the sign is stable while the exact degree remains approximate.`;
+        ? `Birth time is unknown and the Moon changed signs that date; preserve ${possibleSigns.join(' or ')} as the possible natal Moon range. The birthplace timezone was customer-confirmed.`
+        : `Birth time is unknown, but the Moon stayed in ${sign} throughout that date; the sign is stable while the exact degree remains approximate. The birthplace timezone was customer-confirmed.`;
   return {
     birth: {
       date,
@@ -319,6 +390,7 @@ function natalMoon(value: unknown) {
       place,
       timezone,
     },
+    timezoneConfirmation: confirmedTimezone,
     natalMoon: {
       longitude: rounded(longitude),
       sign,
@@ -386,7 +458,7 @@ function canonicalSnapshot(value: unknown, options: { now?: Date; requireFresh: 
     || cardId > 22
     || LUNAR_CARD_NAMES[cardId - 1] !== cardName) return null;
 
-  const natal = natalMoon(source.birth);
+  const natal = natalMoon(source.birth, source.timezoneConfirmation);
   if (!natal) return null;
   const scope = MOON_LUNAR_PACKAGE_SCOPE[packageTier];
   const canonicalPhase = submittedPhase as MoonPhaseName;
@@ -440,6 +512,21 @@ export function safeMoonLunarSnapshot(value: unknown) {
   return canonicalSnapshot(value, { requireFresh: false });
 }
 
+export function validateMoonLunarPaidTimezone(input: {
+  snapshot: unknown;
+  line: { birthPlace: unknown; birthTimezone: unknown; confirmationVersion: unknown };
+}) {
+  const snapshot = record(input.snapshot);
+  const confirmation = moonLunarTimezoneConfirmation(snapshot);
+  if (!confirmation
+    || String(input.line?.birthPlace ?? '') !== confirmation.birthPlace
+    || String(input.line?.birthTimezone ?? '') !== confirmation.timezone
+    || String(input.line?.confirmationVersion ?? '') !== confirmation.version) {
+    return Object.freeze({ ok: false as const, reason: MOON_LUNAR_TIMEZONE_MISMATCH });
+  }
+  return Object.freeze({ ok: true as const, reason: '', confirmation });
+}
+
 export function validateMoonLunarPaidQuote(input: {
   snapshot: unknown;
   row: { id: unknown; variantId: unknown; sku: unknown };
@@ -483,6 +570,7 @@ export function moonLunarEvidence(snapshot: SafeMoonLunarSnapshot) {
     `Current Moon: ${snapshot.current.phase}, ${snapshot.current.illumination.toFixed(1)}% illuminated, ${snapshot.current.age.toFixed(1)} days old, in ${snapshot.current.moonSign}`,
     `Next primary phase: ${snapshot.current.nextPhase.name} at ${snapshot.current.nextPhase.at}`,
     natal,
+    `Birthplace timezone: ${snapshot.birth.timezone}; customer-confirmed for the entered birthplace (${snapshot.timezoneConfirmation.version})`,
     `Lunar card: ${snapshot.card.position}: ${snapshot.card.name} (Upright)`,
     `Selected focus: ${snapshot.focusLabel}`,
   ].join('; ');

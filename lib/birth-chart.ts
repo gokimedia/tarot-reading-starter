@@ -1,3 +1,5 @@
+import { resolveIanaLocalDateBounds, resolveIanaLocalDateTime } from './iana-local-time.mjs';
+
 export const BIRTH_CHART_PAGE = '/pages/birth-chart-calculator';
 // v2 is the storefront's live, canonical checkout contract. Keep v1 readable
 // for already-created carts and signed intents; both versions carry the same
@@ -7,6 +9,9 @@ export const BIRTH_CHART_LEGACY_FUNNEL_VERSIONS = Object.freeze([
   'birth-chart-evidence-checkout-2026-08-v1',
 ] as const);
 export const BIRTH_CHART_SNAPSHOT_VERSION = 'birth-chart-snapshot-v1';
+export const BIRTH_CHART_LOCAL_TIME_NONEXISTENT = 'BIRTH_CHART_LOCAL_TIME_NONEXISTENT';
+export const BIRTH_CHART_LOCAL_TIME_AMBIGUOUS = 'BIRTH_CHART_LOCAL_TIME_AMBIGUOUS';
+export const BIRTH_CHART_TIMEZONE_INVALID = 'BIRTH_CHART_TIMEZONE_INVALID';
 
 export const BIRTH_CHART_INTENTS = Object.freeze({
   self: Object.freeze({ label: 'Understand myself', category: 'personal' as const }),
@@ -174,6 +179,31 @@ export function isSupportedBirthChartFunnelVersion(value: unknown) {
     );
 }
 
+export function birthChartBirthTimeIssue(value: unknown) {
+  const source = record(value);
+  const birth = record(source.birth);
+  const status = clean(birth.status, 20);
+  const date = clean(birth.date, 16);
+  const submittedTime = clean(birth.time, 8);
+  const timezone = clean(record(birth.place).timezone, 80);
+  if (!['exact', 'approximate', 'unknown'].includes(status)
+    || !validBirthDate(date)
+    || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_.+\-]+)+)$/.test(timezone)
+    || (status === 'unknown' ? Boolean(submittedTime) : !/^([01]\d|2[0-3]):[0-5]\d$/.test(submittedTime))) return '';
+  const resolution = resolveIanaLocalDateTime(date, status === 'unknown' ? '12:00' : submittedTime, timezone);
+  if (!resolution) return BIRTH_CHART_TIMEZONE_INVALID;
+  if (resolution?.status === 'ambiguous') {
+    return BIRTH_CHART_LOCAL_TIME_AMBIGUOUS;
+  }
+  const dateBounds = status === 'unknown' ? resolveIanaLocalDateBounds(date, timezone) : null;
+  if (status === 'unknown' && !dateBounds) return BIRTH_CHART_TIMEZONE_INVALID;
+  if (resolution.status === 'nonexistent'
+    || (status === 'unknown' && dateBounds?.status === 'nonexistent')) {
+    return BIRTH_CHART_LOCAL_TIME_NONEXISTENT;
+  }
+  return '';
+}
+
 export function safeBirthChartSnapshot(value: unknown): SafeBirthChartSnapshot | null {
   const source = record(value);
   const version = clean(source.version, 64);
@@ -197,6 +227,7 @@ export function safeBirthChartSnapshot(value: unknown): SafeBirthChartSnapshot |
     || latitude == null || latitude < -90 || latitude > 90
     || placeLongitude == null || placeLongitude < -180 || placeLongitude > 180
     || !/^(?:UTC|[A-Za-z_+-]+(?:\/[A-Za-z0-9_+\-]+)+)$/.test(timezone)) return null;
+  if (birthChartBirthTimeIssue(source)) return null;
 
   const systems = record(source.systems);
   if (clean(systems.zodiac, 40) !== 'Western Tropical' || clean(systems.houses, 40) !== 'Whole Sign') return null;

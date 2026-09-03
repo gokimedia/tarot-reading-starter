@@ -7,8 +7,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   MOON_LUNAR_FUNNEL_VERSION,
+  MOON_LUNAR_LOCAL_TIME_AMBIGUOUS,
+  MOON_LUNAR_LOCAL_TIME_NONEXISTENT,
   MOON_LUNAR_PAGE,
   MOON_LUNAR_SNAPSHOT_VERSION,
+  MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION,
   moonLunarCurrentSnapshot,
 } from '../lib/moon-lunar.ts';
 
@@ -56,6 +59,12 @@ function moonSnapshot() {
       status: 'exact',
       place: 'Berlin, Germany',
       timezone: 'Europe/Berlin',
+    },
+    timezoneConfirmation: {
+      version: MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION,
+      confirmed: true,
+      timezone: 'Europe/Berlin',
+      birthPlace: 'Berlin, Germany',
     },
   };
 }
@@ -111,6 +120,7 @@ test('Moon intent requires the displayed localized quote, reconfirms drift, and 
   const originalEnvironment = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]]));
   const inserts = [];
   const logs = [];
+  let storefrontRequests = 0;
   t.after(() => {
     globalThis.fetch = originalFetch;
     globalThis.__deckauraSql = originalSql;
@@ -136,8 +146,66 @@ test('Moon intent requires the displayed localized quote, reconfirms drift, and 
   };
   sql.json = (value) => ({ __testJson: value });
   globalThis.__deckauraSql = sql;
-  globalThis.fetch = async (_url, init = {}) => storefrontResponse(JSON.parse(String(init.body)));
+  globalThis.fetch = async (_url, init = {}) => {
+    storefrontRequests += 1;
+    return storefrontResponse(JSON.parse(String(init.body)));
+  };
   const { POST } = await loadRoute();
+
+  const confirmedQuote = { variantId: PRODUCT.variantId, sku: PRODUCT.sku, priceCents: 549, currency: 'EUR', country: 'DE' };
+  const legacyBody = routeBody(confirmedQuote);
+  legacyBody.funnelVersion = 'moon-lunar-intent-checkout-2026-08-v1';
+  const legacyResponse = await POST(request(legacyBody));
+  assert.equal(legacyResponse.status, 422);
+  assert.deepEqual(await legacyResponse.json(), { error: 'invalid_moon_lunar_intent' });
+  for (const [label, mutate] of [
+    ['missing confirmation', (value) => { delete value.snapshot.timezoneConfirmation; }],
+    ['unconfirmed', (value) => { value.snapshot.timezoneConfirmation.confirmed = false; }],
+    ['timezone mismatch', (value) => { value.snapshot.timezoneConfirmation.timezone = 'America/New_York'; }],
+    ['birth place mismatch', (value) => { value.snapshot.timezoneConfirmation.birthPlace = 'Munich, Germany'; }],
+  ]) {
+    const body = routeBody(confirmedQuote);
+    mutate(body);
+    const response = await POST(request(body));
+    assert.equal(response.status, 422, label);
+    assert.deepEqual(await response.json(), {
+      error: 'moon_lunar_timezone_confirmation_required',
+      code: 'MOON_LUNAR_TIMEZONE_CONFIRMATION_REQUIRED',
+      confirmationRequired: true,
+    }, label);
+  }
+  assert.equal(storefrontRequests, 0, 'an unconfirmed timezone must fail before any Shopify lookup');
+  assert.equal(inserts.length, 0);
+
+  for (const [label, birth, code] of [
+    ['nonexistent New York time', {
+      date: '2024-03-10', time: '02:30', status: 'exact', place: 'New York, United States', timezone: 'America/New_York',
+    }, MOON_LUNAR_LOCAL_TIME_NONEXISTENT],
+    ['ambiguous New York time', {
+      date: '2024-11-03', time: '01:10', status: 'approximate', place: 'New York, United States', timezone: 'America/New_York',
+    }, MOON_LUNAR_LOCAL_TIME_AMBIGUOUS],
+    ['skipped Apia date', {
+      date: '2011-12-30', time: '', status: 'unknown', place: 'Apia, Samoa', timezone: 'Pacific/Apia',
+    }, MOON_LUNAR_LOCAL_TIME_NONEXISTENT],
+  ]) {
+    const body = routeBody(confirmedQuote);
+    body.snapshot.birth = birth;
+    body.snapshot.timezoneConfirmation = {
+      version: MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION,
+      confirmed: true,
+      timezone: birth.timezone,
+      birthPlace: birth.place,
+    };
+    const response = await POST(request(body));
+    assert.equal(response.status, 422, label);
+    assert.deepEqual(await response.json(), {
+      error: 'moon_lunar_birth_time_invalid',
+      code,
+      correctionRequired: true,
+    }, label);
+  }
+  assert.equal(storefrontRequests, 0, 'invalid civil times must fail before any Shopify lookup');
+  assert.equal(inserts.length, 0, 'invalid civil times must fail before persistence');
 
   const missingResponse = await POST(request(routeBody(undefined)));
   assert.equal(missingResponse.status, 422);
@@ -156,7 +224,6 @@ test('Moon intent requires the displayed localized quote, reconfirms drift, and 
   });
   assert.equal(inserts.length, 0);
 
-  const confirmedQuote = { variantId: PRODUCT.variantId, sku: PRODUCT.sku, priceCents: 549, currency: 'EUR', country: 'DE' };
   const confirmedResponse = await POST(request(routeBody(confirmedQuote)));
   const confirmedPayload = await confirmedResponse.json();
   assert.equal(confirmedResponse.status, 201, JSON.stringify(confirmedPayload));
@@ -168,6 +235,12 @@ test('Moon intent requires the displayed localized quote, reconfirms drift, and 
   assert.equal(confirmedPayload.checkoutQuote.currency, 'EUR');
   assert.equal(confirmedPayload.checkoutQuote.country, 'DE');
   assert.equal(confirmedPayload.checkoutQuote.snapshotHash, confirmedPayload.snapshotHash);
+  assert.deepEqual(confirmedPayload.timezoneConfirmation, {
+    version: MOON_LUNAR_TIMEZONE_CONFIRMATION_VERSION,
+    confirmed: true,
+    timezone: 'Europe/Berlin',
+    birthPlace: 'Berlin, Germany',
+  });
   assert.equal(inserts.length, 1);
   assert.equal(inserts[0].values[2], MOON_LUNAR_PAGE);
   assert.equal(inserts[0].values[18], 'moon_lunar');
@@ -181,5 +254,6 @@ test('Moon intent requires the displayed localized quote, reconfirms drift, and 
   });
   assert.equal(inserts[0].snapshot.localeContext.currency, 'EUR');
   assert.equal(inserts[0].snapshot.localeContext.country, 'DE');
+  assert.deepEqual(inserts[0].snapshot.timezoneConfirmation, confirmedPayload.timezoneConfirmation);
   assert.doesNotMatch(logs.join('\n'), new RegExp(QUESTION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
