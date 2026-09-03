@@ -230,6 +230,7 @@ test('direct route allows only bounded preview transport failures, fails policy 
     }
     if (query.includes('insert into deckaura.checkout_intents')) {
       const persistedPage = String(values[2]);
+      const persistedQuestion = String(values[8]);
       const persistedCardId = Number(values[11]);
       const persistedIntentKind = String(values[18]);
       const cardIdentityAccepted = persistedIntentKind !== 'shared_tool'
@@ -238,6 +239,9 @@ test('direct route allows only bounded preview transport failures, fails policy 
           : persistedCardId === 0);
       if (!cardIdentityAccepted) {
         throw new Error('new row violates check constraint checkout_intents_card_id');
+      }
+      if (persistedQuestion.length < 6 || persistedQuestion.length > 400) {
+        throw new Error('new row violates check constraint checkout_intents_question');
       }
       inserts.push({ values, snapshot: values.find((value) => value?.__testJson)?.__testJson });
       return [];
@@ -330,16 +334,44 @@ test('direct route allows only bounded preview transport failures, fails policy 
     assert.equal(inserts.at(-1).snapshot.curiosityQuestion, '');
   }
 
-  const birth = birthSnapshot();
+  const birth = birthSnapshot({ focus: 'career' });
   const birthResponse = await POST(request(routeBody('birth', birth)));
   const birthPayload = await birthResponse.json();
   assert.equal(birthResponse.status, 201, JSON.stringify(birthPayload));
+  assert.equal(birthPayload.checkoutQuestion, 'What guidance do my birth cards offer for Career & Purpose?');
+  assert.equal(inserts.at(-1).values[8], birthPayload.checkoutQuestion);
+  assert.equal(inserts.at(-1).snapshot.question, birthPayload.checkoutQuestion);
+  assert.equal(inserts.at(-1).snapshot.questionSource, 'server_default');
+  assert.equal(inserts.at(-1).snapshot.focus, 'career');
+  assert.equal(inserts.at(-1).snapshot.focusLabel, 'Career & Purpose');
   assert.deepEqual(inserts.at(-1).snapshot.birthCardSequence, birth.birthCardSequence);
   assert.equal(inserts.at(-1).snapshot.transportFallback, undefined);
+  const unfocusedBirth = birthSnapshot();
+  const unfocusedBirthResponse = await POST(request(routeBody('birth', unfocusedBirth)));
+  const unfocusedBirthPayload = await unfocusedBirthResponse.json();
+  assert.equal(unfocusedBirthResponse.status, 201, JSON.stringify(unfocusedBirthPayload));
+  assert.equal(unfocusedBirthPayload.checkoutQuestion, 'What guidance do my birth cards offer?');
+  assert.equal(inserts.at(-1).snapshot.focus, '');
+  assert.equal(inserts.at(-1).snapshot.focusLabel, '');
   const forbiddenBirth = await POST(request(routeBody('birth', birth, { previewToken: 'a'.repeat(32) })));
   const forbiddenBirthPayload = await forbiddenBirth.json();
   assert.equal(forbiddenBirth.status, 422);
   assert.equal(forbiddenBirthPayload.code, 'DIRECT_TAROT_PREVIEW_NOT_ALLOWED');
+  for (const invalidFocus of ['Career & Purpose', 'CAREER', 'unknown']) {
+    const invalidBirth = birthSnapshot({ focus: invalidFocus });
+    const beforeFetches = fetches.length;
+    const beforeInserts = inserts.length;
+    const response = await POST(request(routeBody('birth', invalidBirth)));
+    const payload = await response.json();
+    assert.equal(response.status, 422, invalidFocus);
+    assert.equal(payload.code, 'DIRECT_TAROT_EVIDENCE_MISMATCH', invalidFocus);
+    assert.equal(fetches.length, beforeFetches, `${invalidFocus}: must fail before Shopify`);
+    assert.equal(inserts.length, beforeInserts, `${invalidFocus}: must not persist`);
+  }
+  const mismatchedBirthQuestion = routeBody('birth', birth, { question: 'What should I know about this chapter?' });
+  const mismatchedBirthResponse = await POST(request(mismatchedBirthQuestion));
+  assert.equal(mismatchedBirthResponse.status, 422);
+  assert.equal((await mismatchedBirthResponse.json()).code, 'DIRECT_TAROT_QUESTION_MISMATCH');
 
   quote = { amount: '6.49', currency: 'USD' };
   const changed = fallbackBody('yes', yesSnapshot(), 'http_429');

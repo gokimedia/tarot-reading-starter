@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
   MOON_PHASE_LABEL_BOUNDARY_DRIFT_DEGREES,
+  MOON_LUNAR_QUOTE_MISMATCH,
   buildMoonLunarSnapshot,
   safeMoonLunarSnapshot,
+  validateMoonLunarPaidQuote,
 } from '../lib/moon-lunar.ts';
 
 const CAPTURED_AT = '2026-08-12T04:55:09.372Z';
@@ -87,4 +90,55 @@ test('bounds adjacent phase-label drift and preserves independent astronomical t
   assert.equal(build(fixture((value) => {
     value.current.phaseAngle += 15.01;
   })), null, 'the existing phase-angle envelope remains fail-closed');
+});
+
+test('Moon paid quote binds the signed intent and locale to Shopify presentment money', () => {
+  const intentId = '12345678-1234-4234-9234-123456789abc';
+  const variantId = '53782500147473';
+  const sku = 'READING-PREMIUM';
+  const snapshot = {
+    ...build(fixture()),
+    localeContext: { locale: 'de-DE', language: 'de', country: 'DE', currency: 'EUR', market: 'de' },
+    checkoutQuote: { intentId, variantId, sku, priceCents: 1549, currency: 'EUR', country: 'DE' },
+  };
+  const input = {
+    snapshot,
+    row: { id: intentId, variantId, sku },
+    line: { presentmentAmount: '15.49', presentmentCurrency: 'EUR' },
+  };
+  const valid = validateMoonLunarPaidQuote(input);
+  assert.equal(valid.ok, true, valid.reason);
+  assert.deepEqual(valid.quote, { intentId, variantId, sku, priceCents: 1549, currency: 'EUR', country: 'DE' });
+
+  for (const [label, mutate] of [
+    ['missing quote', (value) => { delete value.snapshot.checkoutQuote; }],
+    ['intent id', (value) => { value.snapshot.checkoutQuote.intentId = '22345678-1234-4234-9234-123456789abc'; }],
+    ['variant id', (value) => { value.snapshot.checkoutQuote.variantId = '53782500114705'; }],
+    ['sku', (value) => { value.snapshot.checkoutQuote.sku = 'READING-MEDIUM'; }],
+    ['price cents', (value) => { value.snapshot.checkoutQuote.priceCents = 1550; }],
+    ['quote currency', (value) => { value.snapshot.checkoutQuote.currency = 'USD'; }],
+    ['quote country', (value) => { value.snapshot.checkoutQuote.country = 'US'; }],
+    ['signed locale currency', (value) => { value.snapshot.localeContext.currency = 'USD'; }],
+    ['signed locale country', (value) => { value.snapshot.localeContext.country = 'US'; }],
+    ['line amount', (value) => { value.line.presentmentAmount = '15.50'; }],
+    ['line currency', (value) => { value.line.presentmentCurrency = 'USD'; }],
+  ]) {
+    const changed = structuredClone(input);
+    mutate(changed);
+    const result = validateMoonLunarPaidQuote(changed);
+    assert.deepEqual(result, { ok: false, reason: MOON_LUNAR_QUOTE_MISMATCH }, label);
+  }
+});
+
+test('Moon delivery copy keeps intended separators instead of mojibake', async () => {
+  const source = await readFile(new URL('../lib/reading-queue-processor.ts', import.meta.url), 'utf8');
+  const start = source.indexOf("if (intentKind === 'moon_lunar')");
+  const end = source.indexOf("if (intentKind === 'shared_tool')", start);
+  assert.ok(start >= 0 && end > start);
+  const moonBlock = source.slice(start, end);
+  assert.doesNotMatch(moonBlock, /Â·|â†”/);
+  assert.match(moonBlock, /validateMoonLunarPaidQuote\(/);
+  assert.match(moonBlock, /if \(!quoteValidation\.ok\) throw new QueueOperationError\(quoteValidation\.reason\)/);
+  assert.match(moonBlock, /verified current Moon and natal Moon calculation/);
+  assert.match(moonBlock, /current Moon ↔ natal Moon ↔ lunar card ↔ exact question/);
 });

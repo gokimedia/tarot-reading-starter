@@ -130,6 +130,8 @@ const CHECKOUT_INTENT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DIRECT_TAROT_CHECKOUT_INTENT_TTL_MS = 24 * 60 * 60 * 1000;
 const DIRECT_TAROT_DISPLAYED_QUOTE_INVALID = 'DIRECT_TAROT_DISPLAYED_QUOTE_INVALID';
 const DIRECT_TAROT_QUOTE_CHANGED = 'DIRECT_TAROT_QUOTE_CHANGED';
+const MOON_LUNAR_DISPLAYED_QUOTE_INVALID = 'MOON_LUNAR_DISPLAYED_QUOTE_INVALID';
+const MOON_LUNAR_QUOTE_CHANGED = 'MOON_LUNAR_QUOTE_CHANGED';
 const DIRECT_TAROT_TRANSPORT_FAILURES = new Set(['timeout', 'http_408', 'http_429', 'http_5xx']);
 
 const allowedOrigins = new Set([
@@ -228,6 +230,28 @@ function directTarotQuoteChanged(
   return json({
     error: 'checkout_price_changed',
     code: DIRECT_TAROT_QUOTE_CHANGED,
+    confirmationRequired: true,
+    checkoutQuote: quote,
+  }, 409, origin);
+}
+
+function moonLunarQuoteChanged(
+  origin: string,
+  quote: { variantId: string; sku: string; price: number; priceCents: number; currency: string; country: string },
+  tier: string,
+) {
+  console.warn(JSON.stringify({
+    event: 'moon_lunar_quote_changed',
+    status: 409,
+    code: MOON_LUNAR_QUOTE_CHANGED,
+    tier,
+    variantId: quote.variantId,
+    currency: quote.currency,
+    country: quote.country,
+  }));
+  return json({
+    error: 'checkout_price_changed',
+    code: MOON_LUNAR_QUOTE_CHANGED,
     confirmationRequired: true,
     checkoutQuote: quote,
   }, 409, origin);
@@ -363,7 +387,7 @@ export async function POST(request: Request) {
   const moonLunar = requestedKind === 'moon_lunar';
   const numerologyCompatibility = requestedKind === 'numerology_compatibility';
   const storefrontTier = normalizeStorefrontTier(body.tier);
-  const question = clean(body.question, requestedPersonalDirect ? 600 : requestedBirthCardDirect ? 360 : 400);
+  let question = clean(body.question, requestedPersonalDirect ? 600 : requestedBirthCardDirect ? 360 : 400);
   const readingId = clean(body.readingId, 80);
   const funnelVersion = clean(body.funnelVersion, 128);
   if (!storefrontTier
@@ -825,6 +849,15 @@ export async function POST(request: Request) {
             publicCode: 'DIRECT_TAROT_PREVIEW_NOT_ALLOWED',
           });
         }
+        if (clean(submittedSharedSnapshot.question, 360) !== question) {
+          return sharedCheckoutRejection(422, 'DIRECT_TAROT_QUESTION_MISMATCH', origin, {
+            page: pageValue,
+            toolType,
+            tier: storefrontTier,
+            variantId: expectedVariantValue,
+            publicCode: 'DIRECT_TAROT_QUESTION_MISMATCH',
+          });
+        }
         const canonicalBirthSnapshot = canonicalizeDirectTarotSnapshot(submittedSharedSnapshot);
         if (!canonicalBirthSnapshot) {
           return sharedCheckoutRejection(422, 'DIRECT_TAROT_EVIDENCE_MISMATCH', origin, {
@@ -836,6 +869,7 @@ export async function POST(request: Request) {
           });
         }
         sharedSnapshot = canonicalBirthSnapshot;
+        question = clean(canonicalBirthSnapshot.question, 360);
       } else {
         const transportFallback = body.transportFallback === true || submittedSharedSnapshot.transportFallback === true;
         if (transportFallback) {
@@ -1289,6 +1323,8 @@ export async function POST(request: Request) {
         cardEvidence: Array.isArray(sharedSnapshot.cardEvidence) ? sharedSnapshot.cardEvidence : [],
       } : {}),
       ...(directTarotValidation.kind === 'birth' ? {
+        questionSource: clean(sharedSnapshot.questionSource, 32),
+        focusLabel: clean(sharedSnapshot.focusLabel, 80),
         birthDate: clean(sharedSnapshot.birthDate, 10),
         calculationMethod: clean(sharedSnapshot.calculationMethod, 80),
         calculationTrace: clean(sharedSnapshot.calculationTrace, 300),
@@ -1320,8 +1356,6 @@ export async function POST(request: Request) {
     snapshot = safeYesNoSnapshot(body.snapshot);
   }
 
-  snapshot = { ...snapshot, localeContext: intentLocaleContext };
-
   const product = requestedKind === 'shared_tool'
     ? sharedProduct
     : readingPackage(
@@ -1337,6 +1371,76 @@ export async function POST(request: Request) {
     tier,
   );
   if (!product) return json({ error: 'package_unavailable' }, 409, origin);
+
+  if (moonLunar) {
+    const quoteLookup = await verifyShopifyReadingVariantQuote({
+      variantId: product.variantId,
+      expectedSku: product.sku,
+      countryCode: intentLocaleContext.country || 'US',
+      expectedCurrency: intentLocaleContext.currency || 'USD',
+      env: process.env,
+    });
+    if (!('quote' in quoteLookup) || !quoteLookup.quote) {
+      const failure = quoteLookup as {
+        status: 409 | 422 | 503;
+        reason: string;
+        upstreamStatus: number;
+        upstreamCode?: string;
+      };
+      return sharedCheckoutRejection(failure.status, failure.reason, origin, {
+        page: MOON_LUNAR_PAGE,
+        toolType: 'Moon & Lunar Reading',
+        tier: storefrontTier,
+        variantId: product.variantId,
+        upstreamStatus: failure.upstreamStatus,
+        upstreamCode: failure.upstreamCode || '',
+      });
+    }
+    const displayedQuote = record(body.displayedQuote);
+    const displayedVariantId = clean(displayedQuote.variantId, 24);
+    const displayedSku = clean(displayedQuote.sku, 80).toUpperCase();
+    const displayedPriceCents = Number(displayedQuote.priceCents);
+    const displayedCurrency = clean(displayedQuote.currency, 3).toUpperCase();
+    const displayedCountry = clean(displayedQuote.country, 2).toUpperCase();
+    if (displayedVariantId !== quoteLookup.quote.variantId
+      || displayedSku !== quoteLookup.quote.sku
+      || !Number.isInteger(displayedPriceCents)
+      || displayedPriceCents <= 0
+      || !/^[A-Z]{3}$/.test(displayedCurrency)
+      || !/^[A-Z]{2}$/.test(displayedCountry)) {
+      return sharedCheckoutRejection(422, MOON_LUNAR_DISPLAYED_QUOTE_INVALID, origin, {
+        page: MOON_LUNAR_PAGE,
+        toolType: 'Moon & Lunar Reading',
+        tier: storefrontTier,
+        variantId: product.variantId,
+        publicCode: MOON_LUNAR_DISPLAYED_QUOTE_INVALID,
+      });
+    }
+    if (displayedPriceCents !== quoteLookup.quote.priceCents
+      || displayedCurrency !== quoteLookup.quote.currency
+      || displayedCountry !== quoteLookup.quote.country) {
+      return moonLunarQuoteChanged(origin, quoteLookup.quote, storefrontTier);
+    }
+    sharedCheckoutQuote = {
+      intentId: id,
+      variantId: quoteLookup.quote.variantId,
+      sku: quoteLookup.quote.sku,
+      priceCents: quoteLookup.quote.priceCents,
+      currency: quoteLookup.quote.currency,
+      country: quoteLookup.quote.country,
+    };
+    intentLocaleContext = Object.freeze({
+      ...intentLocaleContext,
+      country: quoteLookup.quote.country,
+      currency: quoteLookup.quote.currency,
+    });
+  }
+
+  snapshot = {
+    ...snapshot,
+    localeContext: intentLocaleContext,
+    ...(sharedCheckoutQuote ? { checkoutQuote: sharedCheckoutQuote } : {}),
+  };
 
   // Shopify checkouts are frequently resumed from an email or another device.
   // Keep the signed, one-use record long enough for that normal flow while the
@@ -1408,6 +1512,7 @@ export async function POST(request: Request) {
     readingType,
     snapshotHash,
     localeContext: intentLocaleContext,
+    ...(page === BIRTH_CARD_DIRECT_PAGE ? { checkoutQuestion: question } : {}),
     ...(sharedCheckoutQuote ? {
       checkoutQuote: {
         ...sharedCheckoutQuote,

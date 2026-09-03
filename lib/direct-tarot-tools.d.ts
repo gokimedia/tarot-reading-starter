@@ -45,10 +45,20 @@ export const BIRTH_CARD_DIRECT_PRESENTATION_VARIANT: 'birth-card-direct-v1';
 export const BIRTH_CARD_CALCULATION_METHOD: 'tarot-school-birth-cards-v1';
 export const BIRTH_CARD_DIRECT_SCOPE: string;
 export const BIRTH_CARD_DIRECT_CONFIDENCE: string;
+export const BIRTH_CARD_DIRECT_FOCUSES: Readonly<{
+  identity: 'Identity & Self-Expression';
+  love: 'Love & Relationship Patterns';
+  career: 'Career & Purpose';
+  decisions: 'Decisions & Direction';
+  family: 'Family & Emotional Patterns';
+  chapter: 'My Current Life Chapter';
+}>;
 
 export function yesNoDirectionalLeanForCard(cardName: unknown): '' | 'YES' | 'NO' | 'NOT YET' | 'IT DEPENDS';
 export function canonicalYesNoDirectEvidence(card: unknown): Readonly<Record<string, unknown>> | null;
 export function calculateTarotSchoolBirthCards(birthDate: unknown, now?: number): Readonly<Record<string, unknown>> | null;
+export function birthCardDirectFocusLabel(value: unknown): string;
+export function birthCardDirectCanonicalQuestion(question: unknown, focus?: unknown): string;
 export function directTarotToolKind(value?: Record<string, unknown>): '' | 'yes_no' | 'love' | 'career' | 'birth';
 export function isDirectTarotCompactPreview(value?: Record<string, unknown>): boolean;
 export function directTarotSafetyCategory(value: unknown): '' | 'crisis' | 'missing' | 'medical' | 'death' | 'danger';

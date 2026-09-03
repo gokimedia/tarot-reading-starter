@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   BIRTH_CARD_CALCULATION_METHOD,
   BIRTH_CARD_DIRECT_CONFIDENCE,
+  BIRTH_CARD_DIRECT_FOCUSES,
   BIRTH_CARD_DIRECT_PAGE,
   BIRTH_CARD_DIRECT_PRESENTATION_VARIANT,
   BIRTH_CARD_DIRECT_SCOPE,
@@ -32,6 +33,8 @@ import {
   YES_NO_DIRECT_SPREAD,
   YES_NO_DIRECT_TYPE,
   auditDirectTarotCompactInsight,
+  birthCardDirectCanonicalQuestion,
+  birthCardDirectFocusLabel,
   calculateTarotSchoolBirthCards,
   canonicalYesNoDirectEvidence,
   canonicalizeDirectTarotSnapshot,
@@ -46,9 +49,11 @@ import {
   freePreviewSnapshotTtlSeconds,
   generateDirectTarotCompactInsight,
   handleFreeReading,
+  paidReadingAnswerLanguage,
   validateReadingFields,
 } from '../lib/legacy-worker.mjs';
 import { verifySharedToolPaidOrder } from '../lib/shared-tool-order-contract.mjs';
+import { readingIntentPropertiesMatch } from '../lib/reading-delivery-guards.mjs';
 
 const NOW = Date.UTC(2026, 7, 16, 12, 0, 0);
 const READING_ID = 'direct-tool-reading-20260816';
@@ -361,13 +366,67 @@ test('Tarot School birth cards recompute exact UTC-bounded fixtures, traces, and
 
   const valid = validateDirectTarotToolSnapshot({ page: BIRTH_CARD_DIRECT_PAGE, toolType: BIRTH_CARD_DIRECT_TYPE, presentationVariant: BIRTH_CARD_DIRECT_PRESENTATION_VARIANT, snapshot: birthSnapshot() });
   assert.equal(valid.ok, true, valid.reason);
+  for (const [focus, label] of Object.entries(BIRTH_CARD_DIRECT_FOCUSES)) {
+    const focused = birthSnapshot('1949-12-23', { focus });
+    const focusedValidation = validateDirectTarotToolSnapshot({ page: BIRTH_CARD_DIRECT_PAGE, toolType: BIRTH_CARD_DIRECT_TYPE, presentationVariant: BIRTH_CARD_DIRECT_PRESENTATION_VARIANT, snapshot: focused });
+    assert.equal(focusedValidation.ok, true, `${focus}: ${focusedValidation.reason}`);
+    assert.equal(birthCardDirectFocusLabel(focus), label);
+    const canonical = canonicalizeDirectTarotSnapshot(focused);
+    assert.equal(canonical.focus, focus);
+    assert.equal(canonical.focusLabel, label);
+    assert.equal(canonical.question, `What guidance do my birth cards offer for ${label}?`);
+    assert.equal(canonical.questionSource, 'server_default');
+    assert.deepEqual(canonicalizeDirectTarotSnapshot(canonical), canonical, `${focus}: canonicalization must be idempotent`);
+  }
+  assert.equal(birthCardDirectCanonicalQuestion('', ''), 'What guidance do my birth cards offer?');
+  assert.equal(birthCardDirectCanonicalQuestion('  My own question?  ', 'career'), 'My own question?');
   for (const mutation of [
     { calculationMethod: 'other' },
     { calculationTrace: '12 + 23 = 35' },
     { birthDate: '1949-12-24' },
     { birthCardSequence: [{ label: 'Birth Card 1', number: 4, name: 'The Emperor' }] },
     { signals: 'Birth Card 1: The Emperor (4)', cards: 'Birth Card 1: The Emperor (4)' },
+    { focus: 'Career & Purpose' },
+    { focus: 'unknown' },
+    { focus: 'CAREER' },
+    { question: 'What guidance do my birth cards offer for Career & Purpose?', focus: 'career', questionSource: 'server_default', focusLabel: 'Love & Relationship Patterns' },
   ]) assert.equal(validateDirectTarotToolSnapshot({ page: BIRTH_CARD_DIRECT_PAGE, toolType: BIRTH_CARD_DIRECT_TYPE, presentationVariant: BIRTH_CARD_DIRECT_PRESENTATION_VARIANT, snapshot: { ...birthSnapshot(), ...mutation } }).ok, false);
+});
+
+test('server-default Birth Card questions cannot override the paid storefront language', () => {
+  const snapshot = canonicalizeDirectTarotSnapshot(birthSnapshot('1949-12-23', { focus: 'career' }));
+  assert.equal(paidReadingAnswerLanguage({ ...snapshot, intentKind: 'shared_tool', lang: 'tr' }, { language: 'tr' }), 'tr');
+  for (const language of ['de', 'es', 'pt']) {
+    assert.equal(
+      paidReadingAnswerLanguage({ ...snapshot, intentKind: 'shared_tool', lang: language }, { language }),
+      language,
+    );
+  }
+  assert.equal(
+    paidReadingAnswerLanguage({ question: 'What should I do next?', focus: '', lang: 'tr', intentKind: 'shared_tool' }, { language: 'tr' }),
+    'en',
+    'ordinary shared tools continue to follow an explicit customer question language',
+  );
+  assert.equal(
+    paidReadingAnswerLanguage({ ...snapshot, question: 'What should I understand about my career?', questionSource: 'customer', lang: 'tr' }, { language: 'tr' }),
+    'en',
+    'an explicit Birth Card customer question continues to determine its language',
+  );
+});
+
+test('only a missing server-default Birth Card cart question is backward compatible', () => {
+  const expected = {
+    funnelVersion: 'enterprise-shared-tools-2026-08-v1',
+    readingId: READING_ID,
+    readingType: BIRTH_CARD_DIRECT_TYPE,
+    question: 'What guidance do my birth cards offer for Career & Purpose?',
+    tier: 'standard',
+  };
+  const actual = { ...expected, question: '' };
+  assert.equal(readingIntentPropertiesMatch({ actual, expected, knownIntentKind: true }), false);
+  assert.equal(readingIntentPropertiesMatch({ actual, expected, knownIntentKind: true, allowMissingQuestion: true }), true);
+  assert.equal(readingIntentPropertiesMatch({ actual: expected, expected, knownIntentKind: true, allowMissingQuestion: true }), true);
+  assert.equal(readingIntentPropertiesMatch({ actual: { ...actual, question: 'A contradictory question' }, expected, knownIntentKind: true, allowMissingQuestion: true }), false);
 });
 
 test('deterministic direct fallbacks pass the exact word, language, no-echo, certainty, and private-state gates in every locale', () => {
@@ -573,7 +632,7 @@ test('canonical snapshots reconcile exact product, presentment quote, and derive
     [canonicalizeDirectTarotSnapshot(yesSnapshot()), YES_NO_DIRECT_PAGE, YES_NO_DIRECT_TYPE, { variantId: '53675061838097', sku: 'READING-DEEP', price: 5.99 }],
     [canonicalizeDirectTarotSnapshot(loveSnapshot()), LOVE_DIRECT_PAGE, LOVE_DIRECT_TYPE, { variantId: '53782500409617', sku: 'READING-DEEP', price: 5.99 }],
     [canonicalizeDirectTarotSnapshot(careerSnapshot()), CAREER_DIRECT_PAGE, CAREER_DIRECT_TYPE, { variantId: '53675061838097', sku: 'READING-DEEP', price: 5.99 }],
-    [canonicalizeDirectTarotSnapshot(birthSnapshot()), BIRTH_CARD_DIRECT_PAGE, BIRTH_CARD_DIRECT_TYPE, { variantId: '53782498509073', sku: 'READING-DEEP', price: 5.99 }],
+    [canonicalizeDirectTarotSnapshot(birthSnapshot('1949-12-23', { focus: 'career' })), BIRTH_CARD_DIRECT_PAGE, BIRTH_CARD_DIRECT_TYPE, { variantId: '53782498509073', sku: 'READING-DEEP', price: 5.99 }],
   ]) {
     const intentId = '12345678-1234-4234-9234-123456789abc';
     const snapshotHash = 'a'.repeat(64);
@@ -594,6 +653,10 @@ test('canonical snapshots reconcile exact product, presentment quote, and derive
     assert.equal(validateReadingFields({ ...result.verifiedFields, snapshotVersion: 'reading-snapshot-v2' }).ok, true, `${page} paid delivery fields`);
     if (page === BIRTH_CARD_DIRECT_PAGE) {
       assert.equal(result.verifiedFields.freeQuestion, '');
+      assert.equal(result.verifiedFields.focus, 'Career & Purpose');
+      assert.equal(result.verifiedFields.birthCardFocus, 'career');
+      assert.equal(result.verifiedFields.birthCardFocusLabel, 'Career & Purpose');
+      assert.equal(result.verifiedFields.birthCardQuestionSource, 'server_default');
       assert.deepEqual(result.verifiedFields.birthCardSequence, persisted.birthCardSequence);
     }
   }

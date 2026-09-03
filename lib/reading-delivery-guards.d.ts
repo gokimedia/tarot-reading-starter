@@ -11,6 +11,7 @@ export type ReadingIntentProperties = Readonly<{
 
 export function readingIntentPropertiesMatch(input: Readonly<{
   knownIntentKind: boolean;
+  allowMissingQuestion?: boolean;
   actual: ReadingIntentProperties;
   expected: ReadingIntentProperties;
 }>): boolean;

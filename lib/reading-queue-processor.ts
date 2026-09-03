@@ -43,6 +43,7 @@ import {
 } from '@/lib/generated/shared-tool-manifest.mjs';
 import { verifySharedToolPaidOrder } from '@/lib/shared-tool-order-contract.mjs';
 import { paidQuestionLengthLimit } from '@/lib/personal-direct-reading.mjs';
+import { BIRTH_CARD_DIRECT_PAGE } from '@/lib/direct-tarot-tools.mjs';
 import {
   ANGEL_NUMBER_FUNNEL_VERSION,
   ANGEL_NUMBER_LIFE_AREAS,
@@ -112,6 +113,7 @@ import {
   MOON_LUNAR_SNAPSHOT_VERSION,
   moonLunarEvidence,
   safeMoonLunarSnapshot,
+  validateMoonLunarPaidQuote,
 } from '@/lib/moon-lunar';
 import {
   NUMEROLOGY_COMPATIBILITY_FUNNEL_VERSION,
@@ -666,8 +668,15 @@ async function verifiedReadingIntent(
   }
 
   const category = text(row.category, 20) as YesNoCategory;
+  const serverDefaultBirthCardQuestion = intentKind === 'shared_tool'
+    && text(row.page, 160) === BIRTH_CARD_DIRECT_PAGE
+    && text(snapshot.questionSource, 32) === 'server_default';
   if (!readingIntentPropertiesMatch({
     knownIntentKind,
+    // Cached Birth Card clients predate the server-owned default question and
+    // can omit it. Only absence is tolerated; a contradictory value still
+    // fails the universal line-property contract.
+    allowMissingQuestion: serverDefaultBirthCardQuestion,
     actual: {
       funnelVersion: itemProperty(item, ['funnel version']),
       readingId: itemProperty(item, ['reading id']),
@@ -1227,6 +1236,20 @@ async function verifiedReadingIntent(
   let moonLunarVerifiedFields: JsonObject = {};
   if (intentKind === 'moon_lunar') {
     const lunarSnapshot = safeMoonLunarSnapshot(snapshot);
+    const presentmentMoney = linePresentmentMoney(item, payload);
+    const quoteValidation = validateMoonLunarPaidQuote({
+      snapshot,
+      row: {
+        id: row.id,
+        variantId: row.shopify_variant_id,
+        sku: row.sku,
+      },
+      line: {
+        presentmentAmount: presentmentMoney.amount,
+        presentmentCurrency: presentmentMoney.currency,
+      },
+    });
+    if (!quoteValidation.ok) throw new QueueOperationError(quoteValidation.reason);
     const expectedNatalMoon = lunarSnapshot?.natalMoon.ambiguous
       ? lunarSnapshot.natalMoon.possibleSigns.join(' or ')
       : lunarSnapshot?.natalMoon.sign || '';
@@ -1258,13 +1281,13 @@ async function verifiedReadingIntent(
     moonLunarVerifiedFields = {
       type: 'Moon & Lunar Reading',
       readingType: 'Moon & Lunar Reading',
-      tool: `${MOON_LUNAR_PAGE} Â· verified current Moon and natal Moon calculation`,
+      tool: `${MOON_LUNAR_PAGE} · verified current Moon and natal Moon calculation`,
       question: lunarSnapshot.situation,
       freeQuestion: lunarSnapshot.situation,
       context: `${evidence}. Paid package contract: ${scope.title}. ${scope.instruction}`,
-      freeContext: `${lunarSnapshot.current.phase} in ${lunarSnapshot.current.moonSign} Â· ${lunarSnapshot.card.name} for ${lunarSnapshot.focusLabel}`,
-      cards: `${lunarSnapshot.card.position}: ${lunarSnapshot.card.name} Â· ${lunarSnapshot.card.orientation}`,
-      spread: `${scope.title} Â· current Moon â†” natal Moon â†” lunar card â†” exact question`,
+      freeContext: `${lunarSnapshot.current.phase} in ${lunarSnapshot.current.moonSign} · ${lunarSnapshot.card.name} for ${lunarSnapshot.focusLabel}`,
+      cards: `${lunarSnapshot.card.position}: ${lunarSnapshot.card.name} · ${lunarSnapshot.card.orientation}`,
+      spread: `${scope.title} · current Moon ↔ natal Moon ↔ lunar card ↔ exact question`,
       signals: evidence,
       scope: `${scope.title}. Use only the verified lunar and birth snapshot. ${scope.instruction}`,
       confidence: `${lunarSnapshot.natalMoon.confidence} Spiritual language is a reflective framework, not a guaranteed prediction.`,
@@ -1283,6 +1306,9 @@ async function verifiedReadingIntent(
       packageTitle: scope.title,
       deliveryWindowMinutes: 90,
       coverageDays: scope.days,
+      checkoutQuoteIntentId: quoteValidation.quote.intentId,
+      checkoutQuotePriceCents: quoteValidation.quote.priceCents,
+      checkoutQuoteCurrency: quoteValidation.quote.currency,
       moonLunar: lunarSnapshot,
     };
   }

@@ -11,6 +11,7 @@ import type { ReadingTier, YesNoCategory } from '@/lib/reading-products';
 export const MOON_LUNAR_PAGE = '/pages/moon-phase-today';
 export const MOON_LUNAR_FUNNEL_VERSION = 'moon-lunar-intent-checkout-2026-08-v1';
 export const MOON_LUNAR_SNAPSHOT_VERSION = 'moon-lunar-snapshot-v1';
+export const MOON_LUNAR_QUOTE_MISMATCH = 'CHECKOUT_INTENT_MOON_LUNAR_QUOTE_MISMATCH';
 
 export const MOON_LUNAR_FOCUSES = Object.freeze({
   love_relationships: Object.freeze({ label: 'Love & Relationships', category: 'love' as const }),
@@ -148,6 +149,13 @@ function clean(value: unknown, maximum: number) {
 function finite(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function moneyCents(value: unknown) {
+  const match = /^(\d{1,12})(?:\.(\d{1,2}))?$/.exec(clean(value, 40));
+  if (!match) return null;
+  const cents = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
 }
 
 function rounded(value: number, places = 4) {
@@ -430,6 +438,41 @@ export function buildMoonLunarSnapshot(input: {
 
 export function safeMoonLunarSnapshot(value: unknown) {
   return canonicalSnapshot(value, { requireFresh: false });
+}
+
+export function validateMoonLunarPaidQuote(input: {
+  snapshot: unknown;
+  row: { id: unknown; variantId: unknown; sku: unknown };
+  line: { presentmentAmount: unknown; presentmentCurrency: unknown };
+}) {
+  const snapshot = record(input.snapshot);
+  const quote = record(snapshot.checkoutQuote);
+  const locale = record(snapshot.localeContext);
+  const intentId = clean(input.row?.id, 64);
+  const variantId = clean(input.row?.variantId, 24);
+  const sku = clean(input.row?.sku, 80).toUpperCase();
+  const priceCents = Number(quote.priceCents);
+  const currency = clean(quote.currency, 3);
+  const country = clean(quote.country, 2);
+  if (!intentId
+    || clean(quote.intentId, 64) !== intentId
+    || clean(quote.variantId, 24) !== variantId
+    || clean(quote.sku, 80) !== sku
+    || !Number.isSafeInteger(priceCents)
+    || priceCents <= 0
+    || !/^[A-Z]{3}$/.test(currency)
+    || !/^[A-Z]{2}$/.test(country)
+    || clean(locale.currency, 3) !== currency
+    || clean(locale.country, 2) !== country
+    || moneyCents(input.line?.presentmentAmount) !== priceCents
+    || clean(input.line?.presentmentCurrency, 3).toUpperCase() !== currency) {
+    return Object.freeze({ ok: false as const, reason: MOON_LUNAR_QUOTE_MISMATCH });
+  }
+  return Object.freeze({
+    ok: true as const,
+    reason: '',
+    quote: Object.freeze({ intentId, variantId, sku, priceCents, currency, country }),
+  });
 }
 
 export function moonLunarEvidence(snapshot: SafeMoonLunarSnapshot) {
