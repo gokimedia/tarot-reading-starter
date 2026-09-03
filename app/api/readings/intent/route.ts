@@ -357,6 +357,9 @@ export async function POST(request: Request) {
   if (!allowedOrigins.has(origin)) return json({ error: 'origin_not_allowed' }, 403, origin);
   const length = Number(request.headers.get('content-length') || 0);
   if (length > 30_000) return json({ error: 'payload_too_large' }, 413, origin);
+  if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
+    return json({ error: 'content_type_not_supported' }, 415, origin);
+  }
 
   let body: Record<string, unknown>;
   try {

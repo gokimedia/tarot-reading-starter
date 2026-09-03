@@ -79,3 +79,18 @@ test('checkout accepts every supported storefront reading ID format', async (t) 
     assert.deepEqual(await response.json(), { error: 'invalid_checkout_intent' }, readingId);
   }
 });
+
+test('checkout intent rejects non-JSON bodies before parsing', async () => {
+  const { POST } = await loadRoute();
+  const response = await POST(new Request('https://reading.deckaura.com/api/readings/intent', {
+    method: 'POST',
+    headers: {
+      Origin: 'https://deckaura.com',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'invalid=1',
+  }));
+
+  assert.equal(response.status, 415);
+  assert.deepEqual(await response.json(), { error: 'content_type_not_supported' });
+});
