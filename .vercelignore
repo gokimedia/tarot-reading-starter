@@ -6,10 +6,7 @@ node_modules
 .env*
 supabase/.temp
 qa
-# Keep the critical checkout ID regression test in remote builds while
-# excluding the rest of the test suite from the deployment bundle.
-tests/*
-!tests/checkout-intent-reading-id-validation.test.mjs
-scripts
+# Contract tests and the manifest generator are intentionally uploaded because
+# `prebuild` is the fail-closed release gate for commerce and fulfillment.
 tmp
 tsconfig.tsbuildinfo
