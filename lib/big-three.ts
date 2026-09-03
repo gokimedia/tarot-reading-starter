@@ -10,6 +10,7 @@ export const BIG_THREE_FUNNEL_VERSION = 'big-three-synthesis-checkout-2026-08-v1
 export const BIG_THREE_SNAPSHOT_VERSION = 'big-three-snapshot-v1';
 export const BIG_THREE_LOCAL_TIME_NONEXISTENT = 'BIG_THREE_LOCAL_TIME_NONEXISTENT';
 export const BIG_THREE_LOCAL_TIME_AMBIGUOUS = 'BIG_THREE_LOCAL_TIME_AMBIGUOUS';
+export const BIG_THREE_QUOTE_MISMATCH = 'CHECKOUT_INTENT_BIG_THREE_QUOTE_MISMATCH';
 
 export const BIG_THREE_FOCUSES = Object.freeze({
   self: Object.freeze({ label: 'Understand myself', category: 'personal' as const }),
@@ -92,6 +93,119 @@ function record(value: unknown): JsonObject {
 
 function clean(value: unknown, maximum: number) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maximum);
+}
+
+function moneyCents(value: unknown) {
+  const match = /^(\d{1,12})(?:\.(\d{1,2}))?$/.exec(clean(value, 40));
+  if (!match) return null;
+  const cents = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+}
+
+export function validateBigThreePaidQuote(input: {
+  snapshot: unknown;
+  row: {
+    id: unknown;
+    variantId: unknown;
+    sku: unknown;
+    tier: unknown;
+    funnelVersion: unknown;
+  };
+  line: {
+    variantId: unknown;
+    sku: unknown;
+    quantity: unknown;
+    requiresShipping: unknown;
+    checkoutIntent: unknown;
+    funnelVersion: unknown;
+    selectedPackage: unknown;
+    intentKind: unknown;
+    displayedQuoteCents: unknown;
+    displayedQuoteCurrency: unknown;
+    displayedQuoteCountry: unknown;
+    signedQuoteCents: unknown;
+    signedQuoteCurrency: unknown;
+    signedQuoteCountry: unknown;
+    language: unknown;
+    locale: unknown;
+    country: unknown;
+    currency: unknown;
+    market: unknown;
+    presentmentAmount: unknown;
+    presentmentCurrency: unknown;
+  };
+}) {
+  const snapshot = record(input.snapshot);
+  // Big Three carts created before the signed-market-quote rollout have no
+  // checkoutQuote. Preserve those already-issued, otherwise-valid intents;
+  // once the field exists, every price and locale binding below is mandatory.
+  if (!Object.prototype.hasOwnProperty.call(snapshot, 'checkoutQuote')) {
+    return Object.freeze({ applies: false as const, ok: true as const, reason: '' });
+  }
+
+  const quote = record(snapshot.checkoutQuote);
+  const locale = record(snapshot.localeContext);
+  const intentId = clean(input.row?.id, 64);
+  const variantId = clean(input.row?.variantId, 24);
+  const sku = clean(input.row?.sku, 80).toUpperCase();
+  const tier = clean(input.row?.tier, 20);
+  const funnelVersion = clean(input.row?.funnelVersion, 128);
+  const priceCents = Number(quote.priceCents);
+  const quoteCurrency = clean(quote.currency, 3).toUpperCase();
+  const quoteCountry = clean(quote.country, 2).toUpperCase();
+  const localeLanguage = clean(locale.language, 8).toLowerCase();
+  const localeName = clean(locale.locale, 24).toLowerCase();
+  const localeCountry = clean(locale.country, 2).toUpperCase();
+  const localeCurrency = clean(locale.currency, 3).toUpperCase();
+  const localeMarket = clean(locale.market, 64).toLowerCase();
+  const mismatch = !intentId
+    || clean(quote.intentId, 64) !== intentId
+    || clean(quote.variantId, 24) !== variantId
+    || clean(quote.sku, 80).toUpperCase() !== sku
+    || !Number.isSafeInteger(priceCents)
+    || priceCents <= 0
+    || !/^[A-Z]{3}$/.test(quoteCurrency)
+    || !/^[A-Z]{2}$/.test(quoteCountry)
+    || localeCurrency !== quoteCurrency
+    || localeCountry !== quoteCountry
+    || moneyCents(input.line?.presentmentAmount) !== priceCents
+    || clean(input.line?.presentmentCurrency, 3).toUpperCase() !== quoteCurrency
+    || clean(input.line?.variantId, 24) !== variantId
+    || clean(input.line?.sku, 80).toUpperCase() !== sku
+    || Number(input.line?.quantity) !== 1
+    || input.line?.requiresShipping !== false
+    || clean(input.line?.checkoutIntent, 64) !== intentId
+    || funnelVersion !== BIG_THREE_FUNNEL_VERSION
+    || clean(input.line?.funnelVersion, 128) !== funnelVersion
+    || clean(input.line?.selectedPackage, 20) !== tier
+    || clean(input.line?.intentKind, 32) !== 'big_three'
+    || clean(input.line?.displayedQuoteCents, 20) !== String(priceCents)
+    || clean(input.line?.displayedQuoteCurrency, 3).toUpperCase() !== quoteCurrency
+    || clean(input.line?.displayedQuoteCountry, 2).toUpperCase() !== quoteCountry
+    || clean(input.line?.signedQuoteCents, 20) !== String(priceCents)
+    || clean(input.line?.signedQuoteCurrency, 3).toUpperCase() !== quoteCurrency
+    || clean(input.line?.signedQuoteCountry, 2).toUpperCase() !== quoteCountry
+    || clean(input.line?.language, 8).toLowerCase() !== localeLanguage
+    || clean(input.line?.locale, 24).toLowerCase() !== localeName
+    || clean(input.line?.country, 2).toUpperCase() !== localeCountry
+    || clean(input.line?.currency, 3).toUpperCase() !== localeCurrency
+    || clean(input.line?.market, 64).toLowerCase() !== localeMarket;
+  if (mismatch) {
+    return Object.freeze({ applies: true as const, ok: false as const, reason: BIG_THREE_QUOTE_MISMATCH });
+  }
+  return Object.freeze({
+    applies: true as const,
+    ok: true as const,
+    reason: '',
+    quote: Object.freeze({
+      intentId,
+      variantId,
+      sku,
+      priceCents,
+      currency: quoteCurrency,
+      country: quoteCountry,
+    }),
+  });
 }
 
 function finite(value: unknown) {

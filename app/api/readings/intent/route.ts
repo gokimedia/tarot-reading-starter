@@ -139,6 +139,8 @@ const CHECKOUT_INTENT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DIRECT_TAROT_CHECKOUT_INTENT_TTL_MS = 24 * 60 * 60 * 1000;
 const DIRECT_TAROT_DISPLAYED_QUOTE_INVALID = 'DIRECT_TAROT_DISPLAYED_QUOTE_INVALID';
 const DIRECT_TAROT_QUOTE_CHANGED = 'DIRECT_TAROT_QUOTE_CHANGED';
+const BIG_THREE_DISPLAYED_QUOTE_INVALID = 'BIG_THREE_DISPLAYED_QUOTE_INVALID';
+const BIG_THREE_QUOTE_CHANGED = 'BIG_THREE_QUOTE_CHANGED';
 const MOON_LUNAR_DISPLAYED_QUOTE_INVALID = 'MOON_LUNAR_DISPLAYED_QUOTE_INVALID';
 const MOON_LUNAR_QUOTE_CHANGED = 'MOON_LUNAR_QUOTE_CHANGED';
 const MOON_LUNAR_TIMEZONE_CONFIRMATION_REQUIRED = 'MOON_LUNAR_TIMEZONE_CONFIRMATION_REQUIRED';
@@ -262,6 +264,28 @@ function moonLunarQuoteChanged(
   return json({
     error: 'checkout_price_changed',
     code: MOON_LUNAR_QUOTE_CHANGED,
+    confirmationRequired: true,
+    checkoutQuote: quote,
+  }, 409, origin);
+}
+
+function bigThreeQuoteChanged(
+  origin: string,
+  quote: { variantId: string; sku: string; price: number; priceCents: number; currency: string; country: string },
+  tier: string,
+) {
+  console.warn(JSON.stringify({
+    event: 'big_three_quote_changed',
+    status: 409,
+    code: BIG_THREE_QUOTE_CHANGED,
+    tier,
+    variantId: quote.variantId,
+    currency: quote.currency,
+    country: quote.country,
+  }));
+  return json({
+    error: 'checkout_price_changed',
+    code: BIG_THREE_QUOTE_CHANGED,
     confirmationRequired: true,
     checkoutQuote: quote,
   }, 409, origin);
@@ -1459,7 +1483,19 @@ export async function POST(request: Request) {
   );
   if (!product) return json({ error: 'package_unavailable' }, 409, origin);
 
-  if (moonLunar) {
+  // Moon has always required a localized quote. Big Three opts into the same
+  // signed presentment contract when its upgraded storefront sends the
+  // displayedQuote property. Keeping property absence backward-compatible
+  // avoids breaking the currently live legacy storefront during rollout;
+  // once the property is present, null/partial/changed quotes fail closed.
+  const bigThreeDisplayedQuoteRequested = bigThree
+    && Object.prototype.hasOwnProperty.call(body, 'displayedQuote');
+  if (moonLunar || bigThreeDisplayedQuoteRequested) {
+    const quotePage = bigThree ? BIG_THREE_PAGE : MOON_LUNAR_PAGE;
+    const quoteToolType = bigThree ? 'Sun Moon Rising (Big 3)' : 'Moon & Lunar Reading';
+    const displayedQuoteInvalidCode = bigThree
+      ? BIG_THREE_DISPLAYED_QUOTE_INVALID
+      : MOON_LUNAR_DISPLAYED_QUOTE_INVALID;
     const quoteLookup = await verifyShopifyReadingVariantQuote({
       variantId: product.variantId,
       expectedSku: product.sku,
@@ -1475,8 +1511,8 @@ export async function POST(request: Request) {
         upstreamCode?: string;
       };
       return sharedCheckoutRejection(failure.status, failure.reason, origin, {
-        page: MOON_LUNAR_PAGE,
-        toolType: 'Moon & Lunar Reading',
+        page: quotePage,
+        toolType: quoteToolType,
         tier: storefrontTier,
         variantId: product.variantId,
         upstreamStatus: failure.upstreamStatus,
@@ -1495,18 +1531,20 @@ export async function POST(request: Request) {
       || displayedPriceCents <= 0
       || !/^[A-Z]{3}$/.test(displayedCurrency)
       || !/^[A-Z]{2}$/.test(displayedCountry)) {
-      return sharedCheckoutRejection(422, MOON_LUNAR_DISPLAYED_QUOTE_INVALID, origin, {
-        page: MOON_LUNAR_PAGE,
-        toolType: 'Moon & Lunar Reading',
+      return sharedCheckoutRejection(422, displayedQuoteInvalidCode, origin, {
+        page: quotePage,
+        toolType: quoteToolType,
         tier: storefrontTier,
         variantId: product.variantId,
-        publicCode: MOON_LUNAR_DISPLAYED_QUOTE_INVALID,
+        publicCode: displayedQuoteInvalidCode,
       });
     }
     if (displayedPriceCents !== quoteLookup.quote.priceCents
       || displayedCurrency !== quoteLookup.quote.currency
       || displayedCountry !== quoteLookup.quote.country) {
-      return moonLunarQuoteChanged(origin, quoteLookup.quote, storefrontTier);
+      return bigThree
+        ? bigThreeQuoteChanged(origin, quoteLookup.quote, storefrontTier)
+        : moonLunarQuoteChanged(origin, quoteLookup.quote, storefrontTier);
     }
     sharedCheckoutQuote = {
       intentId: id,

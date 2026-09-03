@@ -66,6 +66,7 @@ import {
   bigThreeEvidence,
   isBigThreeFocus,
   safeBigThreeSnapshot,
+  validateBigThreePaidQuote,
 } from '@/lib/big-three';
 import {
   BIRTH_CHART_FUNNEL_VERSION,
@@ -1017,6 +1018,41 @@ async function verifiedReadingIntent(
   if (intentKind === 'big_three') {
     const bigThreeSnapshot = safeBigThreeSnapshot(snapshot);
     const focus = text(snapshot.focus, 40).toLowerCase();
+    const presentmentMoney = linePresentmentMoney(item, payload);
+    const quoteValidation = validateBigThreePaidQuote({
+      snapshot,
+      row: {
+        id: row.id,
+        variantId: row.shopify_variant_id,
+        sku: row.sku,
+        tier: row.tier,
+        funnelVersion: row.funnel_version,
+      },
+      line: {
+        variantId: item.variant_id,
+        sku: item.sku,
+        quantity: item.quantity,
+        requiresShipping: item.requires_shipping,
+        checkoutIntent: itemProperty(item, ['checkout intent']),
+        funnelVersion: itemProperty(item, ['funnel version']),
+        selectedPackage: itemProperty(item, ['selected package']),
+        intentKind: itemProperty(item, ['intent kind']),
+        displayedQuoteCents: itemProperty(item, ['displayed quote cents']),
+        displayedQuoteCurrency: itemProperty(item, ['displayed quote currency']),
+        displayedQuoteCountry: itemProperty(item, ['displayed quote country']),
+        signedQuoteCents: itemProperty(item, ['signed quote cents']),
+        signedQuoteCurrency: itemProperty(item, ['signed quote currency']),
+        signedQuoteCountry: itemProperty(item, ['signed quote country']),
+        language: itemProperty(item, ['language']),
+        locale: itemProperty(item, ['locale']),
+        country: itemProperty(item, ['country']),
+        currency: itemProperty(item, ['currency']),
+        market: itemProperty(item, ['market']),
+        presentmentAmount: presentmentMoney.amount,
+        presentmentCurrency: presentmentMoney.currency,
+      },
+    });
+    if (!quoteValidation.ok) throw new QueueOperationError(quoteValidation.reason);
     if (!bigThreeSnapshot
       || text(row.page, 160) !== BIG_THREE_PAGE
       || text(row.funnel_version, 128) !== BIG_THREE_FUNNEL_VERSION
@@ -1071,6 +1107,11 @@ async function verifiedReadingIntent(
       packageTitle: scope.title,
       deliveryWindowMinutes: 90,
       bigThree: bigThreeSnapshot,
+      ...(quoteValidation.applies ? {
+        checkoutQuoteIntentId: quoteValidation.quote.intentId,
+        checkoutQuotePriceCents: quoteValidation.quote.priceCents,
+        checkoutQuoteCurrency: quoteValidation.quote.currency,
+      } : {}),
     };
   }
 
