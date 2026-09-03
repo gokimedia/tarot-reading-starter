@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const EXPECTED_LIVE_PAGE_COUNT = 62;
+const EXPECTED_LIVE_PAGE_COUNT = 64;
+const EXPECTED_CANONICAL_PAGE_COUNT = 64;
 const EXPECTED_UNIQUE_VARIANT_COUNT = 78;
 const DEAD_PAGE_ALIASES = Object.freeze(['/pages/celtic-cross-reading']);
 const BACKEND_CANONICAL_PAGE_TYPES = Object.freeze({
@@ -173,11 +174,18 @@ if (!argument('--theme') && !process.env.DECKAURA_THEME_CONTRACT_SOURCE) fail('T
 const source = await readFile(themePath, 'utf8');
 const products = parseProducts(source);
 const themePages = parsePages(source);
+for (const [page, toolType] of Object.entries(BACKEND_CANONICAL_PAGE_TYPES)) {
+  if (Object.hasOwn(themePages, page) && themePages[page] !== toolType) fail('BACKEND_CANONICAL_PAGE_CONFLICT');
+}
 const pages = {
   ...Object.fromEntries(Object.entries(themePages).filter(([page]) => !DEAD_PAGE_ALIASES.includes(page))),
   ...BACKEND_CANONICAL_PAGE_TYPES,
 };
 const themeAllowedTiers = parseAllowedTiers(source, themePages);
+for (const page of Object.keys(BACKEND_CANONICAL_PAGE_TYPES)) {
+  if (Object.hasOwn(themeAllowedTiers, page)
+    && themeAllowedTiers[page].join('|') !== 'essential|deeper|indepth') fail('BACKEND_CANONICAL_TIER_CONFLICT');
+}
 const allowedTiers = {
   ...Object.fromEntries(Object.entries(themeAllowedTiers).filter(([page]) => !DEAD_PAGE_ALIASES.includes(page))),
   ...Object.fromEntries(Object.keys(BACKEND_CANONICAL_PAGE_TYPES).map((page) => [page, ['essential', 'deeper', 'indepth']])),
@@ -191,7 +199,7 @@ if (defaultPrices.some((price, index) => Math.abs(price - TIERS[index][4]) > 0.0
   fail('PRICE_CONTRACT_MISMATCH');
 }
 validate(products, themePages, themeAllowedTiers, sharedEvents, commerceEvents);
-if (Object.keys(pages).length !== EXPECTED_LIVE_PAGE_COUNT + Object.keys(BACKEND_CANONICAL_PAGE_TYPES).length) fail('LIVE_PAGE_COUNT_MISMATCH');
+if (Object.keys(pages).length !== EXPECTED_CANONICAL_PAGE_COUNT) fail('LIVE_PAGE_COUNT_MISMATCH');
 const sourceDigest = createHash('sha256').update([
   objectBody(source, 'DDR_PRODUCTS'),
   objectBody(source, 'DDR_PAGE_TOOL_TYPES'),

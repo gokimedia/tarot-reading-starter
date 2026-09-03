@@ -48,7 +48,6 @@ test('generated shared-tool contract covers 64 canonical pages and 78 unique var
 
   for (const page of [
     '/pages/name-numerology-calculator',
-    '/pages/aura-color-quiz',
     '/pages/destiny-matrix-calculator',
     '/pages/midheaven-calculator',
   ]) {
@@ -91,6 +90,9 @@ test('generated shared-tool contract covers 64 canonical pages and 78 unique var
     ['/pages/career-tarot-reading', 'Career Tarot', ['53675061838097', '53677128155409', '53705415098641']],
     ['/pages/tarot-birth-card-calculator', 'Tarot Birth Card', ['53782498509073', '53782498541841', '53782498574609']],
     ['/pages/attachment-style-quiz', 'Attachment Style', ['54279722238225', '54279722991889', '54279723024657']],
+    ['/pages/aura-color-quiz', 'Aura Color', ['53675061838097', '53677128155409', '53705415098641']],
+    ['/pages/chakra-test', 'Chakra Balance', ['53675061838097', '53677128155409', '53705415098641']],
+    ['/pages/birth-chart-calculator', 'Astrology Birth Chart', ['53782498312465', '53782498345233', '53782498378001']],
   ]) {
     assert.deepEqual(SHARED_TOOL_PAGE_ALLOWED_TIERS[page], ['essential', 'deeper', 'indepth']);
     assert.equal(sharedToolContract(page, toolType, 'essential').variantId, variants[0]);

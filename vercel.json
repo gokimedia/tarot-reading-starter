@@ -17,6 +17,7 @@
     { "source": "/free-reading", "destination": "/api/readings/free-reading" },
     { "source": "/detect-language", "destination": "/api/readings/detect-language" },
     { "source": "/free-entitlement", "destination": "/api/readings/free-entitlement" },
+    { "source": "/api/tool-usage/claim", "destination": "/api/readings/tool-usage/claim" },
     { "source": "/free-session", "destination": "/api/readings/free-session" },
     { "source": "/free-chat", "destination": "/api/readings/free-chat" },
     { "source": "/checkout-snapshot", "destination": "/api/readings/checkout-snapshot" },

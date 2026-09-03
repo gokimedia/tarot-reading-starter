@@ -3,7 +3,7 @@ import { shopifyAdminFetch, shopifyStoreDomain } from '@/lib/shopify-admin-auth.
 import { deliveryRetry, workerEnvironment } from '@/lib/worker-env';
 import { DAILY_TAROT_FUNNEL_VERSION } from '@/lib/daily-tarot';
 import { DAILY_HOROSCOPE_FUNNEL_VERSION } from '@/lib/daily-horoscope';
-import { BIRTH_CHART_FUNNEL_VERSION } from '@/lib/birth-chart';
+import { isSupportedBirthChartFunnelVersion } from '@/lib/birth-chart';
 import { BIG_THREE_FUNNEL_VERSION } from '@/lib/big-three';
 import { ANGEL_NUMBER_FUNNEL_VERSION, PERSONAL_777_FUNNEL_VERSION } from '@/lib/angel-number';
 import { ZODIAC_COMPATIBILITY_FUNNEL_VERSION } from '@/lib/zodiac-compatibility';
@@ -95,7 +95,7 @@ function signedIntentVariantId(attributes: JsonObject[], funnelVersion: string, 
   if (funnelVersion === DAILY_HOROSCOPE_FUNNEL_VERSION) {
     return readingPackage('daily_horoscope', tier)?.variantId || '';
   }
-  if (funnelVersion === BIRTH_CHART_FUNNEL_VERSION) {
+  if (isSupportedBirthChartFunnelVersion(funnelVersion)) {
     return readingPackage('birth_chart', tier)?.variantId || '';
   }
   if (funnelVersion === BIG_THREE_FUNNEL_VERSION) {

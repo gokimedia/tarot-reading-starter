@@ -1,5 +1,11 @@
 export const BIRTH_CHART_PAGE = '/pages/birth-chart-calculator';
-export const BIRTH_CHART_FUNNEL_VERSION = 'birth-chart-evidence-checkout-2026-08-v1';
+// v2 is the storefront's live, canonical checkout contract. Keep v1 readable
+// for already-created carts and signed intents; both versions carry the same
+// strictly validated birth-chart snapshot schema.
+export const BIRTH_CHART_FUNNEL_VERSION = 'birth-chart-evidence-checkout-2026-08-v2';
+export const BIRTH_CHART_LEGACY_FUNNEL_VERSIONS = Object.freeze([
+  'birth-chart-evidence-checkout-2026-08-v1',
+] as const);
 export const BIRTH_CHART_SNAPSHOT_VERSION = 'birth-chart-snapshot-v1';
 
 export const BIRTH_CHART_INTENTS = Object.freeze({
@@ -158,6 +164,14 @@ function dominant<T extends string>(values: Record<T, number>, order: readonly T
 
 export function isBirthChartIntent(value: unknown): value is BirthChartIntent {
   return Object.hasOwn(BIRTH_CHART_INTENTS, clean(value, 40).toLowerCase());
+}
+
+export function isSupportedBirthChartFunnelVersion(value: unknown) {
+  const version = clean(value, 128);
+  return version === BIRTH_CHART_FUNNEL_VERSION
+    || BIRTH_CHART_LEGACY_FUNNEL_VERSIONS.includes(
+      version as typeof BIRTH_CHART_LEGACY_FUNNEL_VERSIONS[number],
+    );
 }
 
 export function safeBirthChartSnapshot(value: unknown): SafeBirthChartSnapshot | null {

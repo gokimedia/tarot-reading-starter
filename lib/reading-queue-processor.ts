@@ -75,6 +75,7 @@ import {
   birthChartQueueSignals,
   birthChartEvidence,
   isBirthChartIntent,
+  isSupportedBirthChartFunnelVersion,
   safeBirthChartSnapshot,
   safeSignedPersistedBirthChartSnapshot,
 } from '@/lib/birth-chart';
@@ -898,7 +899,7 @@ async function verifiedReadingIntent(
     const focus = text(snapshot.focus, 40).toLowerCase();
     if (!birthSnapshot
       || text(row.page, 160) !== BIRTH_CHART_PAGE
-      || text(row.funnel_version, 128) !== BIRTH_CHART_FUNNEL_VERSION
+      || !isSupportedBirthChartFunnelVersion(row.funnel_version)
       || !isBirthChartIntent(focus)
       || birthSnapshot.focus !== focus
       || text(row.category, 20) !== BIRTH_CHART_INTENTS[focus].category

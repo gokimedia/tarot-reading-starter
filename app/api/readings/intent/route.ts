@@ -58,10 +58,10 @@ import {
   safeBigThreeSnapshot,
 } from '@/lib/big-three';
 import {
-  BIRTH_CHART_FUNNEL_VERSION,
   BIRTH_CHART_INTENTS,
   BIRTH_CHART_PAGE,
   isBirthChartIntent,
+  isSupportedBirthChartFunnelVersion,
   safeBirthChartSnapshot,
 } from '@/lib/birth-chart';
 import {
@@ -540,7 +540,7 @@ export async function POST(request: Request) {
     snapshot = bigThreeSnapshot;
   } else if (birthChart) {
     const focus = clean(body.intent, 40).toLowerCase();
-    if (funnelVersion !== BIRTH_CHART_FUNNEL_VERSION || !isBirthChartIntent(focus)) {
+    if (!isSupportedBirthChartFunnelVersion(funnelVersion) || !isBirthChartIntent(focus)) {
       return json({ error: 'invalid_birth_chart_intent' }, 422, origin);
     }
     const chartSnapshot = safeBirthChartSnapshot(body.snapshot);

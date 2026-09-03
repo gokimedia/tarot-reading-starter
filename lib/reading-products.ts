@@ -205,6 +205,7 @@ export function isSupportedCheckoutFunnelVersion(value: unknown) {
   return version === LOVE_TAROT_FUNNEL_VERSION
     || version === 'daily-context-funnel-2026-08-v1'
     || version === 'daily-horoscope-transit-checkout-2026-08-v1'
+    || version === 'birth-chart-evidence-checkout-2026-08-v2'
     || version === 'birth-chart-evidence-checkout-2026-08-v1'
     || version === 'big-three-synthesis-checkout-2026-08-v1'
     || version === 'angel-situational-funnel-2026-08-v1'

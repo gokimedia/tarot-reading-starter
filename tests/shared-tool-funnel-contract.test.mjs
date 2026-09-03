@@ -56,6 +56,50 @@ test('shared telemetry fails closed on unknown event, wrong page/type or tier/va
   assert.equal(canonicalSharedToolFunnelMetadata({ ...valid.metadata, email: 'not-allowed@example.test' }, valid.eventName).ok, false);
 });
 
+test('checkout preparation errors preserve only a bounded operational reason', async () => {
+  const base = sharedEvent();
+  const event = sharedEvent({
+    eventId: '12345678-1234-4234-9234-123456789abd',
+    eventName: 'checkout_prepare_error',
+    metadata: { ...base.metadata, reason: 'checkout_intent_timeout' },
+  });
+  const canonical = canonicalSharedToolFunnelMetadata(event.metadata, event.eventName);
+  assert.equal(canonical.ok, true);
+  assert.equal(canonical.value.reason, 'checkout_intent_timeout');
+  assert.equal(canonicalSharedToolFunnelEvent(event, event.eventName, canonical.value), true);
+  assert.equal(
+    canonicalSharedToolFunnelMetadata({ ...base.metadata }, event.eventName).ok,
+    true,
+    'cached pre-reason clients stay telemetry-compatible during rollout',
+  );
+  assert.equal(canonicalSharedToolFunnelMetadata({ ...event.metadata, reason: 'customer@example.test' }, event.eventName).ok, false);
+  assert.equal(canonicalSharedToolFunnelMetadata({ ...event.metadata, reason: 'x'.repeat(81) }, event.eventName).ok, false);
+  assert.equal(canonicalSharedToolFunnelMetadata({ ...base.metadata, reason: 'not_allowed_here' }, base.eventName).ok, false);
+
+  const recorded = [];
+  const response = await handleFunnelEvents(new Request('https://reading.deckaura.com/funnel-events', {
+    method: 'POST',
+    headers: {
+      Origin: 'https://deckaura.com',
+      'Content-Type': 'application/json',
+      'CF-Connecting-IP': '203.0.113.54',
+      'User-Agent': 'Deckaura checkout failure telemetry test',
+    },
+    body: JSON.stringify({ visitorId: 'checkout-error-visitor-20260903', events: [event] }),
+  }), {
+    ENTITLEMENT_PEPPER: 'checkout-error-telemetry-pepper',
+    FUNNEL_STORE: {
+      recordEvents: async (_visitorHash, events) => {
+        recorded.push(...events);
+        return { accepted: events.length };
+      },
+    },
+  });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].metadata.reason, 'checkout_intent_timeout');
+});
+
 test('Yes/No direct-v1 accepts the strict shared-tool telemetry contract without reopening the legacy contract', async () => {
   const flowId = '12345678-1234-4234-9234-123456789abc';
   const recorded = [];
