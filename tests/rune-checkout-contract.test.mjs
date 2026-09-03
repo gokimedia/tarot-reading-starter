@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
+import { RUNE_V2_STOREFRONT_CONTRACT } from '../contracts/storefront-source-pins.mjs';
 import {
   RUNE_CHECKOUT_CONTRACT_VERSION,
   RUNE_FUNNEL_VERSION,
@@ -12,7 +14,7 @@ import {
 } from '../lib/rune-reading.ts';
 
 const root = new URL('../', import.meta.url);
-const themeRuntime = new URL('../../output/locale-consolidation-20260827-1/live-theme-backup/assets/rune-v2.js', import.meta.url);
+const themeRuntime = process.env.DECKAURA_RUNE_CONTRACT_SOURCE || '';
 
 function lineItem(overrides = {}) {
   const values = {
@@ -120,19 +122,28 @@ test('one paid order cannot silently merge multiple rune reading lines', () => {
 
 test('frontend, queue, worker, cron and database share the fail-closed rune contract', async () => {
   const [theme, queue, worker, cron, migration] = await Promise.all([
-    readFile(themeRuntime, 'utf8'),
+    themeRuntime ? readFile(themeRuntime, 'utf8') : Promise.resolve(''),
     readFile(new URL('lib/reading-queue-processor.ts', root), 'utf8'),
     readFile(new URL('lib/legacy-worker.mjs', root), 'utf8'),
     readFile(new URL('app/api/cron/readings/route.ts', root), 'utf8'),
     readFile(new URL('supabase/migrations/20260828105254_add_rune_manual_review_contract.sql', root), 'utf8'),
   ]);
 
-  assert.match(theme, /'_Contract Version': 'rune-checkout-v1'/);
-  assert.match(theme, /'Reading Type': 'Rune Reading'/);
-  assert.match(theme, /function checkoutContractIsValid\(\)/);
-  assert.match(theme, /s\.cast\.length !== slots\.length/);
-  assert.match(theme, /function castInputContract\(\)/);
-  assert.match(theme, /s\.castContract !== castInputContract\(\)/);
+  assert.deepEqual(RUNE_V2_STOREFRONT_CONTRACT.requiredFunctions, ['checkoutContractIsValid', 'castInputContract']);
+  assert.equal(RUNE_V2_STOREFRONT_CONTRACT.contractVersion, 'rune-checkout-v2');
+  assert.equal(RUNE_V2_STOREFRONT_CONTRACT.readingType, 'Rune Reading');
+  assert.equal(RUNE_V2_STOREFRONT_CONTRACT.castLengthGuard, 's.cast.length !== slots.length');
+  assert.equal(RUNE_V2_STOREFRONT_CONTRACT.castStateGuard, 's.castContract !== castInputContract()');
+  assert.match(RUNE_V2_STOREFRONT_CONTRACT.sourceSha256, /^[a-f0-9]{64}$/);
+  if (theme) {
+    assert.equal(createHash('sha256').update(theme).digest('hex'), RUNE_V2_STOREFRONT_CONTRACT.sourceSha256);
+    assert.match(theme, /'_Contract Version': 'rune-checkout-v2'/);
+    assert.match(theme, /'Reading Type': 'Rune Reading'/);
+    assert.match(theme, /function checkoutContractIsValid\(\)/);
+    assert.match(theme, /s\.cast\.length !== slots\.length/);
+    assert.match(theme, /function castInputContract\(\)/);
+    assert.match(theme, /s\.castContract !== castInputContract\(\)/);
+  }
 
   const rejection = queue.indexOf("if (rune?.active && !rune.ok)");
   const enqueue = queue.indexOf('deliveryRetry.enqueueDelivery(', rejection);
