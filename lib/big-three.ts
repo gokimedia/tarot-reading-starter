@@ -1,4 +1,4 @@
-import { EclipticGeoMoon, SunPosition } from 'astronomy-engine';
+import { EclipticGeoMoon, SiderealTime, SunPosition } from 'astronomy-engine';
 import {
   resolveIanaLocalDateBounds,
   resolveIanaLocalDateTime,
@@ -144,15 +144,15 @@ function julianDay(date: Date) {
   return date.getTime() / 86_400_000 + 2_440_587.5;
 }
 
-function ascendant(julian: number, latitude: number, longitudeEast: number) {
+function ascendant(date: Date, latitude: number, longitudeEast: number) {
+  const julian = julianDay(date);
   const t = (julian - 2_451_545) / 36_525;
-  const gmst = normalizeLongitude(280.46061837 + 360.98564736629 * (julian - 2_451_545) + 0.000387933 * t * t);
-  const ramc = normalizeLongitude(gmst + longitudeEast) * Math.PI / 180;
+  const ramc = normalizeLongitude(SiderealTime(date) * 15 + longitudeEast) * Math.PI / 180;
   const obliquity = (23.4392911 - 0.0130042 * t) * Math.PI / 180;
   const latitudeRadians = latitude * Math.PI / 180;
   return normalizeLongitude(Math.atan2(
-    Math.cos(ramc),
-    -(Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity)),
+    -Math.cos(ramc),
+    Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity),
   ) * 180 / Math.PI);
 }
 
@@ -226,7 +226,7 @@ export function safeBigThreeSnapshot(value: unknown): SafeBigThreeSnapshot | nul
   const calculated = bodyLongitudes(birthInstant);
   const moonStart = bodyLongitudes(dayStart).moon;
   const moonEnd = bodyLongitudes(dayEnd).moon;
-  const expectedRising = status === 'unknown' ? null : ascendant(julianDay(birthInstant), latitude, placeLongitude);
+  const expectedRising = status === 'unknown' ? null : ascendant(birthInstant, latitude, placeLongitude);
 
   const placementsSource = record(source.placements);
   const sunSource = record(placementsSource.sun);

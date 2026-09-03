@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { EclipticGeoMoon, SunPosition } from 'astronomy-engine';
+import { EclipticGeoMoon, SiderealTime, SunPosition } from 'astronomy-engine';
 
 import {
   BIG_THREE_LOCAL_TIME_AMBIGUOUS,
@@ -36,17 +36,22 @@ function normalize(value) {
 function ascendant(date, latitude, longitudeEast) {
   const julian = date.getTime() / 86_400_000 + 2_440_587.5;
   const t = (julian - 2_451_545) / 36_525;
-  const gmst = normalize(280.46061837 + 360.98564736629 * (julian - 2_451_545) + 0.000387933 * t * t);
-  const ramc = normalize(gmst + longitudeEast) * Math.PI / 180;
+  const ramc = normalize(SiderealTime(date) * 15 + longitudeEast) * Math.PI / 180;
   const obliquity = (23.4392911 - 0.0130042 * t) * Math.PI / 180;
   const latitudeRadians = latitude * Math.PI / 180;
   return normalize(Math.atan2(
-    Math.cos(ramc),
-    -(Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity)),
+    -Math.cos(ramc),
+    Math.sin(ramc) * Math.cos(obliquity) + Math.tan(latitudeRadians) * Math.sin(obliquity),
   ) * 180 / Math.PI);
 }
 
-function bigThreeSnapshot({ date = '1990-01-01', time = '12:00', timezone = 'UTC' } = {}) {
+function bigThreeSnapshot({
+  date = '1990-01-01',
+  time = '12:00',
+  timezone = 'UTC',
+  latitude = 0,
+  longitude = 0,
+} = {}) {
   const resolution = resolveIanaLocalDateTime(date, time, timezone);
   const bounds = resolveIanaLocalDateBounds(date, timezone);
   assert.equal(resolution?.status, 'unique');
@@ -61,7 +66,7 @@ function bigThreeSnapshot({ date = '1990-01-01', time = '12:00', timezone = 'UTC
       date,
       time,
       status: 'exact',
-      place: { name: 'Test Observatory', region: '', latitude: 0, longitude: 0, timezone },
+      place: { name: 'Test Observatory', region: '', latitude, longitude, timezone },
     },
     placements: {
       sun: { longitude: normalize(SunPosition(instant).elon) },
@@ -71,7 +76,7 @@ function bigThreeSnapshot({ date = '1990-01-01', time = '12:00', timezone = 'UTC
         endLongitude: normalize(EclipticGeoMoon(end).lon),
         ambiguous: false,
       },
-      rising: { longitude: ascendant(instant, 0, 0) },
+      rising: { longitude: ascendant(instant, latitude, longitude) },
     },
   };
 }
@@ -155,6 +160,16 @@ test('Big Three requires unique round-trip instants while preserving ordinary UT
   const saoPaulo = bigThreeSnapshot({ date: '2018-11-04', time: '12:00', timezone: 'America/Sao_Paulo' });
   assert.equal(bigThreeBirthTimeIssue(saoPaulo), '');
   assert.ok(safeBigThreeSnapshot(saoPaulo), 'a valid noon must survive a midnight DST gap');
+
+  const newYork = bigThreeSnapshot({
+    date: '1990-01-01',
+    time: '12:00',
+    timezone: 'UTC',
+    latitude: 40.7128,
+    longitude: -74.006,
+  });
+  assert.ok(Math.abs(newYork.placements.rising.longitude - 94.6404426) < 0.0001);
+  assert.ok(safeBigThreeSnapshot(newYork), 'backend must accept the live theme ascendant, not its 180-degree opposite');
 });
 
 test('Birth Chart fails closed for crafted gap/fold times and keeps a normal UTC contract valid', () => {
