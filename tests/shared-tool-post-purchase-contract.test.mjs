@@ -46,6 +46,45 @@ function validInput() {
   };
 }
 
+function quotedInput() {
+  const input = validInput();
+  Object.assign(input.row, { id: '11111111-1111-4111-8111-111111111111' });
+  Object.assign(input.snapshot, {
+    localeContext: { language: 'de', locale: 'de-DE', country: 'DE', currency: 'EUR', market: 'de' },
+    checkoutQuote: {
+      intentId: input.row.id,
+      variantId: input.row.variantId,
+      sku: input.row.sku,
+      priceCents: 549,
+      currency: 'EUR',
+      country: 'DE',
+    },
+  });
+  Object.assign(input.line, {
+    variantId: input.row.variantId,
+    sku: input.row.sku,
+    quantity: 1,
+    requiresShipping: false,
+    checkoutIntent: input.row.id,
+    funnelVersion: input.row.funnelVersion,
+    selectedPackage: input.row.tier,
+    displayedQuoteCents: '549',
+    displayedQuoteCurrency: 'EUR',
+    displayedQuoteCountry: 'DE',
+    signedQuoteCents: '549',
+    signedQuoteCurrency: 'EUR',
+    signedQuoteCountry: 'DE',
+    language: 'de',
+    locale: 'de-DE',
+    country: 'DE',
+    currency: 'EUR',
+    market: 'de',
+    presentmentAmount: '5.49',
+    presentmentCurrency: 'EUR',
+  });
+  return input;
+}
+
 test('post-purchase shared_tool verification preserves the signed snapshot for the delivery draft', () => {
   const result = verifySharedToolPaidOrder(validInput());
   assert.equal(result.ok, true);
@@ -62,6 +101,43 @@ test('post-purchase shared_tool verification preserves the signed snapshot for t
   assert.equal(result.verifiedFields.toolPage, '/pages/twin-flame-calculator');
   assert.equal(result.verifiedFields.signals, validInput().snapshot.signals);
   assert.equal(result.verifiedFields.curiosityQuestion, validInput().snapshot.curiosityQuestion);
+});
+
+test('quote-less legacy generic shared_tool rows remain compatible', () => {
+  const input = validInput();
+  assert.equal(Object.hasOwn(input.snapshot, 'checkoutQuote'), false);
+  assert.equal(verifySharedToolPaidOrder(input).ok, true);
+});
+
+test('stored generic checkoutQuote binds paid amount, currency, product, locale and quote properties', () => {
+  const valid = verifySharedToolPaidOrder(quotedInput());
+  assert.equal(valid.ok, true);
+  assert.equal(valid.verifiedFields.checkoutQuotePriceCents, 549);
+  assert.equal(valid.verifiedFields.checkoutQuoteCurrency, 'EUR');
+
+  const cases = [
+    ['paid amount', { presentmentAmount: '9.99' }],
+    ['paid currency', { presentmentCurrency: 'USD' }],
+    ['variant', { variantId: '53782498312465' }],
+    ['sku', { sku: 'READING-MEDIUM' }],
+    ['quantity', { quantity: 2 }],
+    ['shipping', { requiresShipping: true }],
+    ['funnel version', { funnelVersion: 'wrong-funnel' }],
+    ['selected package', { selectedPackage: 'premium' }],
+    ['displayed quote property', { displayedQuoteCents: '999' }],
+    ['signed quote property', { signedQuoteCurrency: 'USD' }],
+    ['locale property', { locale: 'en-US' }],
+    ['market property', { market: 'us' }],
+  ];
+  for (const [label, lineOverride] of cases) {
+    const input = quotedInput();
+    Object.assign(input.line, lineOverride);
+    assert.deepEqual(
+      verifySharedToolPaidOrder(input),
+      { ok: false, reason: 'SHARED_CHECKOUT_QUOTE_MISMATCH' },
+      label,
+    );
+  }
 });
 
 test('post-purchase shared_tool verification rejects manifest, price, line and snapshot drift', () => {
@@ -90,6 +166,8 @@ test('queue processor recognizes shared variants, verifies the snapshot and retu
   assert.match(source, /verifySharedToolPaidOrder\(/);
   assert.match(source, /hashCheckoutIntentSnapshot\(snapshot\)/);
   assert.match(source, /itemProperty\(item, \['snapshot hash'\]\)/);
+  assert.match(source, /itemProperty\(item, \['signed quote cents'\]\)/);
+  assert.match(source, /requiresShipping: item\.requires_shipping/);
   assert.match(source, /intentKind === 'shared_tool' \? 'shared_tool'/);
   assert.match(source, /sharedToolVerifiedFields = sharedOrderVerification\.verifiedFields/);
   assert.match(source, /sourcePage \|\| toolPage/);

@@ -11,7 +11,7 @@ export type SharedToolOrderVerification =
       sku: 'READING-DEEP' | 'READING-MEDIUM' | 'READING-PREMIUM';
       price: 5.99 | 9.99 | 16.99;
     }>;
-    verifiedFields: Readonly<Record<string, string | number>>;
+    verifiedFields: Readonly<Record<string, unknown>>;
   }>
   | Readonly<{ ok: false; reason: string }>;
 

@@ -339,13 +339,13 @@ function readingItems(payload: JsonObject) {
   });
 }
 
-function itemProperty(item: JsonObject, wanted: string[]) {
+function itemProperty(item: JsonObject, wanted: string[], maximum = 400) {
   const properties = Array.isArray(item.properties) ? item.properties : [];
   for (const property of properties) {
     if (!property || typeof property !== 'object') continue;
     const record = property as JsonObject;
     const key = text(record.name, 100).toLowerCase().replace(/^_/, '');
-    if (wanted.includes(key) && record.value != null) return text(record.value, 400);
+    if (wanted.includes(key) && record.value != null) return text(record.value, maximum);
   }
   return '';
 }
@@ -590,11 +590,51 @@ async function verifiedReadingIntent(
       },
       snapshot,
       line: {
+        variantId: item.variant_id,
+        sku: item.sku,
+        quantity: item.quantity,
+        requiresShipping: item.requires_shipping,
+        checkoutIntent: itemProperty(item, ['checkout intent']),
+        funnelVersion: itemProperty(item, ['funnel version']),
+        selectedPackage: itemProperty(item, ['selected package']),
         intentKind: itemProperty(item, ['intent kind']),
         toolPage: itemProperty(item, ['tool page']),
         toolType: itemProperty(item, ['tool type']),
         snapshotVersion: itemProperty(item, ['snapshot version']),
         snapshotHash: itemProperty(item, ['snapshot hash']),
+        displayedQuoteCents: itemProperty(item, ['displayed quote cents']),
+        displayedQuoteCurrency: itemProperty(item, ['displayed quote currency']),
+        displayedQuoteCountry: itemProperty(item, ['displayed quote country']),
+        signedQuoteCents: itemProperty(item, ['signed quote cents']),
+        signedQuoteCurrency: itemProperty(item, ['signed quote currency']),
+        signedQuoteCountry: itemProperty(item, ['signed quote country']),
+        language: itemProperty(item, ['language']),
+        locale: itemProperty(item, ['locale']),
+        country: itemProperty(item, ['country']),
+        currency: itemProperty(item, ['currency']),
+        market: itemProperty(item, ['market']),
+        contractVersion: itemProperty(item, ['contract version']),
+        readingType: itemProperty(item, ['reading type']),
+        question: itemProperty(item, ['question', 'your question']),
+        readingFocus: itemProperty(item, ['reading focus']),
+        focus: itemProperty(item, ['focus']),
+        answerType: itemProperty(item, ['answer type']),
+        timeframe: itemProperty(item, ['timeframe']),
+        runeCast: itemProperty(item, ['rune cast'], 1_500),
+        resultSignals: itemProperty(item, ['result signals'], 1_500),
+        spread: itemProperty(item, ['spread']),
+        context: itemProperty(item, ['context'], 4_000),
+        readingScope: itemProperty(item, ['reading scope'], 500),
+        calculationConfidence: itemProperty(item, ['calculation confidence']),
+        tool: itemProperty(item, ['tool']),
+        source: itemProperty(item, ['source']),
+        readingId: itemProperty(item, ['reading id']),
+        presentationVariant: itemProperty(item, ['presentation variant']),
+        runeFocusId: itemProperty(item, ['rune focus id']),
+        runeAnswerId: itemProperty(item, ['rune answer id']),
+        runeAnswerKind: itemProperty(item, ['rune answer kind']),
+        runeTimeframeId: itemProperty(item, ['rune timeframe id']),
+        runeCanonicalCast: itemProperty(item, ['rune canonical cast']),
         presentmentAmount: presentmentMoney.amount,
         presentmentCurrency: presentmentMoney.currency,
       },
@@ -2201,7 +2241,7 @@ async function enqueueReadingFromWebhook(row: WebhookQueueRow, env: WorkerEnviro
   const checkout = await verifiedTarotCheckoutContext(items, env);
   const intent = await verifiedReadingIntent(items, payload);
   if (checkout && intent) throw new QueueOperationError('CHECKOUT_AUTHORITY_AMBIGUOUS');
-  const rune = runeCheckoutContractForItems(items);
+  const rune = runeCheckoutContractForItems(items, intent?.verifiedFields || {});
   const { draft } = await queueDraftForOrder(payload, items, env, numerology, checkout, intent, rune);
   const requestedNumerologyDelay = Number(numerology?.deliveryDelayMinutes);
   const delayMinutes = Number.isFinite(requestedNumerologyDelay) && requestedNumerologyDelay > 0

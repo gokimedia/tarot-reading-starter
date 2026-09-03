@@ -14,6 +14,10 @@ import {
 } from '@/lib/shopify-reading-variant.mjs';
 import { validateNewSharedToolSnapshot } from '@/lib/new-shared-tool-evidence.mjs';
 import {
+  RUNE_V2_PAGE,
+  validateRuneV2Snapshot,
+} from '@/lib/rune-checkout-v2.mjs';
+import {
   PERSONAL_DIRECT_PAGE,
   PERSONAL_DIRECT_PRESENTATION_VARIANT,
   PERSONAL_DIRECT_PUBLIC_ERROR_CODES,
@@ -1092,6 +1096,26 @@ export async function POST(request: Request) {
         publicCode: 'DIRECT_TAROT_EVIDENCE_MISMATCH',
       });
     }
+    const runeV2Validation = validateRuneV2Snapshot({
+      page: pageValue,
+      toolType,
+      presentationVariant: clean(sharedSnapshot.presentationVariant, 80),
+      snapshot: sharedSnapshot,
+    });
+    if (pageValue === RUNE_V2_PAGE && (!runeV2Validation.applies || !runeV2Validation.ok)) {
+      return sharedCheckoutRejection(422, 'RUNE_CHECKOUT_V2_SNAPSHOT_INVALID', origin, {
+        page: pageValue,
+        toolType,
+        tier: storefrontTier,
+        variantId: expectedVariantValue,
+        publicCode: 'RUNE_CHECKOUT_V2_SNAPSHOT_INVALID',
+      });
+    }
+    const runeV2CanonicalSnapshot = runeV2Validation.applies
+      && runeV2Validation.ok
+      && 'canonicalSnapshot' in runeV2Validation
+      ? runeV2Validation.canonicalSnapshot
+      : null;
     const snapshotVersion = clean(sharedSnapshot.version, 40);
     const snapshotType = clean(sharedSnapshot.type, 80);
     const snapshotQuestion = clean(sharedSnapshot.question, exactPersonalDirectPage ? 600 : pageValue === BIRTH_CARD_DIRECT_PAGE ? 360 : 400);
@@ -1362,6 +1386,7 @@ export async function POST(request: Request) {
       curiosityQuestion: snapshotCuriosityQuestion,
       presentationVariant: snapshotPresentationVariant,
       readingId,
+      ...(runeV2CanonicalSnapshot || {}),
       ...(sharedCheckoutQuote ? { checkoutQuote: sharedCheckoutQuote } : {}),
       ...(exactSevenCardPage ? { transportFallback: sharedSnapshot.transportFallback === true } : {}),
       ...(directTarotValidation.applies && directTarotValidation.kind !== 'birth' ? {

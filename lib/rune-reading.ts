@@ -1,3 +1,10 @@
+import {
+  RUNE_V2_CONTRACT_VERSION,
+  RUNE_V2_PAGE,
+  RUNE_V2_PRESENTATION_VARIANT,
+  RUNE_V2_TYPE,
+} from './rune-checkout-v2.mjs';
+
 const RUNE_PAGE = '/pages/rune-reading';
 const RUNE_TOOL = `https://deckaura.com${RUNE_PAGE}`;
 
@@ -195,8 +202,57 @@ export function runeCheckoutContract(lineItem: JsonObject): RuneCheckoutContract
   };
 }
 
-export function runeCheckoutContractForItems(items: JsonObject[]) {
-  const contracts = items.map(runeCheckoutContract).filter((contract) => contract.active);
+function signedRuneV2Contract(lineItem: JsonObject, authority: JsonObject): RuneCheckoutContract {
+  const properties = propertiesFor(lineItem);
+  const contractVersion = firstProperty(properties, ['contract version']);
+  if (contractVersion !== RUNE_V2_CONTRACT_VERSION) return runeCheckoutContract(lineItem);
+
+  const authorityCast = Array.isArray(authority.runeCast) ? authority.runeCast : [];
+  const validAuthority = clean(authority.runeContractVersion, 40) === RUNE_V2_CONTRACT_VERSION
+    && clean(authority.readingType || authority.type, 80) === RUNE_V2_TYPE
+    && clean(authority.toolPage, 160) === RUNE_V2_PAGE
+    && clean(authority.presentationVariant, 80) === RUNE_V2_PRESENTATION_VARIANT
+    && clean(authority.runeFocusId, 24).length > 0
+    && clean(authority.runeAnswerId, 24).length > 0
+    && clean(authority.runeAnswerKind, 24).length > 0
+    && clean(authority.runeTimeframeId, 32).length > 0
+    && authorityCast.length > 0;
+  if (!validAuthority) {
+    return {
+      active: true,
+      ok: false,
+      code: 'RUNE_CHECKOUT_V2_SIGNED_AUTHORITY_REQUIRED',
+      missing: ['signedAuthority'],
+      spread: '',
+      cast: [],
+      verifiedFields: {},
+    };
+  }
+
+  const cast = authorityCast.map((entry) => {
+    const value = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry as JsonObject : {};
+    return {
+      position: clean(value.positionId, 24),
+      name: clean(value.name, 24),
+      orientation: clean(value.orientation, 12) as 'upright' | 'reversed',
+    };
+  });
+  return {
+    active: true,
+    ok: true,
+    code: 'OK',
+    missing: [],
+    spread: clean(authority.spread, 80).toLowerCase(),
+    cast,
+    // The shared HMAC-bound snapshot has already supplied the delivery fields.
+    // Returning an empty overlay prevents line-item display labels from
+    // overriding that canonical authority during draft hydration.
+    verifiedFields: {},
+  };
+}
+
+export function runeCheckoutContractForItems(items: JsonObject[], signedAuthority: JsonObject = {}) {
+  const contracts = items.map((item) => signedRuneV2Contract(item, signedAuthority)).filter((contract) => contract.active);
   if (!contracts.length) return null;
   if (contracts.length !== 1) {
     return {
